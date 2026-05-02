@@ -9,6 +9,11 @@ memory, capability claims, and run records are designed around reproducible
 evidence instead of unsupported feature claims. The five core project paradigms
 are documented in `docs/omni-agent-paradigms.md`.
 
+## Tutorials
+
+- [English tutorial](docs/tutorial/README.en.md)
+- [Chinese tutorial](docs/tutorial/README.zh.md)
+
 ## Scripts
 
 ```bash
