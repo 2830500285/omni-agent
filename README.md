@@ -1,3 +1,5 @@
+![Omni Agent banner](docs/assets/omni-agent-banner.svg)
+
 # Omni Agent
 
 Languages: [English](README.en.md) | [中文](README.zh.md)

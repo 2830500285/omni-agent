@@ -1,0 +1,99 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="280" viewBox="0 0 1600 280" role="img" aria-labelledby="title desc">
+  <title id="title">Omni Agent banner</title>
+  <desc id="desc">A dark verification cockpit banner for Omni Agent with luminous traces, agent nodes, and evidence rails.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0" stop-color="#070b12"/>
+      <stop offset="0.52" stop-color="#0a1019"/>
+      <stop offset="1" stop-color="#101215"/>
+    </linearGradient>
+    <linearGradient id="title-gradient" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#f7fbff"/>
+      <stop offset="0.34" stop-color="#8af7ff"/>
+      <stop offset="0.68" stop-color="#d7ff8a"/>
+      <stop offset="1" stop-color="#ffffff"/>
+    </linearGradient>
+    <linearGradient id="trace-gradient" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0" stop-color="#31f6ff" stop-opacity="0"/>
+      <stop offset="0.2" stop-color="#31f6ff"/>
+      <stop offset="0.58" stop-color="#93ff72"/>
+      <stop offset="1" stop-color="#ffb84d" stop-opacity="0"/>
+    </linearGradient>
+    <radialGradient id="core" cx="50%" cy="50%" r="60%">
+      <stop offset="0" stop-color="#d7ff8a" stop-opacity="0.9"/>
+      <stop offset="0.38" stop-color="#31f6ff" stop-opacity="0.35"/>
+      <stop offset="1" stop-color="#31f6ff" stop-opacity="0"/>
+    </radialGradient>
+    <filter id="soft-glow" x="-40%" y="-40%" width="180%" height="180%">
+      <feGaussianBlur stdDeviation="5" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <pattern id="grid" width="48" height="48" patternUnits="userSpaceOnUse">
+      <path d="M 48 0 L 0 0 0 48" fill="none" stroke="#8af7ff" stroke-opacity="0.08" stroke-width="1"/>
+    </pattern>
+  </defs>
+
+  <rect width="1600" height="280" rx="0" fill="url(#bg)"/>
+  <rect width="1600" height="280" fill="url(#grid)" opacity="0.75"/>
+  <path d="M0 332 C175 282 290 365 455 308 C610 255 730 158 900 204 C1050 245 1145 126 1286 160 C1428 195 1496 270 1600 238" fill="none" stroke="url(#trace-gradient)" stroke-width="3" opacity="0.75"/>
+  <path d="M0 86 C210 118 294 55 470 84 C680 120 764 44 948 74 C1140 104 1245 72 1408 104 C1500 122 1548 111 1600 92" fill="none" stroke="#31f6ff" stroke-opacity="0.22" stroke-width="2"/>
+
+  <g opacity="0.95" filter="url(#soft-glow)">
+    <circle cx="802" cy="156" r="96" fill="url(#core)"/>
+    <circle cx="802" cy="156" r="82" fill="none" stroke="#31f6ff" stroke-opacity="0.38" stroke-width="2"/>
+    <circle cx="802" cy="156" r="48" fill="none" stroke="#d7ff8a" stroke-opacity="0.55" stroke-width="2"/>
+    <path d="M802 72 L824 136 L892 136 L837 176 L858 242 L802 201 L746 242 L767 176 L712 136 L780 136 Z" fill="none" stroke="#ffffff" stroke-opacity="0.26" stroke-width="2"/>
+  </g>
+
+  <g fill="none" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M318 124 H505 V88 H620" stroke="#31f6ff" stroke-opacity="0.55" stroke-width="3"/>
+    <path d="M342 298 H542 V336 H692" stroke="#93ff72" stroke-opacity="0.55" stroke-width="3"/>
+    <path d="M908 84 H1058 V122 H1268" stroke="#31f6ff" stroke-opacity="0.55" stroke-width="3"/>
+    <path d="M920 328 H1074 V286 H1290" stroke="#ffb84d" stroke-opacity="0.52" stroke-width="3"/>
+    <path d="M612 124 L692 174" stroke="#31f6ff" stroke-opacity="0.42" stroke-width="2"/>
+    <path d="M690 286 L744 246" stroke="#93ff72" stroke-opacity="0.42" stroke-width="2"/>
+    <path d="M990 124 L910 176" stroke="#31f6ff" stroke-opacity="0.42" stroke-width="2"/>
+    <path d="M1020 286 L900 238" stroke="#ffb84d" stroke-opacity="0.42" stroke-width="2"/>
+  </g>
+
+  <g filter="url(#soft-glow)">
+    <circle cx="318" cy="124" r="8" fill="#31f6ff"/>
+    <circle cx="505" cy="88" r="5" fill="#31f6ff"/>
+    <circle cx="620" cy="88" r="8" fill="#93ff72"/>
+    <circle cx="342" cy="298" r="8" fill="#93ff72"/>
+    <circle cx="542" cy="336" r="5" fill="#93ff72"/>
+    <circle cx="692" cy="336" r="8" fill="#ffffff"/>
+    <circle cx="908" cy="84" r="8" fill="#31f6ff"/>
+    <circle cx="1058" cy="122" r="5" fill="#31f6ff"/>
+    <circle cx="1268" cy="122" r="8" fill="#93ff72"/>
+    <circle cx="920" cy="328" r="8" fill="#ffb84d"/>
+    <circle cx="1074" cy="286" r="5" fill="#ffb84d"/>
+    <circle cx="1290" cy="286" r="8" fill="#ffffff"/>
+  </g>
+
+  <g opacity="0.58">
+    <rect x="82" y="74" width="174" height="88" fill="none" stroke="#31f6ff" stroke-opacity="0.42"/>
+    <path d="M104 101 H185 M104 124 H214 M104 147 H160" stroke="#31f6ff" stroke-opacity="0.55" stroke-width="3"/>
+    <rect x="1344" y="246" width="174" height="88" fill="none" stroke="#93ff72" stroke-opacity="0.42"/>
+    <path d="M1366 273 H1448 M1366 296 H1490 M1366 319 H1414" stroke="#93ff72" stroke-opacity="0.55" stroke-width="3"/>
+  </g>
+
+  <g font-family="Inter, Segoe UI, Arial, sans-serif" text-anchor="middle">
+    <text x="800" y="139" fill="#061014" opacity="0.62" font-size="102" font-weight="900" letter-spacing="9">OMNI</text>
+    <text x="800" y="134" fill="url(#title-gradient)" font-size="102" font-weight="900" letter-spacing="9">OMNI</text>
+    <text x="800" y="226" fill="#061014" opacity="0.62" font-size="102" font-weight="800" letter-spacing="12">AGENT</text>
+    <text x="800" y="221" fill="#f7fbff" font-size="102" font-weight="800" letter-spacing="12">AGENT</text>
+  </g>
+
+  <g font-family="Cascadia Mono, Consolas, monospace" font-size="18" fill="#d7ff8a" opacity="0.72">
+    <text x="88" y="214">trace: evidence.locked</text>
+    <text x="88" y="242">tools: governed</text>
+    <text x="1220" y="88">run: reproducible</text>
+    <text x="1220" y="116">claim: backed</text>
+  </g>
+
+  <rect x="18" y="18" width="1564" height="244" fill="none" stroke="#ffffff" stroke-opacity="0.09"/>
+</svg>
