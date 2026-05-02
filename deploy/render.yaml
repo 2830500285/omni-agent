@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: omni-agent-gateway
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: node apps/gateway/dist/index.js
+    healthCheckPath: /health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: OMNI_AGENT_GATEWAY_HOST
+        value: 0.0.0.0
+      - key: OMNI_AGENT_GATEWAY_PORT
+        value: 10000
+      - key: OMNI_AGENT_GATEWAY_ACCESS_TOKEN
+        sync: false
+      - key: OMNI_AGENT_WORKSPACE_ROOT
+        value: /opt/render/project/src/.workspace
+      - key: OMNI_AGENT_STORE_PATH
+        value: /opt/render/project/src/.data/session-store.sqlite
+      - key: OMNI_AGENT_EXECUTION_BACKEND
+        value: local

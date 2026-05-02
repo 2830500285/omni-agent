@@ -1,0 +1,19 @@
+services:
+  omni-agent:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: omni-agent:local
+    command: ["node", "dist/omni-agent.js", "serve", "--cwd", "/workspace", "--storage-root", "/data", "--host", "0.0.0.0", "--port", "4040"]
+    ports:
+      - "4040:4040"
+    environment:
+      OMNI_AGENT_GATEWAY_TOKEN: "${OMNI_AGENT_GATEWAY_TOKEN:-local-dev-token}"
+      OMNI_AGENT_EXECUTION_BACKEND: "${OMNI_AGENT_EXECUTION_BACKEND:-local}"
+      OMNI_AGENT_DOCKER_IMAGE: "${OMNI_AGENT_DOCKER_IMAGE:-}"
+    volumes:
+      - omni-agent-data:/data
+      - "${OMNI_AGENT_WORKSPACE:-..}:/workspace"
+
+volumes:
+  omni-agent-data:

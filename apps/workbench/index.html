@@ -1,0 +1,1854 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Omni Agent Workbench</title>
+    <link rel="icon" href="data:," />
+    <style>
+      :root {
+        color-scheme: dark;
+        --ink: #f3efe7;
+        --ink-dim: #b8b0a3;
+        --ink-faint: #827a6f;
+        --base: #100f0d;
+        --base-2: #171512;
+        --base-3: #211e19;
+        --base-4: #2b271f;
+        --line: #40382b;
+        --line-soft: #2e2a22;
+        --amber: #d8a84e;
+        --green: #71c18a;
+        --blue: #74a8d8;
+        --red: #e06d5f;
+        --violet: #b38bd8;
+        --shadow: 0 18px 54px rgba(0, 0, 0, 0.34);
+        --nav: 264px;
+        --rail: 352px;
+        --top: 60px;
+        --radius: 8px;
+        font-family:
+          "Aptos",
+          "Segoe UI Variable",
+          "Segoe UI",
+          system-ui,
+          sans-serif;
+        background: var(--base);
+        color: var(--ink);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      html,
+      body {
+        height: 100%;
+      }
+
+      body {
+        margin: 0;
+        min-width: 360px;
+        overflow: hidden;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        font: inherit;
+      }
+
+      button,
+      input,
+      select,
+      textarea {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: #12110f;
+        color: var(--ink);
+      }
+
+      button {
+        min-height: 34px;
+        padding: 7px 11px;
+        cursor: pointer;
+      }
+
+      button:hover {
+        border-color: var(--amber);
+        background: #1d1a15;
+      }
+
+      button.primary {
+        border-color: #b8862d;
+        background: #c99338;
+        color: #17110a;
+        font-weight: 700;
+      }
+
+      button.quiet {
+        background: transparent;
+      }
+
+      input,
+      select {
+        min-height: 34px;
+        padding: 7px 9px;
+      }
+
+      textarea {
+        min-height: 112px;
+        padding: 10px;
+        resize: vertical;
+      }
+
+      h1,
+      h2,
+      h3,
+      p {
+        margin: 0;
+      }
+
+      h1 {
+        font-size: 15px;
+        font-weight: 760;
+      }
+
+      h2 {
+        font-size: 13px;
+        font-weight: 760;
+      }
+
+      h3 {
+        color: var(--ink-dim);
+        font-size: 11px;
+        font-weight: 700;
+        text-transform: uppercase;
+      }
+
+      .shell {
+        height: 100vh;
+        height: 100dvh;
+        display: grid;
+        grid-template-columns: var(--nav) minmax(0, 1fr);
+        grid-template-rows: var(--top) minmax(0, 1fr);
+        grid-template-areas:
+          "side top"
+          "side main";
+      }
+
+      .side {
+        grid-area: side;
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-rows: auto auto 1fr auto;
+        border-right: 1px solid var(--line);
+        background:
+          linear-gradient(180deg, rgba(216, 168, 78, 0.09), transparent 28%),
+          #0b0a09;
+      }
+
+      .brand {
+        padding: 16px 14px 14px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .brand-row,
+      .top,
+      .top-left,
+      .top-actions,
+      .row,
+      .panel-head,
+      .item-title,
+      .status-stack {
+        display: flex;
+        align-items: center;
+      }
+
+      .brand-row {
+        gap: 10px;
+      }
+
+      .mark {
+        width: 34px;
+        height: 34px;
+        display: grid;
+        place-items: center;
+        border: 1px solid #806027;
+        border-radius: 8px;
+        background: #21170c;
+        color: var(--amber);
+        font-weight: 800;
+      }
+
+      .muted {
+        color: var(--ink-dim);
+        font-size: 12px;
+      }
+
+      .faint {
+        color: var(--ink-faint);
+        font-size: 12px;
+      }
+
+      .search {
+        padding: 12px;
+        border-bottom: 1px solid var(--line-soft);
+      }
+
+      .search input,
+      .token-input {
+        width: 100%;
+      }
+
+      .nav {
+        overflow: auto;
+        padding: 10px;
+      }
+
+      .nav-section {
+        margin-bottom: 14px;
+      }
+
+      .nav-label {
+        padding: 7px 8px;
+        color: var(--ink-faint);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      .nav-button {
+        width: 100%;
+        display: grid;
+        grid-template-columns: 28px minmax(0, 1fr) auto;
+        gap: 9px;
+        align-items: center;
+        margin: 2px 0;
+        padding: 8px 9px;
+        border-color: transparent;
+        background: transparent;
+        color: var(--ink-dim);
+        text-align: left;
+      }
+
+      .nav-button.active {
+        border-color: #7d632d;
+        background: #1c1710;
+        color: var(--ink);
+      }
+
+      .nav-icon {
+        width: 24px;
+        height: 24px;
+        display: grid;
+        place-items: center;
+        border-radius: 6px;
+        background: #17130d;
+        color: var(--amber);
+        font-size: 10px;
+        font-weight: 800;
+      }
+
+      .nav-count {
+        color: var(--ink-faint);
+        font-size: 11px;
+      }
+
+      .side-foot {
+        padding: 12px;
+        border-top: 1px solid var(--line-soft);
+      }
+
+      .top {
+        grid-area: top;
+        justify-content: space-between;
+        gap: 12px;
+        min-width: 0;
+        border-bottom: 1px solid var(--line);
+        background: rgba(16, 15, 13, 0.9);
+        backdrop-filter: blur(16px);
+        padding: 0 14px;
+      }
+
+      .top-left,
+      .top-actions,
+      .row,
+      .status-stack {
+        gap: 8px;
+        min-width: 0;
+      }
+
+      .top-actions {
+        flex-shrink: 0;
+      }
+
+      .token-input {
+        width: min(280px, 26vw);
+      }
+
+      .main {
+        grid-area: main;
+        min-width: 0;
+        min-height: 0;
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) var(--rail);
+      }
+
+      .stage {
+        min-width: 0;
+        min-height: 0;
+        overflow: auto;
+        padding: 14px;
+        background:
+          linear-gradient(90deg, rgba(216, 168, 78, 0.045) 1px, transparent 1px),
+          linear-gradient(180deg, rgba(216, 168, 78, 0.035) 1px, transparent 1px),
+          var(--base);
+        background-size: 32px 32px;
+      }
+
+      .rail {
+        min-width: 0;
+        min-height: 0;
+        overflow: auto;
+        border-left: 1px solid var(--line);
+        background: #0d0c0a;
+        padding: 12px;
+      }
+
+      .view {
+        display: none;
+      }
+
+      .view.active {
+        display: grid;
+        gap: 12px;
+      }
+
+      .grid-2 {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(340px, 0.72fr);
+        gap: 12px;
+      }
+
+      .grid-even {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .metrics {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(116px, 1fr));
+        gap: 10px;
+      }
+
+      .panel,
+      .metric,
+      .message,
+      .item,
+      .mini-card {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: rgba(28, 25, 20, 0.94);
+        box-shadow: var(--shadow);
+      }
+
+      .panel {
+        min-width: 0;
+        padding: 12px;
+      }
+
+      .panel-head {
+        justify-content: space-between;
+        gap: 10px;
+        min-height: 32px;
+        margin-bottom: 10px;
+      }
+
+      .panel-actions {
+        display: flex;
+        gap: 7px;
+        flex-wrap: wrap;
+      }
+
+      .metric {
+        min-height: 82px;
+        padding: 11px;
+        box-shadow: none;
+      }
+
+      .metric strong {
+        display: block;
+        margin-top: 8px;
+        font-size: 24px;
+        line-height: 1;
+      }
+
+      .metric small {
+        color: var(--ink-faint);
+      }
+
+      .chat-layout {
+        display: grid;
+        grid-template-rows: auto minmax(330px, 1fr) auto;
+        gap: 10px;
+        min-height: 650px;
+      }
+
+      .chat-stream {
+        display: grid;
+        align-content: start;
+        gap: 9px;
+        min-height: 320px;
+        overflow: auto;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius);
+        background: #11100e;
+        padding: 12px;
+      }
+
+      .message {
+        box-shadow: none;
+        padding: 10px 11px;
+      }
+
+      .message.user {
+        border-color: #65512a;
+        background: #19130d;
+      }
+
+      .message.assistant {
+        border-color: #3d5f45;
+        background: #101811;
+      }
+
+      .composer {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) 118px;
+        gap: 9px;
+      }
+
+      .field-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 9px;
+      }
+
+      .field-grid .span {
+        grid-column: 1 / -1;
+      }
+
+      label {
+        display: grid;
+        gap: 5px;
+        color: var(--ink-dim);
+        font-size: 12px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 5px;
+        min-height: 22px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: #12110f;
+        color: var(--ink-dim);
+        padding: 2px 8px;
+        font-size: 11px;
+        white-space: nowrap;
+      }
+
+      .pill.ok {
+        color: var(--green);
+        border-color: #446d4d;
+      }
+
+      .pill.warn {
+        color: var(--amber);
+        border-color: #735826;
+      }
+
+      .pill.fail {
+        color: var(--red);
+        border-color: #7b3b32;
+      }
+
+      .list {
+        display: grid;
+        gap: 8px;
+        max-height: 420px;
+        overflow: auto;
+      }
+
+      .list.tall {
+        max-height: 650px;
+      }
+
+      .item {
+        width: 100%;
+        min-height: 58px;
+        padding: 10px;
+        box-shadow: none;
+        text-align: left;
+      }
+
+      button.item {
+        display: block;
+      }
+
+      .item.active {
+        border-color: var(--amber);
+        background: #241b10;
+      }
+
+      .item-title {
+        justify-content: space-between;
+        gap: 9px;
+        font-weight: 720;
+      }
+
+      .item-title span:first-child {
+        min-width: 0;
+        overflow-wrap: anywhere;
+      }
+
+      .cards {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 9px;
+      }
+
+      .mini-card {
+        min-width: 0;
+        padding: 10px;
+        box-shadow: none;
+      }
+
+      .mini-card .muted {
+        margin-top: 6px;
+        overflow-wrap: anywhere;
+      }
+
+      .timeline {
+        display: grid;
+        gap: 9px;
+      }
+
+      .event {
+        border-left: 2px solid var(--amber);
+        padding: 2px 0 2px 10px;
+      }
+
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        font-size: 13px;
+      }
+
+      th,
+      td {
+        border-bottom: 1px solid var(--line-soft);
+        padding: 8px 6px;
+        text-align: left;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+      }
+
+      th {
+        color: var(--ink-faint);
+        font-size: 11px;
+        text-transform: uppercase;
+      }
+
+      pre {
+        margin: 0;
+        max-height: 520px;
+        overflow: auto;
+        border: 1px solid var(--line-soft);
+        border-radius: var(--radius);
+        background: #0a0908;
+        color: #eee7da;
+        padding: 10px;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+
+      .bar {
+        height: 8px;
+        overflow: hidden;
+        border-radius: 999px;
+        background: #312c23;
+      }
+
+      .bar span {
+        display: block;
+        width: var(--value);
+        height: 100%;
+        background: linear-gradient(90deg, var(--red), var(--amber), var(--green));
+      }
+
+      .rail .panel {
+        box-shadow: none;
+        margin-bottom: 10px;
+      }
+
+      @media (max-width: 1240px) {
+        :root {
+          --nav: 76px;
+        }
+
+        .brand-title,
+        .search,
+        .side-foot,
+        .nav-label,
+        .nav-text,
+        .nav-count {
+          display: none;
+        }
+
+        .nav-button {
+          grid-template-columns: 1fr;
+          place-items: center;
+        }
+
+        .main {
+          grid-template-columns: minmax(0, 1fr);
+        }
+
+        .rail {
+          display: none;
+        }
+      }
+
+      @media (max-width: 880px) {
+        body {
+          overflow: auto;
+        }
+
+        .shell {
+          height: auto;
+          min-height: 100vh;
+          grid-template-columns: 1fr;
+          grid-template-rows: auto auto minmax(0, 1fr);
+          grid-template-areas:
+            "top"
+            "side"
+            "main";
+        }
+
+        .top {
+          min-height: var(--top);
+          flex-wrap: wrap;
+          align-items: stretch;
+          padding: 10px;
+        }
+
+        .top-actions {
+          width: 100%;
+          flex-wrap: wrap;
+        }
+
+        .top-actions > * {
+          flex: 1 1 180px;
+        }
+
+        .side {
+          display: block;
+          border-right: 0;
+          border-bottom: 1px solid var(--line);
+        }
+
+        .brand {
+          display: none;
+        }
+
+        .nav {
+          display: flex;
+          overflow-x: auto;
+          padding: 8px;
+        }
+
+        .nav-section {
+          display: contents;
+        }
+
+        .nav-button {
+          min-width: 122px;
+          grid-template-columns: 24px 1fr;
+        }
+
+        .nav-text {
+          display: block;
+        }
+
+        .stage {
+          overflow: visible;
+        }
+
+        .grid-2,
+        .grid-even,
+        .metrics,
+        .field-grid,
+        .composer {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <aside class="side">
+        <div class="brand">
+          <div class="brand-row">
+            <span class="mark">OA</span>
+            <div class="brand-title">
+              <h1>Omni Agent Workbench</h1>
+              <p class="muted">Local operations console</p>
+            </div>
+          </div>
+        </div>
+        <div class="search">
+          <input id="command-search" placeholder="Filter visible records" />
+        </div>
+        <nav class="nav" aria-label="Workbench navigation">
+          <div class="nav-section">
+            <div class="nav-label">Operate</div>
+            <button class="nav-button active" data-view-target="chat" type="button"><span class="nav-icon">CH</span><span class="nav-text">Chat</span><span class="nav-count" id="nav-runs">0</span></button>
+            <button class="nav-button" data-view-target="overview" type="button"><span class="nav-icon">OV</span><span class="nav-text">Overview</span><span class="nav-count" id="nav-events">0</span></button>
+            <button class="nav-button" data-view-target="agents" type="button"><span class="nav-icon">AG</span><span class="nav-text">Agents</span><span class="nav-count" id="nav-agents">0</span></button>
+            <button class="nav-button" data-view-target="runs" type="button"><span class="nav-icon">RN</span><span class="nav-text">Runs</span><span class="nav-count" id="nav-run-list">0</span></button>
+            <button class="nav-button" data-view-target="subagents" type="button"><span class="nav-icon">SA</span><span class="nav-text">Subagents</span><span class="nav-count" id="nav-subagents">0</span></button>
+            <button class="nav-button" data-view-target="channels" type="button"><span class="nav-icon">RT</span><span class="nav-text">Routes</span><span class="nav-count" id="nav-routes">0</span></button>
+          </div>
+          <div class="nav-section">
+            <div class="nav-label">Assure</div>
+            <button class="nav-button" data-view-target="approvals" type="button"><span class="nav-icon">AP</span><span class="nav-text">Approvals</span><span class="nav-count" id="nav-approvals">0</span></button>
+            <button class="nav-button" data-view-target="models" type="button"><span class="nav-icon">MD</span><span class="nav-text">Models</span><span class="nav-count" id="nav-models">0</span></button>
+            <button class="nav-button" data-view-target="benchmarks" type="button"><span class="nav-icon">QA</span><span class="nav-text">Benchmarks</span><span class="nav-count" id="nav-quality">-</span></button>
+            <button class="nav-button" data-view-target="knowledge" type="button"><span class="nav-icon">KB</span><span class="nav-text">Knowledge</span><span class="nav-count" id="nav-skills">0</span></button>
+            <button class="nav-button" data-view-target="sessions" type="button"><span class="nav-icon">SS</span><span class="nav-text">Sessions</span><span class="nav-count" id="nav-threads">0</span></button>
+            <button class="nav-button" data-view-target="diagnostics" type="button"><span class="nav-icon">DX</span><span class="nav-text">Diagnostics</span><span class="nav-count" id="nav-diagnostics">0</span></button>
+            <button class="nav-button" data-view-target="logs" type="button"><span class="nav-icon">LG</span><span class="nav-text">Logs</span><span class="nav-count" id="nav-audit">0</span></button>
+          </div>
+        </nav>
+        <div class="side-foot">
+          <div class="row">
+            <span class="pill" id="connection-pill">loading</span>
+            <button class="quiet" id="refresh-all" type="button">Refresh</button>
+          </div>
+        </div>
+      </aside>
+
+      <header class="top">
+        <div class="top-left">
+          <span class="faint">Workbench</span>
+          <strong id="active-view-title">Chat</strong>
+          <span class="pill" id="top-status">Loading</span>
+        </div>
+        <div class="top-actions">
+          <select id="workspace-select" title="Workspace"></select>
+          <select id="agent-select" title="Agent"></select>
+          <input class="token-input" id="token" placeholder="Gateway bearer token" autocomplete="off" />
+          <button id="save-token" type="button">Save</button>
+        </div>
+      </header>
+
+      <div class="main">
+        <main class="stage">
+          <section class="view active" id="view-chat">
+            <div class="metrics">
+              <div class="metric"><span class="muted">Agents</span><strong id="metric-agents">0</strong><small id="metric-agents-detail">active registry</small></div>
+              <div class="metric"><span class="muted">Runs</span><strong id="metric-runs">0</strong><small>current thread</small></div>
+              <div class="metric"><span class="muted">Routes</span><strong id="metric-routes">0</strong><small>delivery paths</small></div>
+              <div class="metric"><span class="muted">Quality</span><strong id="metric-quality">n/a</strong><small>latest score</small></div>
+              <div class="metric"><span class="muted">Events</span><strong id="metric-events">0</strong><small>stream buffer</small></div>
+              <div class="metric"><span class="muted">Health</span><strong id="metric-health">...</strong><small>gateway</small></div>
+            </div>
+            <div class="grid-2">
+              <div class="panel chat-layout">
+                <div class="panel-head">
+                  <div>
+                    <h2>Task Console</h2>
+                    <p class="faint" id="task-context">No workspace selected</p>
+                  </div>
+                  <div class="panel-actions">
+                    <select id="run-role">
+                      <option value="">Default role</option>
+                      <option value="coder">Coder</option>
+                      <option value="planner">Planner</option>
+                      <option value="researcher">Researcher</option>
+                      <option value="reviewer">Reviewer</option>
+                      <option value="supervisor">Supervisor</option>
+                      <option value="verifier">Verifier</option>
+                    </select>
+                    <select id="verification-mode">
+                      <option value="">Verification default</option>
+                      <option value="optional">Optional</option>
+                      <option value="required">Required</option>
+                      <option value="disabled">Disabled</option>
+                    </select>
+                  </div>
+                </div>
+                <div class="chat-stream" id="chat-stream">
+                  <article class="message assistant">
+                    <div class="muted">Omni</div>
+                    <div>Gateway connected state will appear here.</div>
+                  </article>
+                </div>
+                <form class="composer" id="run-form">
+                  <textarea id="run-task" required>Inspect this workspace and summarize the next implementation step.</textarea>
+                  <div class="status-stack">
+                    <button class="primary" type="submit">Run</button>
+                    <button id="run-async" type="button">Queue</button>
+                    <span class="pill" id="run-status-pill">idle</span>
+                  </div>
+                </form>
+              </div>
+              <div class="panel">
+                <div class="panel-head">
+                  <h2>Run Detail</h2>
+                  <button class="quiet" id="clear-run-output" type="button">Clear</button>
+                </div>
+                <pre id="run-output"></pre>
+              </div>
+            </div>
+          </section>
+
+          <section class="view" id="view-overview">
+            <div class="metrics">
+              <div class="metric"><span class="muted">Agents</span><strong id="overview-agents">0</strong><small>registered</small></div>
+              <div class="metric"><span class="muted">Profiles</span><strong id="overview-profiles">0</strong><small>capability sets</small></div>
+              <div class="metric"><span class="muted">Routes</span><strong id="overview-routes">0</strong><small>configured</small></div>
+              <div class="metric"><span class="muted">Threads</span><strong id="overview-threads">0</strong><small>history</small></div>
+              <div class="metric"><span class="muted">Skills</span><strong id="overview-skills">0</strong><small>available</small></div>
+              <div class="metric"><span class="muted">Audits</span><strong id="overview-audit">0</strong><small>records</small></div>
+            </div>
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Attention</h2></div><div class="timeline" id="attention-list"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Gateway Health</h2></div><pre id="health-output"></pre></div>
+            </div>
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Recent Runs</h2></div><div class="list" id="overview-runs"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Route Delivery</h2></div><div id="overview-routes-table"></div></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-agents">
+            <div class="grid-2">
+              <div class="panel">
+                <div class="panel-head"><h2>Agents</h2><span class="pill">Agent Profiles</span></div>
+                <form class="field-grid" id="create-agent-form">
+                  <label class="span">Name<input id="new-agent-name" placeholder="Release operator" /></label>
+                  <label class="span">Workspace<select id="new-agent-workspace"></select></label>
+                  <label class="span">Profile<select id="agent-profile-input"></select></label>
+                  <button class="primary span" id="create-agent" type="submit">Create Agent</button>
+                </form>
+                <div class="list tall" id="agents-list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-head"><h2>Agent Detail</h2><button id="copy-agent-id" type="button">Copy ID</button></div>
+                <pre id="agent-detail"></pre>
+              </div>
+            </div>
+            <div class="panel">
+              <div class="panel-head"><h2>Effective Tools</h2><span class="pill" id="tool-count">0 tools</span></div>
+              <div class="cards" id="effective-tools-grid"></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-channels">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Routes</h2></div><div id="routes-table"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Channel Matrix</h2></div><div class="cards" id="channels-grid"></div></div>
+            </div>
+            <div class="panel"><div class="panel-head"><h2>Channel Plugins</h2></div><div class="cards" id="channel-plugins-grid"></div></div>
+            <div class="panel"><div class="panel-head"><h2>Provider Manifests</h2></div><div class="cards" id="providers-grid"></div></div>
+          </section>
+
+          <section class="view" id="view-runs">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Runs</h2><span class="pill">Execution Control</span></div><div class="list tall" id="runs-view-list"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Run Inspector</h2></div><pre id="runs-view-detail"></pre></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-subagents">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Subagents</h2><span class="pill">Pause Resume Interrupt Cancel</span></div><div class="list tall" id="subagents-list"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Subagent Topology</h2></div><pre id="subagent-topology"></pre></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-approvals">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Approvals</h2><span class="pill">Policy and Blocks</span></div><div class="timeline" id="approvals-list"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Approval Diagnostics</h2></div><pre id="approval-diagnostics"></pre></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-models">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Models</h2><span class="pill">Profiles</span></div><div class="cards" id="models-grid"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Auth Profiles</h2></div><div class="cards" id="auth-profiles-grid"></div></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-benchmarks">
+            <div class="grid-2">
+              <div class="panel">
+                <div class="panel-head"><h2>Benchmark Scorecards</h2><select id="quality-profile"></select></div>
+                <div class="list tall" id="evaluation-list"></div>
+              </div>
+              <div class="panel">
+                <div class="panel-head"><h2>Record Quality Snapshot</h2></div>
+                <form class="field-grid" id="quality-form">
+                  <label>Completion %<input id="quality-completion" inputmode="decimal" value="100" /></label>
+                  <label>First pass %<input id="quality-first-pass" inputmode="decimal" value="85" /></label>
+                  <label>Tool reliability %<input id="quality-tools" inputmode="decimal" value="98" /></label>
+                  <label>Overall %<input id="quality-overall" inputmode="decimal" value="92" /></label>
+                  <label class="span">Summary<textarea id="quality-summary">Manual benchmark quality snapshot.</textarea></label>
+                  <button class="primary span" type="submit">Record Scorecard</button>
+                </form>
+              </div>
+            </div>
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Selected Evaluation</h2></div><pre id="evaluation-detail"></pre></div>
+              <div class="panel"><div class="panel-head"><h2>Quality Dimensions</h2></div><div class="timeline" id="quality-dimensions"></div></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-knowledge">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Skills</h2></div><div class="list tall" id="skills-list"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Memory</h2></div><div class="list tall" id="memory-list"></div></div>
+            </div>
+            <div class="panel">
+              <div class="panel-head">
+                <h2>Runtime Surfaces</h2>
+                <button data-skill-promote hidden type="button">Promote Skill</button>
+                <span class="pill">Auth Profiles</span>
+                <span class="pill">Context Engines</span>
+                <span class="pill">Memory Providers</span>
+                <span class="pill">Skill Maintenance</span>
+                <span class="pill">Prompt Templates</span>
+              </div>
+              <pre id="runtime-surfaces"></pre>
+            </div>
+          </section>
+
+          <section class="view" id="view-sessions">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Threads</h2></div><div class="list tall" id="threads-list"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Runs</h2></div><div class="list tall" id="runs-list"></div></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-diagnostics">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Diagnostics</h2><span class="pill">Gateway Models MCP Memory Channels</span></div><pre id="diagnostics-output"></pre></div>
+              <div class="panel"><div class="panel-head"><h2>Control Surface</h2></div><pre id="control-surface"></pre></div>
+            </div>
+          </section>
+
+          <section class="view" id="view-logs">
+            <div class="grid-even">
+              <div class="panel"><div class="panel-head"><h2>Event Stream</h2></div><div class="timeline" id="events-list"></div></div>
+              <div class="panel"><div class="panel-head"><h2>Audit</h2></div><pre id="audit"></pre></div>
+            </div>
+          </section>
+        </main>
+
+        <aside class="rail">
+          <div class="panel">
+            <div class="panel-head"><h2>Inspector</h2><span class="pill" id="inspector-kind">state</span></div>
+            <pre id="inspector-output"></pre>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>Run Queue</h2></div>
+            <div class="timeline" id="queue-preview"></div>
+          </div>
+          <div class="panel">
+            <div class="panel-head"><h2>Raw State</h2></div>
+            <pre id="raw-state"></pre>
+          </div>
+        </aside>
+      </div>
+    </div>
+
+    <script>
+      const requiresToken = __OMNI_REQUIRES_TOKEN__;
+      const state = {
+        health: null,
+        workspaces: [],
+        agents: [],
+        profiles: [],
+        routes: [],
+        channels: [],
+        providers: [],
+        channelPlugins: [],
+        operatorState: null,
+        runs: [],
+        threads: [],
+        skills: [],
+        memories: [],
+        authProfiles: [],
+        contextEngines: [],
+        memoryProviders: [],
+        automations: [],
+        auditLogs: [],
+        events: [],
+        evaluations: [],
+        selectedAgentId: "",
+        selectedEvaluationId: "",
+        activeView: "chat",
+      };
+
+      const $ = (id) => document.getElementById(id);
+      const tokenInput = $("token");
+      let eventSource = null;
+      tokenInput.value = localStorage.getItem("omni.gatewayToken") || "";
+      tokenInput.hidden = !requiresToken;
+      $("save-token").hidden = !requiresToken;
+      $("save-token").addEventListener("click", () => {
+        localStorage.setItem("omni.gatewayToken", tokenInput.value.trim());
+        connectEventStream();
+        void refresh();
+      });
+      $("refresh-all").addEventListener("click", () => void refresh());
+      $("clear-run-output").addEventListener("click", () => putJson("run-output", null));
+      $("run-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        void submitRun(false);
+      });
+      $("run-async").addEventListener("click", () => void submitRun(true));
+      $("create-agent-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        void createAgent();
+      });
+      $("quality-form").addEventListener("submit", (event) => {
+        event.preventDefault();
+        void recordQualitySnapshot();
+      });
+      $("quality-profile").addEventListener("change", () => void refreshEvaluations());
+      $("agent-select").addEventListener("change", () => {
+        state.selectedAgentId = $("agent-select").value;
+        void refreshAgentDetail();
+      });
+      $("workspace-select").addEventListener("change", () => updateTaskContext());
+      $("copy-agent-id").addEventListener("click", () => {
+        if (state.selectedAgentId) void navigator.clipboard.writeText(state.selectedAgentId);
+      });
+      $("command-search").addEventListener("input", () => renderSearchFilter());
+      document.querySelectorAll("[data-view-target]").forEach((button) => {
+        button.addEventListener("click", () => switchView(button.dataset.viewTarget));
+      });
+      document.addEventListener("click", (event) => {
+        const target = event.target;
+        if (!(target instanceof HTMLElement)) return;
+        const agentSelectId = target.dataset.agentSelect;
+        if (agentSelectId) {
+          void selectAgent(agentSelectId);
+          return;
+        }
+        const agentModelApplyId = target.dataset.agentModelApply;
+        if (agentModelApplyId) {
+          void switchAgentModelProfile(agentModelApplyId);
+          return;
+        }
+        const deliveryId = target.dataset.deliveryRetry;
+        if (deliveryId) void retryDelivery(deliveryId);
+        const subagentId = target.dataset.subagentId;
+        const subagentAction = target.dataset.subagentAction;
+        if (subagentId && subagentAction) void controlSubagent(subagentId, subagentAction);
+      });
+
+      async function api(path, options = {}) {
+        const headers = { ...(options.headers || {}) };
+        const token = localStorage.getItem("omni.gatewayToken") || "";
+        if (token) headers.authorization = "Bearer " + token;
+        const response = await fetch(path, { ...options, headers });
+        if (!response.ok) throw new Error(path + " -> " + response.status);
+        return response.json();
+      }
+
+      async function optionalApi(path, fallback) {
+        try {
+          return await api(path);
+        } catch {
+          return fallback;
+        }
+      }
+
+      function postJson(path, body) {
+        return api(path, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+
+      function patchJson(path, body) {
+        return api(path, {
+          method: "PATCH",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        });
+      }
+
+      function setStatus(text, kind = "warn") {
+        $("top-status").textContent = text;
+        $("top-status").className = "pill " + kind;
+        $("connection-pill").textContent = text;
+        $("connection-pill").className = "pill " + kind;
+      }
+
+      function switchView(view) {
+        state.activeView = view;
+        document.querySelectorAll("[data-view-target]").forEach((entry) => entry.classList.remove("active"));
+        document.querySelectorAll('[data-view-target="' + view + '"]').forEach((entry) => entry.classList.add("active"));
+        document.querySelectorAll(".view").forEach((entry) => entry.classList.remove("active"));
+        $("view-" + view).classList.add("active");
+        $("active-view-title").textContent = view[0].toUpperCase() + view.slice(1);
+        putJson("inspector-output", buildInspectorState());
+      }
+
+      async function refresh() {
+        setStatus("Refreshing", "warn");
+        try {
+          const [
+            health,
+            workspaces,
+            agents,
+            profiles,
+            routes,
+            channels,
+            providers,
+            channelPlugins,
+            operatorState,
+            threads,
+            skills,
+            memories,
+            auth,
+            contextEngines,
+            memoryProviders,
+            automations,
+            audit,
+            events,
+          ] = await Promise.all([
+            api("/health"),
+            optionalApi("/workspaces", { workspaces: [] }),
+            optionalApi("/agents", { agents: [] }),
+            optionalApi("/agent-profiles", { profiles: [] }),
+            optionalApi("/routes", { routes: [] }),
+            optionalApi("/channel-capabilities", { channels: [] }),
+            optionalApi("/channel-providers", { providers: [] }),
+            optionalApi("/channel-plugins", { plugins: [] }),
+            optionalApi("/operator-state?eventLimit=50", null),
+            optionalApi("/threads", { threads: [] }),
+            optionalApi("/skills", { skills: [] }),
+            optionalApi("/memories", { memories: [] }),
+            optionalApi("/auth-profiles", { authProfiles: [] }),
+            optionalApi("/context-engines", { contextEngines: [] }),
+            optionalApi("/memory-providers", { memoryProviders: [] }),
+            optionalApi("/automations", { automations: [] }),
+            optionalApi("/audit-logs", { auditLogs: [] }),
+            optionalApi("/events/history?limit=30", { events: [] }),
+          ]);
+
+          Object.assign(state, {
+            health,
+            workspaces: workspaces.workspaces || [],
+            agents: agents.agents || [],
+            profiles: profiles.profiles || [],
+            routes: routes.routes || [],
+            channels: channels.channels || [],
+            providers: providers.providers || [],
+            channelPlugins: channelPlugins.plugins || [],
+            operatorState,
+            threads: threads.threads || [],
+            skills: skills.skills || [],
+            memories: memories.memories || [],
+            authProfiles: auth.authProfiles || [],
+            contextEngines: contextEngines.contextEngines || [],
+            memoryProviders: memoryProviders.memoryProviders || [],
+            automations: automations.automations || [],
+            auditLogs: audit.auditLogs || [],
+            events: events.events || [],
+          });
+          const firstThreadId = state.threads[0]?.id;
+          state.runs = firstThreadId ? (await optionalApi("/runs?threadId=" + encodeURIComponent(firstThreadId), { runs: [] })).runs || [] : [];
+          render();
+          await refreshEvaluations();
+          await refreshAgentDetail();
+          setStatus("Connected", "ok");
+        } catch (error) {
+          setStatus(String(error), "fail");
+        }
+      }
+
+      function render() {
+        $("nav-agents").textContent = state.agents.length;
+        $("nav-runs").textContent = state.runs.length;
+        $("nav-run-list").textContent = state.runs.length;
+        $("nav-subagents").textContent = (state.operatorState?.operations?.subagents || []).length;
+        $("nav-routes").textContent = state.routes.length;
+        $("nav-events").textContent = state.events.length;
+        $("nav-skills").textContent = state.skills.length;
+        $("nav-threads").textContent = state.threads.length;
+        $("nav-audit").textContent = state.auditLogs.length;
+        $("nav-approvals").textContent = countApprovalItems();
+        $("nav-models").textContent = state.profiles.length;
+        $("nav-diagnostics").textContent = countDiagnosticItems();
+        $("metric-agents").textContent = state.agents.length;
+        $("metric-runs").textContent = state.runs.length;
+        $("metric-routes").textContent = state.routes.length;
+        $("metric-quality").textContent = latestQualityLabel();
+        $("metric-events").textContent = state.events.length;
+        $("metric-health").textContent = state.health?.ok ? "ok" : "fail";
+        $("overview-agents").textContent = state.agents.length;
+        $("overview-profiles").textContent = state.profiles.length;
+        $("overview-routes").textContent = state.routes.length;
+        $("overview-threads").textContent = state.threads.length;
+        $("overview-skills").textContent = state.skills.length;
+        $("overview-audit").textContent = state.auditLogs.length;
+        putJson("health-output", state.health);
+        putJson("audit", state.auditLogs);
+        putJson("raw-state", state);
+        putJson("inspector-output", buildInspectorState());
+        putJson("runtime-surfaces", {
+          authProfiles: state.authProfiles,
+          contextEngines: state.contextEngines,
+          memoryProviders: state.memoryProviders,
+          automations: state.automations,
+          diagnostics: state.operatorState?.diagnostics || null,
+          controls: state.operatorState?.controls || null,
+        });
+        optionList("workspace-select", state.workspaces, (entry) => entry.cwd || "", (entry) => shortPath(entry.cwd || entry.id));
+        optionList("new-agent-workspace", state.workspaces, (entry) => entry.cwd || "", (entry) => entry.cwd || entry.id, false);
+        optionList("agent-select", state.agents, (entry) => entry.id, (entry) => entry.name || entry.id);
+        optionList("agent-profile-input", state.profiles, (entry) => entry.id, (entry) => entry.name || entry.id);
+        optionList("quality-profile", state.profiles, (entry) => entry.id, (entry) => entry.name || entry.id, false);
+        updateTaskContext();
+        renderAgents();
+        renderTools([]);
+        renderRoutes();
+        renderChannels();
+        renderProviders();
+        renderKnowledge();
+        renderSessions();
+        renderRunsView();
+        renderSubagents();
+        renderApprovals();
+        renderModels();
+        renderDiagnostics();
+        renderEvents();
+        renderAttention();
+        renderOverviewLists();
+        renderQueuePreview();
+      }
+
+      function buildInspectorState() {
+        return {
+          selectedAgentId: state.selectedAgentId,
+          selectedEvaluationId: state.selectedEvaluationId,
+          activeView: state.activeView,
+          totals: {
+            agents: state.agents.length,
+            routes: state.routes.length,
+            channels: state.channels.length,
+            runs: state.runs.length,
+            subagents: (state.operatorState?.operations?.subagents || []).length,
+            threads: state.threads.length,
+            skills: state.skills.length,
+          },
+        };
+      }
+
+      async function refreshAgentDetail() {
+        if (!state.selectedAgentId && state.agents[0]) state.selectedAgentId = state.agents[0].id;
+        if (!state.selectedAgentId) {
+          putJson("agent-detail", null);
+          renderTools([]);
+          return;
+        }
+        const [detail, tools] = await Promise.all([
+          optionalApi("/agents/" + encodeURIComponent(state.selectedAgentId), null),
+          optionalApi("/agents/" + encodeURIComponent(state.selectedAgentId) + "/effective-tools", { tools: [] }),
+        ]);
+        putJson("agent-detail", detail);
+        putJson("inspector-output", detail);
+        renderTools(tools.tools || tools.effectiveTools || []);
+      }
+
+      async function refreshEvaluations() {
+        const profileId = $("quality-profile").value || state.profiles[0]?.id || "";
+        if (!profileId) return;
+        $("quality-profile").value = profileId;
+        const payload = await optionalApi("/agent-profiles/" + encodeURIComponent(profileId) + "/evaluations", { evaluations: [] });
+        state.evaluations = payload.evaluations || [];
+        $("metric-quality").textContent = latestQualityLabel();
+        $("nav-quality").textContent = state.evaluations.length;
+        listItems("evaluation-list", state.evaluations, (evaluation) => {
+          const button = itemButton(evaluation.suiteTitle || evaluation.id, evaluation.summary || "", scorePill(evaluation));
+          button.addEventListener("click", () => selectEvaluation(evaluation));
+          return button;
+        });
+        selectEvaluation(state.evaluations[0] || null);
+      }
+
+      function selectEvaluation(evaluation) {
+        state.selectedEvaluationId = evaluation?.id || "";
+        putJson("evaluation-detail", evaluation);
+        if (evaluation) putJson("inspector-output", evaluation);
+        renderQualityDimensions(evaluation);
+      }
+
+      function renderAgents() {
+        listItems("agents-list", state.agents, (agent) => {
+          const node = document.createElement("div");
+          node.className = "item" + (agent.id === state.selectedAgentId ? " active" : "");
+          const modelProfiles = state.operatorState?.diagnostics?.modelProfiles || [];
+          const options = ['<option value="">Default model</option>']
+            .concat(modelProfiles.map((profile) =>
+              '<option value="' + escapeHtml(profile.id || "") + '"' +
+              (profile.id === agent.defaultModelProfileId ? " selected" : "") +
+              '>' + escapeHtml((profile.id || "model") + " / " + (profile.apiKeyStatus || profile.health || "unknown")) + '</option>'
+            ))
+            .join("");
+          node.innerHTML =
+            '<div class="item-title"><span>' + escapeHtml(agent.name || agent.id) + '</span>' + statusPill(agent.status) + '</div>' +
+            '<div class="muted">' + escapeHtml(shortPath(agent.cwd || "")) + '</div>' +
+            '<div class="muted">model=' + escapeHtml(agent.defaultModelProfileId || "default") + '</div>' +
+            '<div class="panel-actions">' +
+            '<button type="button" data-agent-select="' + escapeHtml(agent.id) + '">Select</button>' +
+            '<select data-agent-model-for="' + escapeHtml(agent.id) + '">' + options + '</select>' +
+            '<button type="button" data-agent-model-apply="' + escapeHtml(agent.id) + '">Switch Model</button>' +
+            '</div>';
+          return node;
+        });
+      }
+
+      function renderTools(tools) {
+        $("tool-count").textContent = tools.length + " tools";
+        const host = $("effective-tools-grid");
+        host.innerHTML = "";
+        if (!tools.length) {
+          host.innerHTML = '<div class="muted">No effective tool data.</div>';
+          return;
+        }
+        for (const tool of tools) {
+          const card = document.createElement("div");
+          card.className = "mini-card";
+          card.innerHTML = '<div class="item-title"><span>' + escapeHtml(tool.name || tool.toolName || "tool") + '</span><span class="pill">' + escapeHtml(tool.riskHint || tool.risk || "") + '</span></div><div class="muted">' + escapeHtml(tool.description || tool.inputHint || "") + '</div>';
+          host.append(card);
+        }
+      }
+
+      function renderRoutes() {
+        const rows = state.routes.map((route) => [
+          route.title || route.id,
+          route.channelType || "",
+          route.adapterType || "",
+          route.plugin?.authHealth || route.dmPolicy || route.security?.dmPolicy || "",
+        ]);
+        $("routes-table").innerHTML = renderTable(["Title", "Channel", "Adapter", "Plugin/Auth"], rows);
+        $("overview-routes-table").innerHTML = renderTable(["Route", "Adapter", "Policy"], rows.slice(0, 8).map((row) => [row[0], row[2], row[3]]));
+      }
+
+      function renderChannels() {
+        const host = $("channels-grid");
+        host.innerHTML = "";
+        for (const channel of state.channels) {
+          const card = document.createElement("div");
+          card.className = "mini-card";
+          card.innerHTML = '<div class="item-title"><span>' + escapeHtml(channel.channelType) + '</span><span class="pill ' + (channel.supportsInbound && channel.supportsOutbound ? "ok" : "warn") + '">' + (channel.supportsInbound ? "in" : "-") + "/" + (channel.supportsOutbound ? "out" : "-") + '</span></div><div class="muted">signature=' + yesNo(channel.requiresSignatureVerification) + " voice=" + yesNo(channel.supportsVoice) + " media=" + yesNo(channel.supportsMedia) + "</div>";
+          host.append(card);
+        }
+      }
+
+      function renderProviders() {
+        const pluginHost = $("channel-plugins-grid");
+        pluginHost.innerHTML = "";
+        for (const plugin of state.channelPlugins) {
+          const status = plugin.status || {};
+          const card = document.createElement("div");
+          card.className = "mini-card";
+          card.innerHTML = '<div class="item-title"><span>' + escapeHtml(plugin.meta?.name || plugin.id) + '</span><span class="pill ' + (status.configured ? "ok" : "warn") + '">' + escapeHtml(status.authHealth || "missing") + '</span></div><div class="muted">routes=' + escapeHtml(String(status.routeCount || 0)) + " failures=" + escapeHtml(String(status.deliveryFailures || 0)) + " auth=" + escapeHtml((status.activeAuthModes || []).join(", ") || "none") + '</div><div class="muted">missing: ' + escapeHtml((status.missingSecrets || []).join(", ") || "none") + '</div>';
+          pluginHost.append(card);
+        }
+        const host = $("providers-grid");
+        host.innerHTML = "";
+        for (const provider of state.providers) {
+          const secrets = provider.auth?.requiredSecrets || [];
+          const nativeSender = provider.outbound?.nativeSender ? "native sender" : "webhook";
+          const card = document.createElement("div");
+          card.className = "mini-card";
+          card.innerHTML = '<div class="item-title"><span>' + escapeHtml(provider.displayName || provider.channelType) + '</span><span class="pill">' + escapeHtml(provider.channelType) + '</span></div><div class="muted">' + escapeHtml(nativeSender) + '</div><div class="muted">secrets: ' + escapeHtml(secrets.join(", ") || "none") + '</div>';
+          host.append(card);
+        }
+      }
+
+      function renderKnowledge() {
+        listItems("skills-list", state.skills.slice(0, 80), (skill) => plainItem(skill.title || skill.name || skill.id, skill.summary || skill.description || ""));
+        listItems("memory-list", state.memories.slice(0, 80), (memory) => plainItem(memory.content || memory.summary || memory.id, (memory.tags || []).join(", ")));
+      }
+
+      function renderSessions() {
+        listItems("threads-list", state.threads, (thread) => plainItem(thread.title || thread.id, thread.updatedAt || thread.createdAt || ""));
+        listItems("runs-list", state.runs, (run) => {
+          const button = itemButton(run.objective || run.id, run.id || "", statusPill(run.status));
+          button.addEventListener("click", async () => {
+            const detail = await optionalApi("/runs/" + encodeURIComponent(run.id), run);
+            putJson("run-output", detail);
+            putJson("inspector-output", detail);
+            switchView("chat");
+          });
+          return button;
+        });
+      }
+
+      function renderRunsView() {
+        listItems("runs-view-list", state.runs, (run) => {
+          const button = itemButton(run.objective || run.id, run.id || "", statusPill(run.status));
+          button.addEventListener("click", async () => {
+            const detail = await optionalApi("/runs/" + encodeURIComponent(run.id), run);
+            putJson("runs-view-detail", detail);
+            putJson("inspector-output", detail);
+          });
+          return button;
+        });
+      }
+
+      function renderSubagents() {
+        const subagents = state.operatorState?.operations?.subagents || [];
+        putJson("subagent-topology", state.operatorState?.operations?.subagentTopology || null);
+        listItems("subagents-list", subagents, (subagent) => {
+          const node = document.createElement("div");
+          node.className = "item";
+          const controls = ["queued", "running", "paused"].includes(subagent.status)
+            ? '<div class="panel-actions">' +
+              '<button type="button" data-subagent-id="' + escapeHtml(subagent.id) + '" data-subagent-action="pause">Pause</button>' +
+              '<button type="button" data-subagent-id="' + escapeHtml(subagent.id) + '" data-subagent-action="resume">Resume</button>' +
+              '<button type="button" data-subagent-id="' + escapeHtml(subagent.id) + '" data-subagent-action="interrupt">Interrupt</button>' +
+              '<button type="button" data-subagent-id="' + escapeHtml(subagent.id) + '" data-subagent-action="cancel">Cancel</button>' +
+              '</div>'
+            : "";
+          node.innerHTML = '<div class="item-title"><span>' + escapeHtml(subagent.objective || subagent.id) + '</span>' + statusPill(subagent.status) + '</div><div class="muted">id=' + escapeHtml(subagent.id || "") + " role=" + escapeHtml(subagent.role || "default") + " depth=" + escapeHtml(String(subagent.depth ?? "n/a")) + " authority=" + escapeHtml(subagent.authority || "n/a") + '</div>' + controls;
+          return node;
+        });
+      }
+
+      function renderApprovals() {
+        const events = state.events.filter((event) => {
+          const type = String(event.type || "").toLowerCase();
+          const data = JSON.stringify(event.data || {}).toLowerCase();
+          return type.includes("approval") || data.includes("approvalclass") || data.includes("blocked");
+        });
+        putJson("approval-diagnostics", {
+          policy: state.operatorState?.diagnostics?.gateway?.approvalPolicy || "runtime default",
+          controls: state.operatorState?.controls || null,
+          recentApprovalEvents: events.slice(0, 20),
+        });
+        listItems("approvals-list", events.slice(0, 50), (event) => {
+          const node = document.createElement("div");
+          node.className = "event";
+          node.innerHTML = '<div class="item-title"><span>' + escapeHtml(event.type || "approval") + '</span><span class="faint">' + escapeHtml(event.at || "") + '</span></div><div class="muted">' + escapeHtml(JSON.stringify(event.data || {}).slice(0, 260)) + '</div>';
+          return node;
+        });
+      }
+
+      function renderModels() {
+        const diagnostics = state.operatorState?.diagnostics || {};
+        renderMiniCards("models-grid", diagnostics.modelProfiles || state.profiles, (profile) => ({
+          title: profile.id || profile.name || "model",
+          pill: profile.apiKeyStatus || profile.health || profile.protocol || "",
+          detail: (profile.model || profile.defaultModelProfileId || "model n/a") + " " +
+            (profile.baseUrl ? "baseUrl=" + profile.baseUrl : "") + " " +
+            (profile.apiKeyEnv ? "apiKeyEnv=" + profile.apiKeyEnv : "") + " " +
+            (profile.unavailableReason || ""),
+        }));
+        renderMiniCards("auth-profiles-grid", state.authProfiles, (profile) => ({
+          title: profile.profileId || profile.id || "auth",
+          pill: profile.status || profile.health || "unknown",
+          detail: "successes=" + (profile.successCount ?? 0) + " failures=" + (profile.failureCount ?? 0) +
+            " lastSuccess=" + (profile.lastSuccessAt || "n/a") + " lastFailure=" + (profile.lastFailureAt || "n/a"),
+        }));
+      }
+
+      function renderDiagnostics() {
+        putJson("diagnostics-output", state.operatorState?.diagnostics || null);
+        putJson("control-surface", state.operatorState?.controls || null);
+      }
+
+      function renderEvents() {
+        const renderEvent = (event) => {
+          const node = document.createElement("div");
+          node.className = "event";
+          node.innerHTML = '<div class="item-title"><span>' + escapeHtml(event.type || "event") + '</span><span class="faint">' + escapeHtml(event.at || "") + '</span></div><div class="muted">' + escapeHtml(JSON.stringify(event.data || event.payload || {}).slice(0, 240)) + '</div>';
+          return node;
+        };
+        listItems("events-list", state.events, renderEvent);
+      }
+
+      function renderAttention() {
+        const items = [];
+        if (!state.health?.ok) items.push(["Gateway health", "Health endpoint did not return ok.", "fail"]);
+        if (!state.agents.length) items.push(["No agents", "Agent registry is empty.", "warn"]);
+        if (!state.routes.length) items.push(["No routes", "No channel route is configured.", "warn"]);
+        if (!state.evaluations.length) items.push(["No benchmark scorecard", "No profile quality snapshot is present.", "warn"]);
+        for (const delivery of state.operatorState?.operations?.deliveries || []) {
+          if (delivery.status === "failed") items.push(["Failed delivery", delivery.id, "fail", delivery.id]);
+        }
+        if (!items.length) items.push(["No attention items", "Gateway state is clean.", "ok"]);
+        const host = $("attention-list");
+        host.innerHTML = "";
+        for (const [title, detail, kind, deliveryId] of items) {
+          const node = document.createElement("div");
+          node.className = "event";
+          node.innerHTML = '<div class="item-title"><span>' + escapeHtml(title) + '</span><span class="pill ' + kind + '">' + kind + '</span></div><div class="muted">' + escapeHtml(detail) + '</div>' + (deliveryId ? '<div class="panel-actions"><button type="button" data-delivery-retry="' + escapeHtml(deliveryId) + '">Retry</button></div>' : "");
+          host.append(node);
+        }
+      }
+
+      function renderOverviewLists() {
+        listItems("overview-runs", state.runs.slice(0, 8), (run) => plainItem(run.objective || run.id, run.status || ""));
+      }
+
+      function renderQueuePreview() {
+        const jobs = state.operatorState?.operations?.jobs || [];
+        const subagents = state.operatorState?.operations?.subagents || [];
+        const entries = [
+          ...jobs.slice(0, 4).map((job) => ({ kind: "job", entry: job })),
+          ...subagents.slice(0, 4).map((subagent) => ({ kind: "subagent", entry: subagent })),
+          ...state.runs.slice(0, 4).map((run) => ({ kind: "run", entry: run })),
+        ].slice(0, 8);
+        listItems("queue-preview", entries, (item) => {
+          const run = item.entry;
+          const node = document.createElement("div");
+          node.className = "event";
+          const controls = item.kind === "subagent" && ["queued", "running", "paused"].includes(run.status)
+            ? '<div class="panel-actions">' +
+              '<button type="button" data-subagent-id="' + escapeHtml(run.id) + '" data-subagent-action="pause">Pause</button>' +
+              '<button type="button" data-subagent-id="' + escapeHtml(run.id) + '" data-subagent-action="resume">Resume</button>' +
+              '<button type="button" data-subagent-id="' + escapeHtml(run.id) + '" data-subagent-action="cancel">Cancel</button>' +
+              '</div>'
+            : "";
+          node.innerHTML = '<div class="item-title"><span>' + escapeHtml(item.kind + ": " + (run.objective || run.request?.task || run.id || "run")) + '</span>' + statusPill(run.status) + '</div><div class="muted">' + escapeHtml(run.id || "") + '</div>' + controls;
+          return node;
+        });
+      }
+
+      function connectEventStream() {
+        if (eventSource) {
+          eventSource.close();
+          eventSource = null;
+        }
+        const token = localStorage.getItem("omni.gatewayToken") || "";
+        const path = "/events" + (token ? "?token=" + encodeURIComponent(token) : "");
+        eventSource = new EventSource(path);
+        const eventTypes = [
+          "ready",
+          "run.started",
+          "run.completed",
+          "run.failed",
+          "tool.started",
+          "tool.completed",
+          "tool.blocked",
+          "approval.required",
+          "subagent.started",
+          "subagent.completed",
+          "subagent.failed",
+          "subagent.control",
+          "delivery.queued",
+          "delivery.delivered",
+          "delivery.failed",
+          "model.fallback",
+          "profile.evaluated",
+          "job.queued",
+          "job.completed",
+          "job.failed",
+        ];
+        for (const type of eventTypes) {
+          eventSource.addEventListener(type, (event) => ingestRealtimeEvent(type, event.data));
+        }
+        eventSource.onerror = () => setStatus("Event stream reconnecting", "warn");
+      }
+
+      function ingestRealtimeEvent(type, rawData) {
+        let payload = {};
+        try {
+          payload = JSON.parse(rawData || "{}");
+        } catch {
+          payload = { data: rawData };
+        }
+        const event = payload.type && payload.at ? payload : { type, at: new Date().toISOString(), data: payload };
+        state.events = [event, ...state.events.filter((entry) => entry.type !== event.type || entry.at !== event.at)].slice(0, 100);
+        $("nav-events").textContent = state.events.length;
+        $("metric-events").textContent = state.events.length;
+        renderEvents();
+        renderApprovals();
+      }
+
+      function renderQualityDimensions(evaluation) {
+        const host = $("quality-dimensions");
+        host.innerHTML = "";
+        const dimensions = evaluation?.dimensions || evaluation?.scorecard?.dimensions || [];
+        if (!dimensions.length) {
+          host.innerHTML = '<div class="muted">No dimension data.</div>';
+          return;
+        }
+        for (const dimension of dimensions) {
+          const score = typeof dimension.score === "number" ? dimension.score : 0;
+          const node = document.createElement("div");
+          node.className = "event";
+          node.innerHTML = '<div class="item-title"><span>' + escapeHtml(dimension.label || dimension.id || "dimension") + '</span><span class="pill">' + Math.round(score * 100) + '%</span></div><div class="bar" style="--value: ' + Math.round(score * 100) + '%"><span></span></div>';
+          host.append(node);
+        }
+      }
+
+      async function submitRun(asyncMode) {
+        const task = $("run-task").value.trim();
+        if (!task) return;
+        appendChat("user", task);
+        $("run-status-pill").textContent = asyncMode ? "queued" : "running";
+        $("run-status-pill").className = "pill warn";
+        const body = {
+          task,
+          cwd: $("workspace-select").value || undefined,
+          agentId: $("agent-select").value || undefined,
+          role: $("run-role").value || undefined,
+          verificationMode: $("verification-mode").value || undefined,
+          async: asyncMode,
+        };
+        const result = await postJson("/runs", body);
+        putJson("run-output", result);
+        putJson("inspector-output", result);
+        appendChat("assistant", summarizeRunResult(result));
+        const status = result.run?.status || result.job?.status || "done";
+        $("run-status-pill").textContent = status;
+        $("run-status-pill").className = "pill " + statusClass(status);
+        await refresh();
+      }
+
+      async function createAgent() {
+        const body = {
+          name: $("new-agent-name").value.trim(),
+          cwd: $("new-agent-workspace").value,
+          capabilityProfileId: $("agent-profile-input").value || undefined,
+        };
+        if (!body.name || !body.cwd) {
+          setStatus("Agent requires name and workspace", "fail");
+          return;
+        }
+        await postJson("/agents", body);
+        $("new-agent-name").value = "";
+        await refresh();
+        switchView("agents");
+      }
+
+      async function recordQualitySnapshot() {
+        const profileId = $("quality-profile").value || state.profiles[0]?.id;
+        if (!profileId) return;
+        const overall = pct("quality-overall");
+        await postJson("/agent-profiles/" + encodeURIComponent(profileId) + "/evaluations", {
+          suiteTitle: "Workbench benchmark quality snapshot",
+          categories: ["coding_fix", "memory_recall", "route_handling", "long_context_modification"],
+          metrics: {
+            completionRate: pct("quality-completion"),
+            firstPassRate: pct("quality-first-pass"),
+            toolReliabilityRate: pct("quality-tools"),
+          },
+          scores: { overall },
+          passed: overall >= 0.8,
+          summary: $("quality-summary").value.trim(),
+        });
+        await refreshEvaluations();
+      }
+
+      async function retryDelivery(deliveryId) {
+        const result = await postJson("/deliveries/" + encodeURIComponent(deliveryId) + "/retry", {});
+        putJson("inspector-output", result);
+        await refresh();
+      }
+
+      async function controlSubagent(jobId, action) {
+        const result = await postJson("/subagents/" + encodeURIComponent(jobId) + "/" + encodeURIComponent(action), {});
+        putJson("inspector-output", result);
+        await refresh();
+      }
+
+      async function selectAgent(agentId) {
+        state.selectedAgentId = agentId;
+        $("agent-select").value = agentId;
+        renderAgents();
+        await refreshAgentDetail();
+      }
+
+      async function switchAgentModelProfile(agentId) {
+        const select = [...document.querySelectorAll("[data-agent-model-for]")]
+          .find((entry) => entry.dataset.agentModelFor === agentId);
+        if (!select) return;
+        const result = await patchJson("/agents/" + encodeURIComponent(agentId), {
+          defaultModelProfileId: select.value || null,
+        });
+        putJson("inspector-output", result);
+        await refresh();
+      }
+
+      function updateTaskContext() {
+        $("task-context").textContent = shortPath($("workspace-select").value || state.workspaces[0]?.cwd || "No workspace selected");
+      }
+
+      function renderSearchFilter() {
+        const query = $("command-search").value.trim().toLowerCase();
+        document.querySelectorAll(".item, .mini-card, .event").forEach((item) => {
+          item.hidden = Boolean(query) && !item.textContent.toLowerCase().includes(query);
+        });
+      }
+
+      function appendChat(kind, text) {
+        const node = document.createElement("article");
+        node.className = "message " + (kind === "user" ? "user" : "assistant");
+        node.innerHTML = '<div class="muted">' + (kind === "user" ? "You" : "Omni") + '</div><div>' + escapeHtml(text) + '</div>';
+        $("chat-stream").append(node);
+        $("chat-stream").scrollTop = $("chat-stream").scrollHeight;
+      }
+
+      function summarizeRunResult(result) {
+        if (result.accepted) return "Run queued. Job ID: " + (result.job?.id || "unknown");
+        const status = result.run?.status || "completed";
+        const verification = result.verification?.status ? " Verification: " + result.verification.status + "." : "";
+        return "Run " + status + "." + verification;
+      }
+
+      function putJson(id, value) {
+        $(id).textContent = JSON.stringify(value, null, 2);
+      }
+
+      function optionList(id, items, getValue, getLabel, includeBlank = true) {
+        const select = $(id);
+        const current = select.value;
+        select.innerHTML = includeBlank ? '<option value="">Default</option>' : "";
+        for (const item of items) {
+          const option = document.createElement("option");
+          option.value = getValue(item);
+          option.textContent = getLabel(item);
+          select.append(option);
+        }
+        if ([...select.options].some((option) => option.value === current)) select.value = current;
+      }
+
+      function listItems(id, items, render) {
+        const host = $(id);
+        host.innerHTML = "";
+        if (!items.length) {
+          host.innerHTML = '<div class="muted">No records.</div>';
+          return;
+        }
+        for (const item of items) host.append(render(item));
+      }
+
+      function itemButton(title, detail, right) {
+        const button = document.createElement("button");
+        button.className = "item";
+        button.type = "button";
+        button.innerHTML = '<div class="item-title"><span>' + escapeHtml(title) + '</span>' + right + '</div><div class="muted">' + escapeHtml(detail || "") + '</div>';
+        return button;
+      }
+
+      function plainItem(title, detail) {
+        const node = document.createElement("div");
+        node.className = "item";
+        node.innerHTML = '<div class="item-title"><span>' + escapeHtml(title || "Untitled") + '</span></div><div class="muted">' + escapeHtml(detail || "") + '</div>';
+        return node;
+      }
+
+      function statusPill(status) {
+        const value = String(status || "unknown");
+        return '<span class="pill ' + statusClass(value) + '">' + escapeHtml(value) + '</span>';
+      }
+
+      function scorePill(evaluation) {
+        const score = typeof evaluation.scores?.overall === "number" ? Math.round(evaluation.scores.overall * 100) + "%" : "n/a";
+        return '<span class="pill ' + (evaluation.passed ? "ok" : "fail") + '">' + score + '</span>';
+      }
+
+      function latestQualityLabel() {
+        const latest = state.evaluations[0];
+        const score = latest?.scores?.overall;
+        return typeof score === "number" ? Math.round(score * 100) + "%" : "n/a";
+      }
+
+      function renderTable(headers, rows) {
+        if (!rows.length) return '<div class="muted">No records.</div>';
+        return '<table><thead><tr>' + headers.map((header) => '<th>' + escapeHtml(header) + '</th>').join("") + '</tr></thead><tbody>' + rows.map((row) => '<tr>' + row.map((cell) => '<td>' + escapeHtml(String(cell ?? "")) + '</td>').join("") + '</tr>').join("") + '</tbody></table>';
+      }
+
+      function renderMiniCards(id, items, project) {
+        const host = $(id);
+        host.innerHTML = "";
+        if (!items.length) {
+          host.innerHTML = '<div class="muted">No records.</div>';
+          return;
+        }
+        for (const item of items) {
+          const view = project(item);
+          const card = document.createElement("div");
+          card.className = "mini-card";
+          card.innerHTML = '<div class="item-title"><span>' + escapeHtml(view.title || "item") + '</span><span class="pill ' + statusClass(view.pill) + '">' + escapeHtml(view.pill || "unknown") + '</span></div><div class="muted">' + escapeHtml(view.detail || "") + '</div>';
+          host.append(card);
+        }
+      }
+
+      function countApprovalItems() {
+        return state.events.filter((event) => {
+          const type = String(event.type || "").toLowerCase();
+          const data = JSON.stringify(event.data || {}).toLowerCase();
+          return type.includes("approval") || data.includes("approvalclass") || data.includes("blocked");
+        }).length;
+      }
+
+      function countDiagnosticItems() {
+        const diagnostics = state.operatorState?.diagnostics || {};
+        return Object.keys(diagnostics).length;
+      }
+
+      function statusClass(status) {
+        const normalized = String(status || "").toLowerCase();
+        if (["ok", "active", "completed", "passed", "connected", "done"].includes(normalized)) return "ok";
+        if (["failed", "dead_letter", "cancelled", "error", "fail"].includes(normalized)) return "fail";
+        return "warn";
+      }
+
+      function shortPath(value) {
+        const text = String(value || "");
+        if (text.length <= 44) return text;
+        return "..." + text.slice(-41);
+      }
+
+      function yesNo(value) {
+        return value ? "yes" : "no";
+      }
+
+      function pct(id) {
+        const value = Number($(id).value);
+        return Number.isFinite(value) ? Math.max(0, Math.min(1, value / 100)) : 0;
+      }
+
+      function escapeHtml(value) {
+        return String(value)
+          .replace(/&/g, "&amp;")
+          .replace(/</g, "&lt;")
+          .replace(/>/g, "&gt;")
+          .replace(/"/g, "&quot;");
+      }
+
+      connectEventStream();
+      void refresh();
+    </script>
+  </body>
+</html>

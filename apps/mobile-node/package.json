@@ -1,0 +1,7 @@
+{
+  "name": "@omni-agent/mobile-node",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts"
+}

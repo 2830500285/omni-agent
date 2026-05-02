@@ -1,0 +1,34 @@
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "lib": ["ES2022"],
+    "baseUrl": ".",
+    "paths": {
+      "@omni-agent/automation": ["./packages/automation/src/index.ts"],
+      "@omni-agent/approvals": ["./packages/approvals/src/index.ts"],
+      "@omni-agent/context": ["./packages/context/src/index.ts"],
+      "@omni-agent/core-runtime": ["./packages/core-runtime/src/index.ts"],
+      "@omni-agent/evals": ["./packages/evals/src/index.ts"],
+      "@omni-agent/extensions": ["./packages/extensions/src/index.ts"],
+      "@omni-agent/gateway": ["./packages/gateway/src/index.ts"],
+      "@omni-agent/model-client": ["./packages/model-client/src/index.ts"],
+      "@omni-agent/reference-native": ["./packages/reference-native/src/index.ts"],
+      "@omni-agent/reference-translated": ["./packages/reference-translated/src/index.ts"],
+      "@omni-agent/safety": ["./packages/safety/src/index.ts"],
+      "@omni-agent/session-store": ["./packages/session-store/src/index.ts"],
+      "@omni-agent/tools": ["./packages/tools/src/index.ts"],
+      "@omni-agent/workspace": ["./packages/workspace/src/index.ts"]
+    },
+    "strict": true,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "resolveJsonModule": true,
+    "allowSyntheticDefaultImports": true,
+    "forceConsistentCasingInFileNames": true
+  }
+}

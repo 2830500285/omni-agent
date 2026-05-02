@@ -1,0 +1,109 @@
+{
+  "title": "Omni Agent Complex Product Parity Suite",
+  "description": "Reusable complex-task benchmark scenarios converted from manual parity runs. These scenarios measure long-run execution, model escalation, artifact quality, and verified domain logic.",
+  "qualityThresholds": {
+    "completionRate": 0.9,
+    "verificationPassRate": 0.9,
+    "firstPassRate": 0.2,
+    "repairRate": 0.75,
+    "toolReliabilityRate": 0.95,
+    "fallbackRecoveryRate": 0.9,
+    "stateRetentionRate": 0.8
+  },
+  "scenarios": [
+    {
+      "id": "complex.renewal_billing",
+      "title": "Enterprise Renewal Billing Engine",
+      "category": "verification_repair",
+      "workspaceCwd": "../../.tmp/complex-renewal-billing-project",
+      "steps": [
+        {
+          "objective": "Implement the renewal billing engine from failing tests, including entitlement math, proration, usage, tax, discounts, dunning risk, and final verification.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredChangedFiles": ["src/billing.js"],
+            "requiredToolNames": ["read_file", "write_file", "run_verification"],
+            "requiredFinalResponseIncludes": ["billing"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "complex.health_claims",
+      "title": "Health Claims Adjudication",
+      "category": "verification_repair",
+      "workspaceCwd": "../../.tmp/complex-health-claims-project",
+      "steps": [
+        {
+          "objective": "Complete a claims adjudication engine with deductible, copay, coinsurance, network, prior authorization, denial codes, and audit summaries.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredChangedFiles": ["src/adjudicate.js"],
+            "requiredToolNames": ["read_file", "write_file", "run_verification"],
+            "requiredFinalResponseIncludes": ["claims"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "complex.microgrid_dispatch",
+      "title": "Campus Microgrid Dispatch",
+      "category": "verification_repair",
+      "workspaceCwd": "../../.tmp/complex-microgrid-dispatch-project",
+      "steps": [
+        {
+          "objective": "Implement deterministic hourly microgrid dispatch with SOC, solar, grid tariff, reserve, carbon, demand charge, alerts, and final verification.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredChangedFiles": ["src/dispatch.js"],
+            "requiredToolNames": ["read_file", "write_file", "run_verification"],
+            "requiredFinalResponseIncludes": ["microgrid"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "complex.pharma_coldchain",
+      "title": "Pharma Cold-Chain Fulfillment",
+      "category": "verification_repair",
+      "workspaceCwd": "../../.tmp/complex-pharma-coldchain-project",
+      "steps": [
+        {
+          "objective": "Implement FEFO pharma cold-chain fulfillment with reserve override, shipment grouping, carrier selection, dry ice, hazmat isolation, summary, alerts, and final verification.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredChangedFiles": ["src/fulfillment.js"],
+            "requiredToolNames": ["read_file", "write_file", "run_verification"],
+            "requiredFinalResponseIncludes": ["cold-chain"]
+          }
+        }
+      ]
+    },
+    {
+      "id": "complex.math_model_word",
+      "title": "Math Modeling Paper With Word Artifact",
+      "category": "long_context_modification",
+      "workspaceCwd": "../../.tmp/math-modeling-word-test",
+      "steps": [
+        {
+          "id": "paper",
+          "objective": "Produce a complete math modeling paper with reproducible program outputs, at least 20 advanced visualizations, and a Word document artifact.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": ["python_execute", "append_file", "run_verification"],
+            "requiredFinalResponseIncludes": ["Word"]
+          }
+        },
+        {
+          "id": "audit",
+          "objective": "Continue the same thread and audit that figures, code, data, and Word output are present and internally consistent.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": ["read_file", "run_verification"],
+            "requiredFinalResponseIncludes": ["audit"]
+          }
+        }
+      ]
+    }
+  ]
+}

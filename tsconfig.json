@@ -1,0 +1,22 @@
+{
+  "extends": "./tsconfig.base.json",
+  "files": [],
+  "references": [
+    { "path": "./packages/automation" },
+    { "path": "./packages/approvals" },
+    { "path": "./packages/context" },
+    { "path": "./packages/evals" },
+    { "path": "./packages/extensions" },
+    { "path": "./packages/gateway" },
+    { "path": "./packages/model-client" },
+    { "path": "./packages/reference-native" },
+    { "path": "./packages/reference-translated" },
+    { "path": "./packages/safety" },
+    { "path": "./packages/session-store" },
+    { "path": "./packages/workspace" },
+    { "path": "./packages/tools" },
+    { "path": "./packages/core-runtime" },
+    { "path": "./apps/cli" },
+    { "path": "./apps/mobile-node" }
+  ]
+}

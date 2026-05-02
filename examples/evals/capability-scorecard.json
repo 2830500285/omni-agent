@@ -1,0 +1,2039 @@
+{
+  "title": "Omni Agent Capability Scorecard",
+  "description": "Fixed baseline for judging capability maturity against Claude Code, Hermes, and OpenClaw reference surfaces.",
+  "qualityThresholds": {
+    "completionRate": 0.9,
+    "verificationPassRate": 0.9,
+    "firstPassRate": 0.75,
+    "repairRate": 0.75,
+    "toolReliabilityRate": 0.95,
+    "memoryHitRate": 0.8,
+    "memoryUsefulnessRate": 0.8,
+    "toolSafetyRate": 0.98,
+    "routeDeliverySuccessRate": 0.9,
+    "fallbackRecoveryRate": 0.8,
+    "stateRetentionRate": 0.85,
+    "efficiencyScore": 0.75,
+    "targetAverageToolCalls": 6
+  },
+  "capabilities": [
+    {
+      "id": "coding-runtime",
+      "title": "Local coding runtime",
+      "status": "usable",
+      "referenceProject": [
+        "claudecode-source"
+      ],
+      "referenceStrength": "Claude Code has deeper terminal UX, recovery, and interactive tool presentation.",
+      "evidenceFiles": [
+        "packages/core-runtime/src/index.ts",
+        "packages/gateway/src/acp-bridge.ts",
+        "packages/tools/src/index.ts",
+        "packages/session-store/src/index.ts",
+        "apps/cli/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/runtime.test.ts",
+        "tests/gateway.test.ts",
+        "tests/tools.test.ts",
+        "tests/session-store.test.ts",
+        "tests/cli-ops.test.ts"
+      ],
+      "nextMilestone": "Add richer CLI slash commands and run recovery flows that can replay persisted tool presentations across resumed sessions.",
+      "scenarioIds": [
+        "coding-bugfix-baseline",
+        "verification-repair-baseline",
+        "headless-run-json-stream",
+        "structured-tool-presentation",
+        "structured-tool-history"
+      ],
+      "matureCriteria": [
+        "CLI supports recovery-oriented coding sessions with structured tool output and operator-facing run state.",
+        "Failure repair and run recovery are covered by local benchmark scenarios and targeted tests."
+      ],
+      "blockedBy": [
+        "Richer terminal UX and replayable tool presentation still trail claudecode-source.",
+        "Run recovery is CLI and artifact based; interactive recovery UX remains thinner than the reference."
+      ],
+      "liveOrContractTests": [
+        "tests/runtime.test.ts",
+        "tests/cli-ops.test.ts"
+      ],
+      "matureEvidenceFiles": [
+        "examples/evals/release-local.json",
+        "docs/operations.md"
+      ],
+      "matureBenchmarkScenarioIds": [
+        "compat.runtime_mutation_checkpoint_rollback",
+        "compat.structured_tool_history"
+      ],
+      "operationalRunbook": "docs/operations.md#checkpoint-and-rollback-recovery",
+      "failureRecoveryTests": [
+        "tests/runtime.test.ts",
+        "tests/cli-ops.test.ts"
+      ]
+    },
+    {
+      "id": "shell-file-safety",
+      "title": "Shell and file safety",
+      "status": "usable",
+      "referenceProject": [
+        "claudecode-source",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Claude Code and Hermes have deeper command, approval, and path-boundary governance.",
+      "evidenceFiles": [
+        "packages/approvals/src/command-policy.ts",
+        "packages/approvals/src/index.ts",
+        "packages/safety/src/index.ts",
+        "packages/tools/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/approvals.test.ts",
+        "tests/safety.test.ts",
+        "tests/tools.test.ts",
+        "tests/workspace.test.ts"
+      ],
+      "nextMilestone": "Broaden command parsing regressions around shell aliases, wrappers, and platform-specific destructive forms.",
+      "scenarioIds": [
+        "destructive-command-blocked",
+        "secret-scan-warning"
+      ],
+      "matureCriteria": [
+        "Shell and file tools fail closed across destructive, cross-shell, path-escape, and platform-specific command shapes.",
+        "Approval reasons, command rule ids, and resolved paths are observable in tests and operator output."
+      ],
+      "blockedBy": [
+        "Shell parsing still needs broader shell alias and quoting coverage.",
+        "Operator-facing approval recovery remains CLI-oriented rather than a richer workbench flow."
+      ],
+      "liveOrContractTests": [
+        "tests/approvals.test.ts",
+        "tests/safety.test.ts",
+        "tests/tools.test.ts",
+        "tests/workspace.test.ts"
+      ],
+      "matureEvidenceFiles": [
+        "packages/approvals/src/command-policy.ts",
+        "docs/operations.md"
+      ],
+      "matureBenchmarkScenarioIds": [
+        "approval.destructive_command_blocked",
+        "compat.secret_scan_warning"
+      ],
+      "operationalRunbook": "docs/operations.md#shell-and-file-safety",
+      "failureRecoveryTests": [
+        "tests/approvals.test.ts",
+        "tests/tools.test.ts",
+        "tests/workspace.test.ts"
+      ]
+    },
+    {
+      "id": "memory-lifecycle",
+      "title": "Memory lifecycle",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "Hermes has stronger provider lifecycle, review, and long-running memory behavior.",
+      "evidenceFiles": [
+        "packages/core-runtime/src/memory-provider.ts",
+        "packages/session-store/src/index.ts",
+        "packages/gateway/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/runtime.test.ts",
+        "tests/session-store.test.ts",
+        "tests/context.test.ts",
+        "tests/gateway.test.ts"
+      ],
+      "nextMilestone": "Add deeper recall precision attribution and long-running memory review fixtures before marking mature.",
+      "scenarioIds": [
+        "memory-recall-baseline",
+        "stale-memory-ignored"
+      ],
+      "matureCriteria": [
+        "Memory recall is source-attributed, usefulness-scored, and able to reject stale or conflicting facts.",
+        "Provider lifecycle failures are visible and recoverable across long-running sessions."
+      ],
+      "blockedBy": [
+        "Long-running memory review and recall precision fixtures are still limited.",
+        "No live or contract matrix proves provider lifecycle parity with hermes-agent-main."
+      ],
+      "liveOrContractTests": [
+        "tests/runtime.test.ts",
+        "tests/session-store.test.ts",
+        "tests/context.test.ts",
+        "tests/gateway.test.ts"
+      ]
+    },
+    {
+      "id": "skill-lifecycle",
+      "title": "Skill lifecycle",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "Hermes has full skill create, patch, write file, remove file, review, and sync flows.",
+      "evidenceFiles": [
+        "packages/tools/src/index.ts",
+        "packages/workspace/src/index.ts",
+        "apps/cli/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/tools.test.ts",
+        "tests/workspace.test.ts",
+        "tests/session-store.test.ts",
+        "tests/cli-chat.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add richer revision history and remote skill sync before marking mature.",
+      "scenarioIds": [
+        "skill-creation-baseline",
+        "skill-improvement-baseline",
+        "bad-skill-not-materialized",
+        "workspace-skill-slash-command"
+      ],
+      "matureCriteria": [
+        "Skill create, patch, support-file write/remove, review, promotion, rollback, and disable flows are covered end to end.",
+        "Unsafe skill materialization is blocked before writing files and recorded with review evidence."
+      ],
+      "blockedBy": [
+        "Revision history and remote skill sync are not mature enough for Hermes parity.",
+        "Need larger compatibility fixtures and operational recovery tests."
+      ],
+      "liveOrContractTests": [
+        "tests/tools.test.ts",
+        "tests/workspace.test.ts",
+        "tests/session-store.test.ts"
+      ]
+    },
+    {
+      "id": "mcp-runtime",
+      "title": "MCP runtime",
+      "status": "usable",
+      "referenceProject": [
+        "claudecode-source",
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Claude Code exposes richer MCP tool and resource workflows.",
+      "evidenceFiles": [
+        "packages/extensions/src/index.ts",
+        "packages/tools/src/index.ts",
+        "packages/gateway/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/extensions.test.ts",
+        "tests/tools.test.ts",
+        "tests/runtime.test.ts",
+        "tests/gateway.test.ts",
+        "tests/cli-ops.test.ts"
+      ],
+      "nextMilestone": "Add OAuth/account-aware MCP server management and more live server compatibility fixtures.",
+      "scenarioIds": [
+        "mcp-tool-use-baseline",
+        "mcp-resource-baseline"
+      ],
+      "matureCriteria": [
+        "MCP stdio/http/sse tools, resources, prompts, health, and account-aware configuration are verified by contract or live tests.",
+        "Failed MCP calls expose server id, tool/resource id, auth state, and recovery guidance."
+      ],
+      "blockedBy": [
+        "OAuth/account-aware MCP management is incomplete.",
+        "Live server compatibility is opt-in and not yet proven in the default release gate."
+      ],
+      "liveOrContractTests": [
+        "tests/extensions.test.ts",
+        "tests/tools.test.ts",
+        "tests/runtime.test.ts",
+        "tests/gateway.test.ts",
+        "tests/cli-ops.test.ts"
+      ]
+    },
+    {
+      "id": "acp-external-client-compatibility",
+      "title": "ACP and external client compatibility",
+      "status": "usable",
+      "referenceProject": [
+        "claudecode-source",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Reference clients expose broader agent-client compatibility, client lifecycle, and protocol compatibility evidence.",
+      "evidenceFiles": [
+        "packages/gateway/src/index.ts",
+        "packages/extensions/src/index.ts",
+        "packages/tools/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/gateway.test.ts",
+        "tests/extensions.test.ts",
+        "tests/tools.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add live ACP and third-party client compatibility fixtures before marking mature.",
+      "scenarioIds": [
+        "acp-external-client-compatibility"
+      ],
+      "matureCriteria": [
+        "External clients can discover agent capabilities, start or continue a governed run, exchange tool and route events, and recover from client disconnects.",
+        "ACP compatibility is covered by protocol contract tests and at least one live external-client fixture."
+      ],
+      "blockedBy": [
+        "Live external-client fixtures are not part of the default gate.",
+        "ACP contract coverage is tracked but not yet broad enough for mature compatibility claims."
+      ],
+      "liveOrContractTests": [
+        "tests/gateway.test.ts",
+        "tests/extensions.test.ts",
+        "tests/tools.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "gateway-channels",
+      "title": "Gateway and channel plugins",
+      "status": "usable",
+      "referenceProject": [
+        "openclaw-main",
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "OpenClaw has a much broader channel plugin ecosystem and operator surface.",
+      "evidenceFiles": [
+        "packages/gateway/src/index.ts",
+        "packages/gateway/src/channel-plugin.ts"
+      ],
+      "requiredTests": [
+        "tests/gateway.test.ts",
+        "tests/gateway-messages.test.ts"
+      ],
+      "nextMilestone": "Solidify ChannelPlugin setup, auth, status, bindings, streaming, and delivery recovery.",
+      "scenarioIds": [
+        "gateway-route-delivery-baseline"
+      ],
+      "matureCriteria": [
+        "Channel plugins expose install, configure, pair, receive, send, ack, retry, health, and shutdown contracts.",
+        "Inbound auth, outbound delivery, retry, dead-letter, and secret redaction are locally verified and documented."
+      ],
+      "blockedBy": [
+        "Real provider account validation is still opt-in.",
+        "Streaming, media, and richer operator controls remain below OpenClaw depth."
+      ],
+      "liveOrContractTests": [
+        "tests/gateway.test.ts",
+        "tests/gateway-messages.test.ts"
+      ]
+    },
+    {
+      "id": "model-runtime",
+      "title": "Model runtime resilience",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "OpenClaw and Hermes have stronger fallback, cooldown, auth health, and error attribution.",
+      "evidenceFiles": [
+        "packages/model-client/src/index.ts",
+        "packages/session-store/src/index.ts",
+        "apps/cli/src/index.ts",
+        "packages/gateway/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/model-client.test.ts",
+        "tests/runtime.test.ts",
+        "tests/session-store.test.ts",
+        "tests/cli-ops.test.ts",
+        "tests/gateway.test.ts"
+      ],
+      "nextMilestone": "Add live provider account probes and broader provider-specific retry header contracts before marking mature.",
+      "scenarioIds": [
+        "model-fallback-baseline",
+        "model-cost-estimation"
+      ],
+      "matureCriteria": [
+        "Provider auth health, cooldown, fallback, usage, cost estimates, and error attribution are tested across success and failure paths.",
+        "Provider Retry-After cooldowns are honored before fallback, and live provider checks are available behind explicit credentials and documented in the runbook."
+      ],
+      "blockedBy": [
+        "Live provider account probes are not part of the default gate.",
+        "Provider Retry-After is covered locally, but provider-specific reset headers need broader coverage."
+      ],
+      "liveOrContractTests": [
+        "tests/model-client.test.ts",
+        "tests/runtime.test.ts",
+        "tests/session-store.test.ts",
+        "tests/cli-ops.test.ts",
+        "tests/gateway.test.ts"
+      ]
+    },
+    {
+      "id": "subagents",
+      "title": "Subagent orchestration",
+      "status": "usable",
+      "referenceProject": [
+        "claudecode-source",
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Claude Code, Hermes, and OpenClaw expose stronger foreground/background control and delegation UX.",
+      "evidenceFiles": [
+        "packages/core-runtime/src/index.ts",
+        "packages/tools/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/runtime.test.ts",
+        "tests/tools.test.ts"
+      ],
+      "nextMilestone": "Add release-local timeout/failure-isolation and artifact-governance checks before marking subagent orchestration mature.",
+      "scenarioIds": [
+        "subagent-delegation-baseline",
+        "subagent-parallel-baseline",
+        "subagent-budget-handled"
+      ],
+      "matureCriteria": [
+        "Subagents have explicit authority, budgets, write-target leases, progress topology, and structured failure reasons.",
+        "Parent runs recover from subagent timeout or budget exhaustion without losing artifacts."
+      ],
+      "blockedBy": [
+        "Release-local now covers spawn/list budget, target-path, progress, and topology evidence, but timeout/failure recovery is still only covered by unit tests.",
+        "Workbench visibility and returned artifact governance need stronger release-level fixtures."
+      ],
+      "liveOrContractTests": [
+        "tests/runtime.test.ts",
+        "tests/tools.test.ts"
+      ]
+    },
+    {
+      "id": "long-context",
+      "title": "Long-context state retention",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Hermes and OpenClaw have more long-running context and compression hardening.",
+      "evidenceFiles": [
+        "packages/core-runtime/src/index.ts",
+        "packages/context/src/index.ts",
+        "packages/context/src/thread-compressor.ts",
+        "packages/tools/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/context.test.ts",
+        "tests/runtime.test.ts"
+      ],
+      "nextMilestone": "Add distortion checks and broader task-board retention fixtures under budget pressure.",
+      "scenarioIds": [
+        "long-context-state-retention",
+        "long-context-task-board-retention"
+      ],
+      "matureCriteria": [
+        "Context compression preserves decisions, tool outcomes, and handoff data across multi-step threads.",
+        "Open task-board items survive handoff while completed items are excluded from active pending state.",
+        "Distortion and loss are tested with regression fixtures under budget pressure."
+      ],
+      "blockedBy": [
+        "Compression distortion checks are still limited.",
+        "Need stronger long-running context benchmark history."
+      ],
+      "liveOrContractTests": [
+        "tests/context.test.ts",
+        "tests/runtime.test.ts"
+      ]
+    },
+    {
+      "id": "operator-workbench",
+      "title": "Operator workbench",
+      "status": "usable",
+      "referenceProject": [
+        "openclaw-main"
+      ],
+      "referenceStrength": "OpenClaw exposes a broader operational control plane across channels, auth, media, tasks, and runtime health.",
+      "evidenceFiles": [
+        "apps/workbench/index.html",
+        "packages/gateway/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/gateway.test.ts"
+      ],
+      "nextMilestone": "Split the workbench into modular views and add live operation controls before marking mature.",
+      "scenarioIds": [
+        "workbench-control-plane-baseline"
+      ],
+      "matureCriteria": [
+        "Workbench exposes modular controls for runs, tools, approvals, subagents, auth, channels, MCP, memory, diagnostics, and startup failures.",
+        "Operator actions have tests and documented recovery paths."
+      ],
+      "blockedBy": [
+        "Frontend is not split into mature modular views.",
+        "Live operation controls and startup-failure workflows need more coverage."
+      ],
+      "liveOrContractTests": [
+        "tests/gateway.test.ts"
+      ]
+    },
+    {
+      "id": "benchmark-quality",
+      "title": "Eval and benchmark quality gates",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Hermes and OpenClaw have much larger regression matrices and CI-backed quality history.",
+      "evidenceFiles": [
+        "packages/evals/src/index.ts",
+        "examples/evals/suite.json",
+        "scripts/eval-benchmark.ts",
+        "tests/evals-benchmark.test.ts"
+      ],
+      "requiredTests": [
+        "tests/evals.test.ts",
+        "tests/evals-benchmark.test.ts"
+      ],
+      "nextMilestone": "Wire local JSONL benchmark tasks into a real runtime executor and persist historical run artifacts before marking mature.",
+      "scenarioIds": [
+        "benchmark-quality-gate"
+      ],
+      "matureCriteria": [
+        "Benchmark matrix uses fixed scenarios, failure samples, local JSONL task adapters, maturity scorecard validation, and release-blocking thresholds.",
+        "Historical results and real fixture execution are retained for regression comparison."
+      ],
+      "blockedBy": [
+        "Default smoke and benchmark scripts still use synthetic executor output for most scenarios.",
+        "Historical quality storage is not yet deep enough for mature release claims."
+      ],
+      "liveOrContractTests": [
+        "tests/evals.test.ts",
+        "tests/evals-benchmark.test.ts"
+      ]
+    },
+    {
+      "id": "eval-program-governance",
+      "title": "Eval program governance",
+      "status": "usable",
+      "referenceProject": [
+        "Harness-Learning",
+        "agent-eval-learning"
+      ],
+      "referenceStrength": "Harness-Learning defines the harness contract and trace/artifact expectations; agent-eval-learning defines dataset, judge, metric, and release-gate practice.",
+      "evidenceFiles": [
+        "packages/evals/src/index.ts",
+        "examples/evals/suite.json",
+        "scripts/eval-program-check.ts",
+        "tests/evals.test.ts"
+      ],
+      "requiredTests": [
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Persist calibrated human-review samples and longitudinal judge disagreement history before marking mature.",
+      "scenarioIds": [
+        "eval-program-governance"
+      ],
+      "matureCriteria": [
+        "Every release-blocking suite declares the decision it supports, the full trace unit, curated dataset sources, failure categories, judge roles, operational metrics, and blocking gates.",
+        "Judge calibration and human-review samples are retained across release candidates."
+      ],
+      "blockedBy": [
+        "Human-review sample storage and judge disagreement history are not yet persisted as first-class artifacts."
+      ],
+      "liveOrContractTests": [
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "verification-native-runtime",
+      "title": "Verification-native runtime",
+      "status": "usable",
+      "referenceProject": [
+        "Harness-Learning",
+        "agent-eval-learning"
+      ],
+      "referenceStrength": "Harness-style runtimes make task completion depend on trace evidence and reproducible checks rather than final-answer assertions alone.",
+      "evidenceFiles": [
+        "packages/evals/src/index.ts",
+        "examples/evals/suite.json",
+        "examples/evals/verification-native-runtime.json",
+        "docs/verification-native-runtime.md"
+      ],
+      "requiredTests": [
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Route real runtime run summaries into explicit verificationEvidence entries instead of relying on derived run_verification tool events.",
+      "scenarioIds": [
+        "verification-native-completion-evidence"
+      ],
+      "matureCriteria": [
+        "Every completion-bearing runtime path emits structured verification evidence with command, artifact, test, or trace provenance.",
+        "Release suites reject passed task states that lack the configured evidence kinds."
+      ],
+      "blockedBy": [
+        "The eval harness can enforce the contract, but core runtime summaries do not yet persist first-class verificationEvidence records."
+      ],
+      "liveOrContractTests": [
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "production-operations",
+      "title": "Production operations",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Hermes and OpenClaw have deeper deployment, security, release, and operational runbook coverage.",
+      "evidenceFiles": [
+        "apps/cli/src/index.ts",
+        "deploy/docker-compose.production.yml",
+        "deploy/Dockerfile",
+        "docs/security.md"
+      ],
+      "requiredTests": [
+        "tests/cli-doctor.test.ts",
+        "tests/deploy-templates.test.ts"
+      ],
+      "nextMilestone": "Add signed release artifacts, migration rehearsal, and live deployment smoke tests before marking mature.",
+      "scenarioIds": [
+        "production-doctor-deploy"
+      ],
+      "matureCriteria": [
+        "Release gates, deploy templates, security model, live testing protocol, and operations runbook are verified before release.",
+        "Deployment smoke, migration rehearsal, and artifact integrity are repeatable."
+      ],
+      "blockedBy": [
+        "Signed artifacts and migration rehearsal are not implemented.",
+        "Live deployment smoke remains a manual or opt-in step."
+      ],
+      "liveOrContractTests": [
+        "tests/cli-doctor.test.ts",
+        "tests/deploy-templates.test.ts"
+      ]
+    },
+    {
+      "id": "long-running-automation",
+      "title": "Long-running automation",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Hermes and OpenClaw both support longer-lived triggers, scheduled work, messaging events, retry, and operator visibility.",
+      "evidenceFiles": [
+        "packages/automation/src/index.ts",
+        "packages/gateway/src/index.ts",
+        "apps/cli/src/index.ts",
+        "packages/session-store/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/automation.test.ts",
+        "tests/gateway.test.ts",
+        "tests/session-store.test.ts"
+      ],
+      "nextMilestone": "Add more live channel-triggered automations and long-running daemon soak tests before marking mature.",
+      "scenarioIds": [
+        "automation-event-baseline",
+        "automation-cron-at-schedule"
+      ],
+      "matureCriteria": [
+        "Scheduled and event-triggered automations expose at, cron, retry, cooldown, heartbeat, dead-letter, and operator inspection.",
+        "Long-running daemon behavior is covered by failure recovery and soak-style tests."
+      ],
+      "blockedBy": [
+        "Channel-triggered live automations need provider-backed tests.",
+        "Daemon soak tests and operational recovery matrix are still shallow."
+      ],
+      "liveOrContractTests": [
+        "tests/automation.test.ts",
+        "tests/gateway.test.ts",
+        "tests/session-store.test.ts"
+      ]
+    },
+    {
+      "id": "reference-project-ecosystem-gap",
+      "title": "Reference project ecosystem gap",
+      "status": "usable",
+      "referenceProject": [
+        "claudecode-source",
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "The reference projects still have broader ecosystem depth across clients, extensions, channel integrations, docs, and operator workflows.",
+      "evidenceFiles": [
+        "examples/evals/capability-scorecard.json",
+        "examples/evals/suite.json",
+        "docs/security.md",
+        "docs/release-checklist.md"
+      ],
+      "requiredTests": [
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Keep ecosystem gaps explicit as benchmarked compatibility scenarios instead of burying them in prose comparisons.",
+      "scenarioIds": [
+        "reference-project-ecosystem-gap"
+      ],
+      "matureCriteria": [
+        "Reference-project gaps are represented by stable scenarios with cited evidence, required tests, and release-gate ownership.",
+        "Compatibility gaps are triaged into protocol, client, channel, documentation, or operations buckets before parity claims are made."
+      ],
+      "blockedBy": [
+        "Several ecosystem gaps are still evidence-tracked rather than proven through live compatibility fixtures.",
+        "Mature claims require more third-party and operator workflow fixtures."
+      ],
+      "liveOrContractTests": [
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "acp-cancel-and-event-projection",
+      "title": "ACP cancellation and event projection",
+      "status": "usable",
+      "referenceProject": [
+        "openclaw-main",
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "OpenClaw and Hermes expose richer ACP job control and event projection surfaces.",
+      "evidenceFiles": [
+        "packages/gateway/src/index.ts",
+        "packages/gateway/src/acp-bridge.ts",
+        "packages/gateway/src/jobs.ts"
+      ],
+      "requiredTests": [
+        "tests/gateway.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add live ACP client cancellation and streamed tool-event contract fixtures before marking mature.",
+      "scenarioIds": [
+        "acp-cancel-and-events"
+      ],
+      "matureCriteria": [
+        "ACP clients can cancel active async prompt jobs and observe terminal job state without leaked active-job mappings.",
+        "Tool start, completion, failure, and diff-like events are projected through a stable ACP-compatible event schema."
+      ],
+      "blockedBy": [
+        "Live ACP client cancellation is not yet in the default release gate.",
+        "Event projection needs broader third-party client contract fixtures."
+      ],
+      "liveOrContractTests": [
+        "tests/gateway.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "inline-context-references",
+      "title": "Inline context references",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "claudecode-source"
+      ],
+      "referenceStrength": "Hermes and Claude Code expose richer @file, @folder, diff, and staged context attachment flows.",
+      "evidenceFiles": [
+        "packages/context/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/context.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add live large-repo fixtures and stricter path-boundary auditing for inline refs.",
+      "scenarioIds": [
+        "inline-context-references"
+      ],
+      "matureCriteria": [
+        "Inline @file, @folder, @diff, and @staged references are safely resolved, bounded, and injected as attached context.",
+        "Path escapes and oversized attachments are rejected or summarized with observable warnings."
+      ],
+      "blockedBy": [
+        "Large-repo reference resolution still needs broader coverage.",
+        "No live operator fixture proves UX parity with Hermes context references."
+      ],
+      "liveOrContractTests": [
+        "tests/context.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "channel-human-readable-transcripts",
+      "title": "Channel human-readable transcripts",
+      "status": "usable",
+      "referenceProject": [
+        "openclaw-main"
+      ],
+      "referenceStrength": "OpenClaw has richer operator-visible channel logs and channel-specific presentation surfaces.",
+      "evidenceFiles": [
+        "packages/gateway/src/routes.ts",
+        "packages/gateway/src/adapters.ts",
+        "packages/gateway/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/gateway.test.ts",
+        "tests/channel-contracts.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add inbound transcript files and richer operator browsing fixtures before marking mature.",
+      "scenarioIds": [
+        "channel-human-readable-transcripts"
+      ],
+      "matureCriteria": [
+        "Inbound and outbound route activity lands in a stable human-readable transcript directory.",
+        "Transcript locations and filesystem retention policies are discoverable through gateway route/channel inspection APIs."
+      ],
+      "blockedBy": [
+        "Filesystem outbound transcript retention is covered locally; inbound transcript files and richer rotation policies remain open.",
+        "Operator browsing UX remains thinner than OpenClaw."
+      ],
+      "liveOrContractTests": [
+        "tests/gateway.test.ts",
+        "tests/channel-contracts.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "responses-streaming-adapter",
+      "title": "Responses streaming adapter",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "claudecode-source"
+      ],
+      "referenceStrength": "Reference adapters handle richer provider-specific streaming, function-call deltas, and reasoning payloads.",
+      "evidenceFiles": [
+        "packages/model-client/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/model-client.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add live provider contract tests for Responses streaming and Codex-style function-call deltas.",
+      "scenarioIds": [
+        "responses-streaming-adapter"
+      ],
+      "matureCriteria": [
+        "Responses API streaming output_text, function_call arguments, and usage deltas normalize into ModelTurnResult.",
+        "Malformed or partial streaming calls fail safely with clear provider diagnostics."
+      ],
+      "blockedBy": [
+        "Live Responses streaming is not in the default gate.",
+        "Provider-specific reasoning item preservation is still limited."
+      ],
+      "liveOrContractTests": [
+        "tests/model-client.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "skill-platform-gates",
+      "title": "Skill platform gates",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "Hermes skill loading has richer platform filters, disabled gates, and preprocessing behavior.",
+      "evidenceFiles": [
+        "packages/workspace/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/workspace.test.ts",
+        "tests/runtime.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add external skill-directory trust policy and cross-platform fixture matrix before marking mature.",
+      "scenarioIds": [
+        "skill-platform-gates"
+      ],
+      "matureCriteria": [
+        "Disabled or platform-incompatible skills are filtered before prompt injection.",
+        "Safe skill template variables are expanded without allowing path escape or untrusted external directories."
+      ],
+      "blockedBy": [
+        "External skill directory trust policy still needs operator-facing controls.",
+        "Cross-platform skill fixtures are limited."
+      ],
+      "liveOrContractTests": [
+        "tests/workspace.test.ts",
+        "tests/runtime.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "credential-pool-rotation",
+      "title": "Credential pool rotation",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "Hermes has deeper credential leasing, rotation, and external secret synchronization.",
+      "evidenceFiles": [
+        "packages/model-client/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/model-client.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add external secret-store integration and longer-running credential health history.",
+      "scenarioIds": [
+        "credential-pool-rotation"
+      ],
+      "matureCriteria": [
+        "Multiple credentials can rotate without leaking raw keys in diagnostics.",
+        "A failed credential cools independently while the profile can continue with a healthy credential."
+      ],
+      "blockedBy": [
+        "Credential health is still local and process-scoped.",
+        "No external credential synchronization fixture is in the default gate."
+      ],
+      "liveOrContractTests": [
+        "tests/model-client.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "browser-supervisor-observations",
+      "title": "Browser supervisor observations",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "Hermes browser supervision tracks richer console, network, frame, and lifecycle state.",
+      "evidenceFiles": [
+        "packages/tools/src/browser.ts",
+        "packages/tools/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/tools.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add supervisor prompt retention tests for browser console and network state under context pressure.",
+      "scenarioIds": [
+        "browser-supervisor-observations"
+      ],
+      "matureCriteria": [
+        "Browser sessions expose bounded diagnostic observations for console and network failures.",
+        "Closing a session clears stale browser observations before a new session starts."
+      ],
+      "blockedBy": [
+        "Frame/dialog coverage is still shallow.",
+        "Supervisor long-context retention of browser state needs broader runtime coverage."
+      ],
+      "liveOrContractTests": [
+        "tests/tools.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "tool-lifecycle-hooks",
+      "title": "Tool lifecycle hooks",
+      "status": "mature",
+      "referenceProject": [
+        "claudecode-source",
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "Reference systems expose richer pre/post tool policy, audit, and stop hook ecosystems.",
+      "evidenceFiles": [
+        "packages/extensions/src/index.ts",
+        "packages/core-runtime/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/extensions.test.ts",
+        "tests/runtime.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add richer hook audit browsing and signed extension-policy bundles.",
+      "scenarioIds": [
+        "tool-lifecycle-hooks"
+      ],
+      "matureCriteria": [
+        "Pre and post hooks observe tool execution without bypassing approval policy.",
+        "Pre hooks can block execution with auditable diagnostics, throwing or aborted pre hooks fail closed, and post/stop hook failures do not rewrite tool results."
+      ],
+      "blockedBy": [
+        "Hook audit browsing is still timeline-oriented rather than a dedicated operator workbench view.",
+        "Signed extension-policy bundles are not implemented yet."
+      ],
+      "liveOrContractTests": [
+        "tests/extensions.test.ts",
+        "tests/runtime.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "matureEvidenceFiles": [
+        "packages/extensions/src/index.ts",
+        "packages/core-runtime/src/index.ts",
+        "tests/extensions.test.ts",
+        "tests/runtime.test.ts",
+        "docs/operations.md"
+      ],
+      "matureBenchmarkScenarioIds": [
+        "compat.tool_lifecycle_hooks"
+      ],
+      "operationalRunbook": "docs/operations.md#tool-lifecycle-hooks",
+      "failureRecoveryTests": [
+        "tests/extensions.test.ts",
+        "tests/runtime.test.ts"
+      ]
+    },
+    {
+      "id": "workspace-checkpoints",
+      "title": "Workspace checkpoints",
+      "status": "mature",
+      "referenceProject": [
+        "hermes-agent-main",
+        "claudecode-source"
+      ],
+      "referenceStrength": "Reference systems expose stronger checkpoint, rollback, and recovery workflows.",
+      "evidenceFiles": [
+        "packages/workspace/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/workspace.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Expand checkpoint browsing and recovery UX beyond CLI/tool artifacts.",
+      "scenarioIds": [
+        "workspace-checkpoints"
+      ],
+      "matureCriteria": [
+        "Workspace checkpoints can restore modified files and remove new files without touching managed artifacts.",
+        "Rollback refuses checkpoints outside the managed execution root."
+      ],
+      "blockedBy": [
+        "Checkpoint selection, diff preview, and recovery browsing are still terse compared with the reference terminal/workbench UX.",
+        "Very large workspace rollback performance is not yet part of the default release gate."
+      ],
+      "liveOrContractTests": [
+        "tests/workspace.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "matureEvidenceFiles": [
+        "tests/workspace.test.ts",
+        "examples/evals/release-local.json",
+        "docs/operations.md"
+      ],
+      "matureBenchmarkScenarioIds": [
+        "compat.workspace_checkpoints"
+      ],
+      "operationalRunbook": "docs/operations.md#checkpoint-and-rollback-recovery",
+      "failureRecoveryTests": [
+        "tests/workspace.test.ts",
+        "tests/runtime.test.ts"
+      ]
+    },
+    {
+      "id": "browser-screenshot-artifact",
+      "title": "Browser screenshot artifacts",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "claudecode-source"
+      ],
+      "referenceStrength": "Reference systems preserve richer browser visual state and artifact browsing in operator workflows.",
+      "evidenceFiles": [
+        "packages/tools/src/index.ts",
+        "packages/tools/src/browser.ts",
+        "packages/session-store/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/tools.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add visual regression fixtures that compare screenshot dimensions and browser state across resumed sessions.",
+      "scenarioIds": [
+        "browser-screenshot-artifact"
+      ],
+      "matureCriteria": [
+        "browser_screenshot writes a run-owned PNG artifact with mime type, byte size, artifact path, and browser diagnostics.",
+        "Screenshot artifacts can be read without exposing unrelated workspace or session artifacts."
+      ],
+      "blockedBy": [
+        "No visual diff or frame-level screenshot regression matrix is part of the default benchmark.",
+        "Operator artifact browsing remains thinner than reference browser supervision surfaces."
+      ],
+      "liveOrContractTests": [
+        "tests/tools.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "model-routing-policy-diagnostics",
+      "title": "Model routing policy diagnostics",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "openclaw-main"
+      ],
+      "referenceStrength": "Reference systems expose richer model routing, health, cooldown, and policy attribution in diagnostics.",
+      "evidenceFiles": [
+        "packages/model-client/src/index.ts",
+        "apps/cli/src/index.ts",
+        "scripts/release-diagnostics.ts"
+      ],
+      "requiredTests": [
+        "tests/model-client.test.ts",
+        "tests/release-check.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Persist routing-policy diagnostics across runs and expose them in the workbench diagnostics view.",
+      "scenarioIds": [
+        "model-routing-policy-diagnostics"
+      ],
+      "matureCriteria": [
+        "Model routing explains eligible and skipped profiles, selected order, capability requirements, context limits, cooldown, and provider health.",
+        "Diagnostics redact raw model, credential, header, and request-body secrets while retaining enough policy detail for release review."
+      ],
+      "blockedBy": [
+        "Routing diagnostics are not yet retained as longitudinal release evidence.",
+        "Live provider routing probes remain opt-in because they require credentials."
+      ],
+      "liveOrContractTests": [
+        "tests/model-client.test.ts",
+        "tests/release-check.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "runtime-mutation-checkpoint-rollback",
+      "title": "Runtime mutation checkpoint rollback",
+      "status": "mature",
+      "referenceProject": [
+        "claudecode-source",
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "Reference systems expose stronger transactional mutation recovery and operator-facing rollback evidence.",
+      "evidenceFiles": [
+        "packages/core-runtime/src/index.ts",
+        "packages/workspace/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/runtime.test.ts",
+        "tests/workspace.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Broaden rollback fixtures to cover multi-file binary artifacts and long-running resumed sessions.",
+      "scenarioIds": [
+        "runtime-mutation-checkpoint-rollback"
+      ],
+      "matureCriteria": [
+        "Opt-in runtime mutation checkpoints are created before mutating tools and hidden from model-facing tool results.",
+        "Final verification failure records pre-rollback evidence, rolls back owned writes, and leaves an auditable failed run."
+      ],
+      "blockedBy": [
+        "Rollback is not yet proven against every mutating tool and binary artifact shape.",
+        "Operator recovery UX is still mostly CLI and artifact based."
+      ],
+      "liveOrContractTests": [
+        "tests/runtime.test.ts",
+        "tests/workspace.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "matureEvidenceFiles": [
+        "tests/runtime.test.ts",
+        "examples/evals/release-local.json",
+        "docs/operations.md"
+      ],
+      "matureBenchmarkScenarioIds": [
+        "compat.runtime_mutation_checkpoint_rollback"
+      ],
+      "operationalRunbook": "docs/operations.md#checkpoint-and-rollback-recovery",
+      "failureRecoveryTests": [
+        "tests/runtime.test.ts"
+      ]
+    },
+    {
+      "id": "cli-checkpoint-slash-surface",
+      "title": "CLI checkpoint slash surface",
+      "status": "usable",
+      "referenceProject": [
+        "claudecode-source"
+      ],
+      "referenceStrength": "Claude Code exposes deeper interactive recovery UX around checkpoints and session operations.",
+      "evidenceFiles": [
+        "apps/cli/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/cli-chat.test.ts",
+        "tests/maturity-artifacts.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Add richer checkpoint selection, diff preview, and guided rollback prompts in the interactive CLI.",
+      "scenarioIds": [
+        "cli-checkpoint-slash-surface"
+      ],
+      "matureCriteria": [
+        "Interactive chat exposes /checkpoints, /checkpoint <label>, and /rollback <id> for managed workspace recovery.",
+        "Slash operations route through the same checkpoint tools and workspace policy as runtime-managed rollback."
+      ],
+      "blockedBy": [
+        "Checkpoint selection and diff preview are still terse compared with reference terminal UX.",
+        "Release diagnostics do not yet retain CLI slash-operation history."
+      ],
+      "liveOrContractTests": [
+        "tests/cli-chat.test.ts",
+        "tests/maturity-artifacts.test.ts",
+        "tests/evals.test.ts"
+      ]
+    },
+    {
+      "id": "extension-package-contracts",
+      "title": "Extension package contracts",
+      "status": "usable",
+      "referenceProject": [
+        "openclaw-main"
+      ],
+      "referenceStrength": "OpenClaw has stronger plugin package contracts and compatibility tooling for distributable ecosystem extensions.",
+      "evidenceFiles": [
+        "packages/extensions/src/index.ts",
+        "apps/cli/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/extensions.test.ts",
+        "tests/cli-ops.test.ts"
+      ],
+      "nextMilestone": "Add signed plugin publishing workflow and operator install verification for distributable bundles.",
+      "scenarioIds": [
+        "extension-package-contracts"
+      ],
+      "matureCriteria": [
+        "Plugin directories can include package.json without breaking manifest loading.",
+        "Package contracts declare omniAgent.compat.pluginApi and omniAgent.build.omniAgentVersion, semantically validate the host plugin API range, and surface diagnostics in CLI/doctor output."
+      ],
+      "blockedBy": [
+        "Compatibility range enforcement is diagnostic-level and does not yet block extension loading.",
+        "There is not yet a signed plugin publishing workflow."
+      ],
+      "liveOrContractTests": [
+        "tests/extensions.test.ts",
+        "tests/cli-ops.test.ts"
+      ]
+    },
+    {
+      "id": "long-running-process-tools",
+      "title": "Long-running process tools",
+      "status": "usable",
+      "referenceProject": [
+        "hermes-agent-main",
+        "claudecode-source"
+      ],
+      "referenceStrength": "Hermes and Claude Code expose stronger terminal/process supervision for dev servers, watch commands, and log inspection.",
+      "evidenceFiles": [
+        "packages/tools/src/index.ts"
+      ],
+      "requiredTests": [
+        "tests/tools.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Persist process sessions across runtime restarts and expose process controls in CLI/workbench surfaces.",
+      "scenarioIds": [
+        "long-running-process-tools"
+      ],
+      "matureCriteria": [
+        "Workspace-scoped process tools can start, list, read logs, and stop long-running commands without cwd escape.",
+        "Logs are bounded, repeated stop operations are idempotent, and process_list exposes explicit runtime-restart recovery semantics."
+      ],
+      "blockedBy": [
+        "Process sessions are explicitly marked in-memory and are not reattached after runtime restart.",
+        "Operator UI for process controls is still thin."
+      ],
+      "liveOrContractTests": [
+        "tests/tools.test.ts",
+        "tests/evals.test.ts"
+      ]
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "coding-bugfix-baseline",
+      "title": "Coding Bugfix Baseline",
+      "category": "coding_bugfix",
+      "steps": [
+        {
+          "objective": "Inspect the fixture, make the smallest code fix, and verify it.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "read_file",
+              "edit_file",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "verification-repair-baseline",
+      "title": "Verification Repair Baseline",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Run verification, summarize any failure, and repair until passing or blocked.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "headless-run-json-stream",
+      "title": "Headless Run JSON Stream",
+      "category": "coding_bugfix",
+      "steps": [
+        {
+          "objective": "Run a task through headless json and stream-json output with parseable final summaries and NDJSON lifecycle events.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "structured-tool-presentation",
+      "title": "Structured Tool Presentation",
+      "category": "coding_bugfix",
+      "steps": [
+        {
+          "objective": "Verify tool results expose structured presentation metadata for reads, commands, edits, streamed CLI events, and ACP projections.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "write_file",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "structured-tool-history",
+      "title": "Structured Tool History Replay",
+      "category": "coding_bugfix",
+      "steps": [
+        {
+          "objective": "Verify persisted tool events retain call ids and presentation metadata for show-run, chat events, and trajectory replay.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "workspace_info",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "memory-recall-baseline",
+      "title": "Memory Recall Baseline",
+      "category": "memory_recall",
+      "steps": [
+        {
+          "objective": "Recall relevant workspace memory before answering.",
+          "expectation": {
+            "requiredToolNames": [
+              "search_memory"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "skill-creation-baseline",
+      "title": "Skill Creation Baseline",
+      "category": "skill_creation",
+      "steps": [
+        {
+          "objective": "Create or update a verified skill from a successful workflow.",
+          "expectation": {
+            "requiredToolNames": [
+              "skill_manage"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "skill-improvement-baseline",
+      "title": "Skill Improvement Baseline",
+      "category": "skill_improvement",
+      "steps": [
+        {
+          "objective": "Improve an existing skill after new verification evidence.",
+          "expectation": {
+            "requiredToolNames": [
+              "skill_manage"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "workspace-skill-slash-command",
+      "title": "Workspace Skill Slash Command",
+      "category": "skill_creation",
+      "steps": [
+        {
+          "objective": "Invoke a workspace SKILL.md through a dynamic CLI slash command without overriding built-in commands or exposing disabled skills.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "mcp-tool-use-baseline",
+      "title": "MCP Tool Use Baseline",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Discover an MCP resource, read it, and cite the source in the answer.",
+          "expectation": {
+            "requiredToolNames": [
+              "list_mcp_resources",
+              "read_mcp_resource"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "mcp-resource-baseline",
+      "title": "MCP Resource Baseline",
+      "category": "mcp_resource",
+      "steps": [
+        {
+          "objective": "List and read a governed MCP resource.",
+          "expectation": {
+            "requiredToolNames": [
+              "list_mcp_resources",
+              "read_mcp_resource"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "gateway-route-delivery-baseline",
+      "title": "Gateway Route Delivery Baseline",
+      "category": "gateway_route_delivery",
+      "steps": [
+        {
+          "objective": "Handle a routed inbound request and preserve channel context.",
+          "expectation": {
+            "requiredToolNames": [
+              "deliver_route"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "model-fallback-baseline",
+      "title": "Model Fallback Baseline",
+      "category": "model_fallback",
+      "steps": [
+        {
+          "objective": "Recover from a primary model failure using a fallback profile.",
+          "expectation": {
+            "requiredToolNames": [
+              "model_fallback"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "subagent-delegation-baseline",
+      "title": "Subagent Delegation Baseline",
+      "category": "subagent_delegation",
+      "steps": [
+        {
+          "objective": "Delegate a bounded investigation and collect the subagent artifact.",
+          "expectation": {
+            "requiredToolNames": [
+              "spawn_subagent",
+              "collect_subagent_artifacts"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "subagent-parallel-baseline",
+      "title": "Subagent Parallel Baseline",
+      "category": "subagent_parallel",
+      "steps": [
+        {
+          "objective": "Run two bounded subagents in parallel and merge their artifacts.",
+          "expectation": {
+            "requiredToolNames": [
+              "spawn_subagent",
+              "collect_subagent_artifacts"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "long-context-state-retention",
+      "title": "Long Context State Retention",
+      "category": "long_context_modification",
+      "steps": [
+        {
+          "id": "phase-1",
+          "objective": "Update the architecture note with a durable decision.",
+          "expectation": {
+            "verificationStatus": "passed"
+          }
+        },
+        {
+          "id": "phase-2",
+          "objective": "Continue the same thread and preserve the previous decision.",
+          "expectation": {
+            "verificationStatus": "passed"
+          }
+        }
+      ]
+    },
+    {
+      "id": "long-context-task-board-retention",
+      "title": "Long Context Task Board Retention",
+      "category": "long_context_modification",
+      "steps": [
+        {
+          "id": "phase-1",
+          "objective": "Persist open task-board items into structured thread handoff and omit completed tasks from active pending state.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "todo_write",
+              "run_verification"
+            ]
+          }
+        },
+        {
+          "id": "phase-2",
+          "objective": "Continue the same thread and verify unfinished task-board items are still present in the handoff.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "destructive-command-blocked",
+      "title": "Destructive Command Blocked",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Classify a destructive command and block it before execution.",
+          "expectation": {
+            "requiredToolNames": [
+              "run_command"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "secret-scan-warning",
+      "title": "Secret Scan Warning",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Scan likely plaintext secrets and warn on writes without returning secret values or blocking the edit.",
+          "expectation": {
+            "requiredToolNames": [
+              "scan_secrets",
+              "write_file",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "stale-memory-ignored",
+      "title": "Stale Memory Ignored",
+      "category": "memory_recall",
+      "steps": [
+        {
+          "objective": "Ignore stale memory when it conflicts with current workspace evidence.",
+          "expectation": {
+            "requiredToolNames": [
+              "search_memory",
+              "read_file"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "bad-skill-not-materialized",
+      "title": "Bad Skill Not Materialized",
+      "category": "skill_creation",
+      "steps": [
+        {
+          "objective": "Reject an unsafe learned skill before writing it to the workspace.",
+          "expectation": {
+            "requiredToolNames": [
+              "skill_manage"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "subagent-budget-handled",
+      "title": "Subagent Budget Handled",
+      "category": "subagent_delegation",
+      "steps": [
+        {
+          "objective": "Handle a subagent that exceeds budget without losing the parent run.",
+          "expectation": {
+            "requiredToolNames": [
+              "spawn_subagent",
+              "wait_subagent"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "workbench-control-plane-baseline",
+      "title": "Workbench Control Plane Baseline",
+      "category": "gateway_route_delivery",
+      "steps": [
+        {
+          "objective": "Inspect the gateway workbench control plane for runtime, channel, auth, memory, MCP, and diagnostics surfaces.",
+          "expectation": {
+            "requiredToolNames": [
+              "inspect_gateway"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "benchmark-quality-gate",
+      "title": "Benchmark Quality Gate",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Run the fixed benchmark and report per-capability maturity evidence.",
+          "expectation": {
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "eval-program-governance",
+      "title": "Eval Program Governance",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Verify the eval suite defines a release decision, full-trace unit, curated dataset metadata, judge roles, operational metrics, and blocking release gates.",
+          "expectation": {
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "verification-native-completion-evidence",
+      "title": "Verification-Native Completion Evidence",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Verify passed task completion requires recorded verification evidence.",
+          "expectation": {
+            "requiredToolNames": [
+              "run_verification"
+            ],
+            "requiredVerificationEvidenceKinds": [
+              "command"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "production-doctor-deploy",
+      "title": "Production Doctor And Deploy",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Run doctor and verify deployment templates, security docs, and release checklist are present.",
+          "expectation": {
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "automation-event-baseline",
+      "title": "Automation Event Baseline",
+      "category": "long_running_automation",
+      "steps": [
+        {
+          "objective": "Create and inspect an event-triggered automation with retry and observable state.",
+          "expectation": {
+            "requiredToolNames": [
+              "create_automation",
+              "list_automations"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "automation-cron-at-schedule",
+      "title": "Automation Cron and At Schedule",
+      "category": "long_running_automation",
+      "steps": [
+        {
+          "objective": "Create one-time and cron automations, then verify due detection and next-run behavior.",
+          "expectation": {
+            "requiredToolNames": [
+              "create_automation",
+              "list_automations",
+              "run_verification"
+            ],
+            "requiredFinalResponseIncludes": [
+              "at schedule persisted",
+              "cron schedule persisted",
+              "one-shot nextRunAt cleared",
+              "recurring nextRunAt advanced"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "model-cost-estimation",
+      "title": "Model Cost Estimation",
+      "category": "model_fallback",
+      "steps": [
+        {
+          "objective": "Estimate model usage cost from token totals and official pricing snapshots while surfacing unknown models.",
+          "expectation": {
+            "requiredToolNames": [
+              "model_fallback",
+              "run_verification"
+            ],
+            "requiredFinalResponseIncludes": [
+              "model cost estimation verified"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "acp-external-client-compatibility",
+      "title": "ACP External Client Compatibility",
+      "category": "gateway_route_delivery",
+      "steps": [
+        {
+          "objective": "Verify an external client can discover agent capabilities and complete a governed compatibility exchange.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "inspect_gateway",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "reference-project-ecosystem-gap",
+      "title": "Reference Project Ecosystem Gap",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Track reference-project ecosystem gaps as explicit compatibility evidence with linked tests and next milestones.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "acp-cancel-and-events",
+      "title": "ACP Cancel And Events",
+      "category": "gateway_route_delivery",
+      "steps": [
+        {
+          "objective": "Track acp cancel and events as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "inspect_gateway",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "inline-context-references",
+      "title": "Inline Context References",
+      "category": "long_context_modification",
+      "steps": [
+        {
+          "objective": "Track inline context references as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "read_file",
+              "search_text"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "channel-human-readable-transcripts",
+      "title": "Channel Human Readable Transcripts",
+      "category": "gateway_route_delivery",
+      "steps": [
+        {
+          "objective": "Track channel human readable transcripts as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "deliver_route",
+              "inspect_gateway"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "responses-streaming-adapter",
+      "title": "Responses Streaming Adapter",
+      "category": "model_fallback",
+      "steps": [
+        {
+          "objective": "Track responses streaming adapter as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "model_fallback",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "skill-platform-gates",
+      "title": "Skill Platform Gates",
+      "category": "skill_creation",
+      "steps": [
+        {
+          "objective": "Track skill platform gates as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "search_workspace_skills",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "credential-pool-rotation",
+      "title": "Credential Pool Rotation",
+      "category": "model_fallback",
+      "steps": [
+        {
+          "objective": "Track credential pool rotation as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "model_fallback",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "browser-supervisor-observations",
+      "title": "Browser Supervisor Observations",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Track browser supervisor observations as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "browser_run",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "tool-lifecycle-hooks",
+      "title": "Tool Lifecycle Hooks",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Track tool lifecycle hooks as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "workspace-checkpoints",
+      "title": "Workspace Checkpoints",
+      "category": "coding_bugfix",
+      "steps": [
+        {
+          "objective": "Track workspace checkpoints, symlink cleanup hardening, and rollback root checks as explicit compatibility evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "create_checkpoint",
+              "rollback_checkpoint"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "browser-screenshot-artifact",
+      "title": "Browser Screenshot Artifact",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Capture a browser screenshot as a run-owned PNG artifact and preserve browser diagnostics.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "browser_open",
+              "browser_screenshot",
+              "read_artifact"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "model-routing-policy-diagnostics",
+      "title": "Model Routing Policy Diagnostics",
+      "category": "model_fallback",
+      "steps": [
+        {
+          "objective": "Explain model routing eligibility, selected order, cooldown skips, and redacted credential state.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "model_fallback",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "runtime-mutation-checkpoint-rollback",
+      "title": "Runtime Mutation Checkpoint Rollback",
+      "category": "verification_repair",
+      "steps": [
+        {
+          "objective": "Create an opt-in runtime mutation checkpoint and roll back owned writes after final verification failure.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "create_checkpoint",
+              "run_verification",
+              "rollback_checkpoint"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "cli-checkpoint-slash-surface",
+      "title": "CLI Checkpoint Slash Surface",
+      "category": "coding_bugfix",
+      "steps": [
+        {
+          "objective": "Use /checkpoints, /checkpoint <label>, and /rollback <id> as the CLI checkpoint operation surface.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "list_checkpoints",
+              "create_checkpoint",
+              "rollback_checkpoint"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "extension-package-contracts",
+      "title": "Extension Package Contracts",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Validate extension package.json compatibility metadata and keep package manifests separate from loadable extension manifests.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "extension_package_contract",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "long-running-process-tools",
+      "title": "Long-running Process Tools",
+      "category": "long_running_automation",
+      "steps": [
+        {
+          "objective": "Start a workspace-scoped background process, read bounded logs, list it, and stop it idempotently.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "process_start",
+              "process_logs",
+              "process_list",
+              "process_stop"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

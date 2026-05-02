@@ -1,0 +1,6 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" role="img" aria-label="Omni Agent Mobile Node">
+  <rect width="128" height="128" rx="24" fill="#0f172a"/>
+  <path d="M34 24h60a10 10 0 0 1 10 10v60a10 10 0 0 1-10 10H34a10 10 0 0 1-10-10V34a10 10 0 0 1 10-10Z" fill="#2563eb"/>
+  <path d="M44 48h40M44 64h28M44 80h40" stroke="#fff" stroke-width="8" stroke-linecap="round"/>
+  <circle cx="92" cy="82" r="10" fill="#22c55e"/>
+</svg>

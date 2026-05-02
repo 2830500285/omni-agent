@@ -1,0 +1,7 @@
+{
+  "name": "release-rollback-fixture",
+  "private": true,
+  "scripts": {
+    "test": "node verify.js"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "name": "@omni-agent/cli",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "omni-agent": "./dist/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@omni-agent/automation": "0.1.0",
+    "@omni-agent/approvals": "0.1.0",
+    "@omni-agent/context": "0.1.0",
+    "@omni-agent/core-runtime": "0.1.0",
+    "@omni-agent/extensions": "0.1.0",
+    "@omni-agent/gateway": "0.1.0",
+    "@omni-agent/model-client": "0.1.0",
+    "@omni-agent/safety": "0.1.0",
+    "@omni-agent/session-store": "0.1.0",
+    "@omni-agent/tools": "0.1.0",
+    "@omni-agent/workspace": "0.1.0"
+  }
+}

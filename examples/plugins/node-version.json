@@ -1,0 +1,16 @@
+{
+  "id": "node-version",
+  "name": "Node Version",
+  "capability": "tool",
+  "description": "Example local extension that exposes a fixed command as an Omni Agent tool.",
+  "tools": [
+    {
+      "name": "node_version",
+      "description": "Print the current Node.js version.",
+      "inputHint": "{}",
+      "riskHint": "read-only",
+      "command": "node --version",
+      "timeoutMs": 10000
+    }
+  ]
+}

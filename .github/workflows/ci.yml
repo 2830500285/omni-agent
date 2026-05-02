@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+jobs:
+  verify:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+        node-version:
+          - 24
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Release artifact smoke
+        run: npm run release:artifact-smoke
+
+      - name: Full tests
+        run: npm test
+
+      - name: Smoke eval
+        run: npm run eval:smoke
+
+      - name: Benchmark eval
+        run: npm run eval:benchmark
+
+      - name: Release local eval
+        run: npm run eval:release-local
+
+      - name: Release diagnostics
+        run: npm run release:diagnostics
+
+      - name: Reference evidence smoke
+        run: npm run reference:evidence-smoke
+
+      - name: Reference parity
+        run: npm run reference:parity -- --strict
+
+      - name: Maturity check
+        run: npm run maturity:check

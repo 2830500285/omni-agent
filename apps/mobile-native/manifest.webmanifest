@@ -1,0 +1,17 @@
+{
+  "name": "Omni Agent Mobile Node",
+  "short_name": "Omni Node",
+  "description": "Installable mobile shell for Omni Agent outbound delivery and device events.",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#0f172a",
+  "theme_color": "#2563eb",
+  "icons": [
+    {
+      "src": "./icons/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

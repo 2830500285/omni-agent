@@ -1,0 +1,20 @@
+{
+  "name": "@omni-agent/core-runtime",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": "./dist/index.js",
+  "dependencies": {
+    "@omni-agent/approvals": "0.1.0",
+    "@omni-agent/context": "0.1.0",
+    "@omni-agent/evals": "0.1.0",
+    "@omni-agent/extensions": "0.1.0",
+    "@omni-agent/model-client": "0.1.0",
+    "@omni-agent/safety": "0.1.0",
+    "@omni-agent/session-store": "0.1.0",
+    "@omni-agent/tools": "0.1.0",
+    "@omni-agent/workspace": "0.1.0"
+  }
+}

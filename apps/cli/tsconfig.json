@@ -1,0 +1,22 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "rootDir": "./src",
+    "outDir": "./dist"
+  },
+  "references": [
+    { "path": "../../packages/automation" },
+    { "path": "../../packages/approvals" },
+    { "path": "../../packages/context" },
+    { "path": "../../packages/core-runtime" },
+    { "path": "../../packages/extensions" },
+    { "path": "../../packages/gateway" },
+    { "path": "../../packages/model-client" },
+    { "path": "../../packages/safety" },
+    { "path": "../../packages/session-store" },
+    { "path": "../../packages/tools" },
+    { "path": "../../packages/workspace" }
+  ],
+  "include": ["src/**/*.ts"]
+}

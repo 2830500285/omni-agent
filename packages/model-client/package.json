@@ -1,0 +1,13 @@
+{
+  "name": "@omni-agent/model-client",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": "./dist/index.js",
+  "dependencies": {
+    "@omni-agent/context": "0.1.0",
+    "@omni-agent/tools": "0.1.0"
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "title": "Verification-Native Runtime Fixture",
+  "description": "Minimal fixture for proving that task completion is not accepted without passed verification evidence.",
+  "verificationPolicy": {
+    "completionRequiresEvidence": true,
+    "minimumEvidenceCount": 1,
+    "requiredEvidenceKinds": [
+      "command"
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "verification.native_completion_evidence",
+      "title": "Completion Requires Verification Evidence",
+      "category": "verification_repair",
+      "workspaceCwd": "./fixtures/ts-bugfix",
+      "steps": [
+        {
+          "objective": "Complete the task only after recording a passed verification command as evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "run_verification"
+            ],
+            "requiredVerificationEvidenceKinds": [
+              "command"
+            ],
+            "requiredFinalResponseIncludes": [
+              "verification evidence recorded"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

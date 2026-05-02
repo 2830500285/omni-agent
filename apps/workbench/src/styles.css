@@ -1,0 +1,23 @@
+:root {
+  color-scheme: dark;
+  --ink: #f3efe7;
+  --ink-dim: #b8b0a3;
+  --base: #100f0d;
+  --line: #40382b;
+  --amber: #d8a84e;
+  --green: #71c18a;
+  --red: #e06d5f;
+  --radius: 8px;
+}
+
+.operator-action-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+}
+
+.operator-health-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 9px;
+}

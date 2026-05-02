@@ -1,0 +1,57 @@
+{
+  "name": "omni-agent",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "omni-agent": "./dist/omni-agent.js"
+  },
+  "files": [
+    "dist/",
+    "README.md",
+    "docs/",
+    "deploy/",
+    "examples/evals/*.json"
+  ],
+  "packageManager": "npm@11.6.2",
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run typecheck && node ./scripts/build.mjs",
+    "dev": "tsx --tsconfig ./tsconfig.base.json ./apps/cli/src/index.ts",
+    "eval:benchmark": "node --import tsx ./scripts/eval-benchmark.ts",
+    "eval:program": "node --import tsx ./scripts/eval-program-check.ts",
+    "eval:release-local": "node --import tsx ./scripts/eval-release-local.ts",
+    "eval:smoke": "node --import tsx ./scripts/eval-smoke.ts",
+    "fixture:business": "node --import tsx ./scripts/create-business-fixture.ts",
+    "fixture:paper": "node --import tsx ./scripts/create-paper-fixture.ts",
+    "maturity:check": "node --import tsx ./scripts/maturity-check.ts",
+    "reference:native": "node --import tsx ./scripts/generate-reference-native.ts",
+    "reference:evidence-smoke": "node --import tsx ./scripts/reference-evidence-smoke.ts",
+    "reference:parity": "node --import tsx ./scripts/reference-parity.ts",
+    "reference:native-report": "node --import tsx ./scripts/generate-reference-native-implementation-report.ts",
+    "reference:translate": "node --import tsx ./scripts/translate-reference-source-lines.ts",
+    "reference:sync": "node --import tsx ./scripts/sync-reference-projects.ts",
+    "release:check": "node --import tsx ./scripts/release-check.ts",
+    "release:artifact-smoke": "node --import tsx ./scripts/release-artifact-smoke.ts",
+    "start": "node ./dist/omni-agent.js",
+    "test": "node ./scripts/run-tests.mjs",
+    "test:core": "node ./scripts/run-tests.mjs tests/safety.test.ts tests/session-store.test.ts tests/workspace.test.ts tests/runtime.test.ts tests/context.test.ts tests/tools.test.ts tests/approvals.test.ts tests/evals.test.ts",
+    "test:gateway": "node ./scripts/run-tests.mjs tests/gateway.test.ts tests/gateway-messages.test.ts tests/channel-contracts.test.ts tests/automation.test.ts tests/mobile-node-client.test.ts tests/mobile-native-shell.test.ts",
+    "test:ops": "node ./scripts/run-tests.mjs tests/cli-ops.test.ts tests/cli-chat.test.ts tests/cli-doctor.test.ts tests/cli-config.test.ts tests/model-client.test.ts tests/extensions.test.ts tests/deploy-templates.test.ts tests/release-check.test.ts tests/maturity-artifacts.test.ts",
+    "release:diagnostics": "node --import tsx ./scripts/release-diagnostics.ts",
+    "typecheck": "tsc -b --pretty false --force"
+  },
+  "dependencies": {
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@types/node": "^24.3.0",
+    "@types/ws": "^8.18.1",
+    "esbuild": "^0.25.11",
+    "tsx": "^4.20.3",
+    "typescript": "^5.9.2"
+  }
+}

@@ -1,0 +1,178 @@
+{
+  "title": "Omni Agent Release Local Runtime Eval",
+  "description": "Small release-blocking matrix that executes the real CLI/runtime path with mock model mode.",
+  "qualityThresholds": {
+    "completionRate": 1,
+    "verificationPassRate": 1,
+    "firstPassRate": 1,
+    "toolReliabilityRate": 0.65,
+    "toolSafetyRate": 1,
+    "stateRetentionRate": 1,
+    "efficiencyScore": 0.75
+  },
+  "scenarios": [
+    {
+      "id": "release.inspect-root",
+      "title": "Inspect Repository Root",
+      "category": "single_agent_bugfix",
+      "workspaceCwd": "../..",
+      "steps": [
+        {
+          "objective": "Inspect the repository root and summarize the next implementation step.",
+          "verificationCommands": [
+            "node --import tsx ./scripts/verify-release-local-step.ts metadata"
+          ],
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "workspace_info",
+              "run_verification"
+            ],
+            "requiredSuccessfulToolNames": [
+              "workspace_info",
+              "run_verification"
+            ],
+            "requiredFinalResponseIncludes": [
+              "Scaffold runtime completed an inspection cycle."
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "release.verification-command",
+      "title": "Run Verification Command",
+      "category": "verification_repair",
+      "workspaceCwd": "../..",
+      "steps": [
+        {
+          "objective": "Inspect the repository and run the supplied release verification command.",
+          "verificationCommands": [
+            "node --import tsx ./scripts/verify-release-local-step.ts release-gates"
+          ],
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "workspace_info",
+              "run_verification"
+            ],
+            "requiredSuccessfulToolNames": [
+              "workspace_info",
+              "run_verification"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "release.state-continuation",
+      "title": "Preserve Thread State Across Steps",
+      "category": "long_context_modification",
+      "workspaceCwd": "../..",
+      "steps": [
+        {
+          "id": "inspect",
+          "objective": "Inspect package metadata and remember that this is a release-local eval.",
+          "verificationCommands": [
+            "node --import tsx ./scripts/verify-release-local-step.ts metadata"
+          ],
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "workspace_info",
+              "run_verification"
+            ],
+            "requiredSuccessfulToolNames": [
+              "workspace_info",
+              "run_verification"
+            ]
+          }
+        },
+        {
+          "id": "continue",
+          "objective": "Continue the same release-local eval thread and report current local status.",
+          "verificationCommands": [
+            "node --import tsx ./scripts/verify-release-local-step.ts state-continuation"
+          ],
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "workspace_info",
+              "run_verification"
+            ],
+            "requiredSuccessfulToolNames": [
+              "workspace_info",
+              "run_verification"
+            ],
+            "requiredFinalResponseIncludes": [
+              "release-local eval"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "release.runtime-rollback-recovery",
+      "title": "Runtime Rollback Failure Recovery",
+      "category": "verification_repair",
+      "workspaceCwd": "fixtures/release-rollback",
+      "steps": [
+        {
+          "objective": "Create an opt-in runtime mutation checkpoint, trigger final verification failure, record pre-rollback-failure-evidence, and roll back owned writes.",
+          "verificationCommands": [
+            "node verify.js"
+          ],
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "create_checkpoint",
+              "run_verification",
+              "rollback_checkpoint"
+            ],
+            "requiredSuccessfulToolNames": [
+              "create_checkpoint",
+              "run_verification",
+              "rollback_checkpoint"
+            ],
+            "requiredFinalResponseIncludes": [
+              "pre-rollback-failure-evidence"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "release.subagent-orchestration",
+      "title": "Subagent Orchestration Evidence",
+      "category": "subagent_delegation",
+      "workspaceCwd": "../..",
+      "steps": [
+        {
+          "objective": "Run a release-local subagent orchestration check that spawns child jobs with explicit budgets, shared target paths, progress visibility, and topology listing.",
+          "verificationCommands": [
+            "node --import tsx ./scripts/verify-release-local-step.ts metadata"
+          ],
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "spawn_subagent",
+              "list_subagents",
+              "run_verification"
+            ],
+            "requiredSuccessfulToolNames": [
+              "spawn_subagent",
+              "list_subagents",
+              "run_verification"
+            ],
+            "requiredFinalResponseIncludes": [
+              "release-local subagent orchestration verified",
+              "subagent topology persisted",
+              "subagent budgets and target paths observable",
+              "subagent progress events recorded"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

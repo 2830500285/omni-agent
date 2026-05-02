@@ -1,0 +1,10 @@
+{
+  "routes": [
+    {
+      "title": "Benchmark route",
+      "channelType": "slack",
+      "channelKey": "benchmark-channel",
+      "adapterType": "filesystem"
+    }
+  ]
+}
