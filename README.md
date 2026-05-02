@@ -1,5 +1,11 @@
 # Omni Agent
 
+<p align="center">
+  <a href="#omni-agent">README</a> |
+  <a href="docs/tutorial/README.md">Tutorials</a> |
+  <a href="docs/security.md">Security</a>
+</p>
+
 Local-first CLI/TUI coding agent for repository work.
 
 ## Project thesis
