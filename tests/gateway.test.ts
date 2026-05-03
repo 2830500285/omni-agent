@@ -20,6 +20,33 @@ import { normalizeRunRequest } from "../packages/gateway/src/runner.ts";
 import { SqliteSessionStore } from "../packages/session-store/src/index.ts";
 import { LocalWorkspaceService } from "../packages/workspace/src/index.ts";
 
+type FetchInput = Parameters<typeof fetch>[0];
+type FetchInit = Parameters<typeof fetch>[1];
+
+const rawFetch = globalThis.fetch.bind(globalThis);
+
+globalThis.fetch = (async (input: FetchInput, init?: FetchInit) => {
+  const localLoopback = isLoopbackFetchInput(input);
+  const requestInit = localLoopback ? withConnectionClose(init) : init;
+  const method = resolveFetchMethod(input, init);
+  const retryable = localLoopback && (method === "GET" || method === "HEAD");
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return await rawFetch(input, requestInit);
+    } catch (error) {
+      lastError = error;
+      if (!retryable || attempt === 2 || !isTransientLocalFetchError(error)) {
+        throw error;
+      }
+      await new Promise((resolveRetry) => setTimeout(resolveRetry, 100 * (attempt + 1)));
+    }
+  }
+
+  throw lastError;
+}) as typeof fetch;
+
 test("gateway normalizes tool policy context from run requests", () => {
   const normalized = normalizeRunRequest(
     {
@@ -5136,6 +5163,44 @@ test("gateway websocket control plane tracks nodes and dispatches runs", async (
     removeTempDir(storeRoot);
   }
 });
+
+function isLoopbackFetchInput(input: FetchInput): boolean {
+  const rawUrl = typeof input === "string" || input instanceof URL ? String(input) : input.url;
+  try {
+    const url = new URL(rawUrl);
+    return (
+      url.protocol === "http:" &&
+      (url.hostname === "127.0.0.1" || url.hostname === "localhost" || url.hostname === "::1")
+    );
+  } catch {
+    return false;
+  }
+}
+
+function withConnectionClose(init: FetchInit): FetchInit {
+  const headers = new Headers(init?.headers);
+  headers.set("connection", "close");
+  return { ...init, headers };
+}
+
+function resolveFetchMethod(input: FetchInput, init: FetchInit): string {
+  if (init?.method) {
+    return init.method.toUpperCase();
+  }
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return input.method.toUpperCase();
+  }
+  return "GET";
+}
+
+function isTransientLocalFetchError(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  const cause = (error as { cause?: { code?: unknown } }).cause;
+  const code = typeof cause?.code === "string" ? cause.code : "";
+  return code === "ECONNRESET" || code === "ECONNREFUSED" || code === "EPIPE" || code === "UND_ERR_SOCKET";
+}
 
 function initializeGitRepository(cwd: string): void {
   execFileSync("git", ["init", "--initial-branch=main"], { cwd, stdio: "ignore" });
