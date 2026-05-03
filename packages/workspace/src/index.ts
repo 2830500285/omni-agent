@@ -753,6 +753,21 @@ async function resolveWorkspaceCheckpointBoundaryPath(targetPath: string): Promi
   }
 }
 
+async function relativeInsideWorkspace(root: string, candidate: string): Promise<string | null> {
+  const [canonicalRoot, canonicalCandidate] = await Promise.all([
+    resolveWorkspaceBoundaryPath(root),
+    resolveWorkspaceBoundaryPath(candidate),
+  ]);
+  const relativePath = relative(canonicalRoot, canonicalCandidate);
+  if (!relativePath) {
+    return ".";
+  }
+  if (relativePath.startsWith("..") || isDriveQualified(relativePath)) {
+    return null;
+  }
+  return relativePath;
+}
+
 export class LocalWorkspaceService {
   public readonly root: string;
   public readonly artifactsRoot: string;
@@ -2198,7 +2213,7 @@ export class LocalWorkspaceService {
       return null;
     }
 
-    const workspacePathSpec = this.getRepoPathSpec(repoRoot, this.root);
+    const workspacePathSpec = await this.getRepoPathSpec(repoRoot, this.root);
     if (workspacePathSpec === null) {
       return null;
     }
@@ -2217,14 +2232,21 @@ export class LocalWorkspaceService {
     }
 
     const lowered = query.toLowerCase();
-    return result.stdout
-      .split(/\r?\n/)
-      .map((entry) => entry.trim())
-      .filter(Boolean)
-      .map((entry) => relative(this.root, resolve(repoRoot, entry)))
-      .filter((entry) => entry && !entry.startsWith("..") && !isDriveQualified(entry))
-      .filter((entry) => entry.toLowerCase().includes(lowered))
-      .slice(0, limit);
+    const matches: string[] = [];
+    for (const rawEntry of result.stdout.split(/\r?\n/)) {
+      if (matches.length >= limit) {
+        break;
+      }
+      const entry = rawEntry.trim();
+      if (!entry) {
+        continue;
+      }
+      const relativePath = await relativeInsideWorkspace(this.root, resolve(repoRoot, entry));
+      if (relativePath && relativePath !== "." && relativePath.toLowerCase().includes(lowered)) {
+        matches.push(relativePath);
+      }
+    }
+    return matches;
   }
 
   private async searchTextWithGit(
@@ -2241,7 +2263,7 @@ export class LocalWorkspaceService {
     }
 
     const resolvedPath = this.resolveInsideWorkspace(options.path);
-    const pathSpec = this.getRepoPathSpec(repoRoot, resolvedPath);
+    const pathSpec = await this.getRepoPathSpec(repoRoot, resolvedPath);
     if (pathSpec === null) {
       return null;
     }
@@ -2269,8 +2291,8 @@ export class LocalWorkspaceService {
       if (!parsed) {
         continue;
       }
-      const relativePath = relative(this.root, resolve(repoRoot, parsed.path));
-      if (!relativePath || relativePath.startsWith("..") || isDriveQualified(relativePath)) {
+      const relativePath = await relativeInsideWorkspace(this.root, resolve(repoRoot, parsed.path));
+      if (!relativePath || relativePath === ".") {
         continue;
       }
       matches.push({
@@ -2312,12 +2334,16 @@ export class LocalWorkspaceService {
     return details.isDirectory() ? targetPath : dirname(targetPath);
   }
 
-  private getRepoPathSpec(repoRoot: string, targetPath: string): string | null {
-    const relativePath = relative(resolve(repoRoot), resolve(targetPath));
+  private async getRepoPathSpec(repoRoot: string, targetPath: string): Promise<string | null> {
+    const [canonicalRepoRoot, canonicalTargetPath] = await Promise.all([
+      resolveWorkspaceBoundaryPath(repoRoot),
+      resolveWorkspaceBoundaryPath(targetPath),
+    ]);
+    const relativePath = relative(canonicalRepoRoot, canonicalTargetPath);
     if (relativePath.startsWith("..") || isDriveQualified(relativePath)) {
       return null;
     }
-    return relativePath && relativePath !== "." ? relativePath : "";
+    return relativePath && relativePath !== "." ? relativePath.replace(/\\/g, "/") : "";
   }
 
   private recordSearchLoopGuard(key: string): void {
@@ -2506,6 +2532,10 @@ export class LocalWorkspaceService {
     }
 
     const truncatedContent = trimInstructionContent(sections.join("\n\n"), maxChars);
+    const relativeSupportingPaths = await Promise.all(
+      supportingPaths.map(async (entry) => (await relativeInsideWorkspace(this.root, entry)) ?? (relative(this.root, entry) || entry)),
+    );
+
     return {
       path: primaryPath,
       name,
@@ -2514,7 +2544,7 @@ export class LocalWorkspaceService {
       relatedSkills: metadata.relatedSkills,
       content: truncatedContent.content,
       truncated: truncatedContent.truncated,
-      supportingPaths: supportingPaths.map((entry) => relative(this.root, entry) || entry),
+      supportingPaths: relativeSupportingPaths,
     };
   }
 
@@ -3344,17 +3374,21 @@ function formatMemoryDate(value: Date): string {
   return `${year}-${month}-${day}`;
 }
 
-function prepareInstructionContent(
+async function prepareInstructionContent(
   candidatePath: string,
   scopeDirectory: string,
   targetPath: string,
   workspaceRoot?: string,
 ): Promise<{ content: string } | null> {
+  const canonicalWorkspaceRoot = workspaceRoot ? await resolveWorkspaceBoundaryPath(workspaceRoot) : undefined;
+  const trustedExternalRoots = await Promise.all(
+    listTrustedInstructionIncludeRoots(candidatePath).map((root) => resolveWorkspaceBoundaryPath(root)),
+  );
   return loadInstructionContent(candidatePath, scopeDirectory, targetPath, {
-    workspaceRoot,
+    workspaceRoot: canonicalWorkspaceRoot,
     depth: 0,
     processedPaths: new Set<string>(),
-    trustedExternalRoots: listTrustedInstructionIncludeRoots(candidatePath),
+    trustedExternalRoots,
   });
 }
 
@@ -3630,11 +3664,17 @@ function resolveInstructionIncludePath(
 
   let resolvedPath: string;
   if (normalizedPath.startsWith("~/")) {
-    const homeDirectory = process.env.USERPROFILE ?? process.env.HOME;
-    if (!homeDirectory) {
-      return null;
+    const homeRelativePath = normalizedPath.slice(2).replace(/\\/g, "/");
+    const trustedClaudeRoot = trustedExternalRoots.find((root) => basename(root).toLowerCase() === ".claude");
+    if (trustedClaudeRoot && homeRelativePath.toLowerCase().startsWith(".claude/")) {
+      resolvedPath = resolve(trustedClaudeRoot, homeRelativePath.slice(".claude/".length));
+    } else {
+      const homeDirectory = process.env.USERPROFILE ?? process.env.HOME;
+      if (!homeDirectory) {
+        return null;
+      }
+      resolvedPath = resolve(homeDirectory, normalizedPath.slice(2));
     }
-    resolvedPath = resolve(homeDirectory, normalizedPath.slice(2));
   } else if (normalizedPath.startsWith("/") || isDriveQualified(normalizedPath)) {
     resolvedPath = resolve(normalizedPath);
   } else {

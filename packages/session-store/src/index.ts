@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { basename, join, resolve } from "node:path";
+import { basename, join, resolve, win32 } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 
 import { redactSensitiveText, redactSensitiveValue } from "@omni-agent/safety";
@@ -12,6 +12,19 @@ function hashThreadSummary(summary: string): string {
 
 function sanitizeSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, "-");
+}
+
+function isStoredWindowsAbsolutePath(value: string): boolean {
+  return win32.isAbsolute(value.trim());
+}
+
+function normalizeStoredPath(value: string): string {
+  const trimmed = value.trim();
+  return isStoredWindowsAbsolutePath(trimmed) ? win32.normalize(trimmed) : resolve(trimmed);
+}
+
+function basenameStoredPath(value: string): string {
+  return isStoredWindowsAbsolutePath(value) ? win32.basename(value) : basename(value);
 }
 
 export type RunStatus =
@@ -735,7 +748,7 @@ export class SqliteSessionStore {
   public upsertWorkspace(cwd: string): WorkspaceRecord {
     this.initialize();
     const now = new Date().toISOString();
-    const normalizedCwd = resolve(cwd);
+    const normalizedCwd = normalizeStoredPath(cwd);
     const existing = this.database
       .prepare(
         "SELECT id, name, cwd, created_at AS createdAt, updated_at AS updatedAt FROM workspaces WHERE cwd = ?",
@@ -743,7 +756,7 @@ export class SqliteSessionStore {
       .get(normalizedCwd) as WorkspaceRecord | undefined;
 
     if (existing) {
-      const name = basename(normalizedCwd);
+      const name = basenameStoredPath(normalizedCwd);
       this.database.prepare("UPDATE workspaces SET name = ?, updated_at = ? WHERE id = ?").run(name, now, existing.id);
       return {
         ...existing,
@@ -754,7 +767,7 @@ export class SqliteSessionStore {
 
     const record: WorkspaceRecord = {
       id: randomUUID(),
-      name: basename(normalizedCwd),
+      name: basenameStoredPath(normalizedCwd),
       cwd: normalizedCwd,
       createdAt: now,
       updatedAt: now,
@@ -767,7 +780,7 @@ export class SqliteSessionStore {
 
   public getWorkspaceByCwd(cwd: string): WorkspaceRecord | null {
     this.initialize();
-    const normalizedCwd = resolve(cwd);
+    const normalizedCwd = normalizeStoredPath(cwd);
     return (
       (this.database
         .prepare(
@@ -1286,11 +1299,11 @@ export class SqliteSessionStore {
         "UPDATE runs SET source_root = ?, execution_root = ?, worktree_path = ?, worktree_branch = ?, sandbox_path = ?, updated_at = ? WHERE id = ?",
       )
       .run(
-        resolve(input.sourceRoot),
-        resolve(input.executionRoot),
-        input.worktreePath ? resolve(input.worktreePath) : null,
+        normalizeStoredPath(input.sourceRoot),
+        normalizeStoredPath(input.executionRoot),
+        input.worktreePath ? normalizeStoredPath(input.worktreePath) : null,
         input.worktreeBranch,
-        input.sandboxPath ? resolve(input.sandboxPath) : null,
+        input.sandboxPath ? normalizeStoredPath(input.sandboxPath) : null,
         now,
         input.runId,
       );
