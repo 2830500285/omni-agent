@@ -381,8 +381,9 @@ export function normalizeAcpListSessionsRequest(
   defaults: GatewayRuntimeDefaults,
 ): AcpListSessionsRequest {
   const record = toRecord(input);
+  const cwd = normalizeOptionalString(record.cwd) ?? normalizeOptionalString(defaults.cwd);
   return {
-    cwd: normalizeOptionalString(record.cwd) ?? normalizeOptionalString(defaults.cwd),
+    cwd: cwd ? normalizeAcpCwd(cwd, defaults) : undefined,
     workspaceId: normalizeOptionalString(record.workspaceId ?? record.workspace_id),
     limit: normalizePositiveInteger(record.limit) ?? 50,
   };
