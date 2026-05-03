@@ -2478,13 +2478,14 @@ test("gateway exposes health, run execution, and inspection endpoints", async ()
         task: "Inspect the repository through the gateway",
         cwd: workspaceRoot,
         mode: "mock",
-        executionDomain: "worktree",
+        executionDomain: "workspace",
         contextEngineId: "focused-review",
         memoryProviderIds: ["gateway-memory"],
       }),
     });
-    assert.equal(runResponse.status, 200);
-    const runPayload = (await runResponse.json()) as {
+    const runResponseBody = await runResponse.text();
+    assert.equal(runResponse.status, 200, runResponseBody);
+    const runPayload = JSON.parse(runResponseBody) as {
       summary?: {
         run?: { id?: string; threadId?: string; status?: string };
         executionDomain?: string;
@@ -2495,8 +2496,8 @@ test("gateway exposes health, run execution, and inspection endpoints", async ()
     };
 
     assert.ok(runPayload.summary?.run?.id);
-    assert.equal(runPayload.summary?.executionDomain, "worktree");
-    assert.ok(runPayload.summary?.worktreePath);
+    assert.equal(runPayload.summary?.executionDomain, "workspace");
+    assert.equal(runPayload.summary?.worktreePath, null);
     assert.equal(runPayload.summary?.contextEngineStatus?.engineId, "focused-review");
     assert.ok(runPayload.extensions?.some((entry) => entry.id === "gateway-assets"));
     assert.match(readFileSync(memoryProviderMarkerPath, "utf8"), /Inspect the repository through the gateway/);
@@ -2784,8 +2785,10 @@ test("gateway exposes health, run execution, and inspection endpoints", async ()
     assert.equal(cleanupResponse.status, 200);
     const cleanupPayload = (await cleanupResponse.json()) as {
       cleaned?: boolean;
+      reason?: string;
     };
-    assert.equal(cleanupPayload.cleaned, true);
+    assert.equal(cleanupPayload.cleaned, false);
+    assert.equal(cleanupPayload.reason, "Run executed directly in the workspace.");
     reader?.cancel();
   } finally {
     await server?.close();

@@ -31,7 +31,7 @@ import {
   type ModelTurnResult,
 } from "../packages/model-client/src/index.ts";
 import { SqliteSessionStore } from "../packages/session-store/src/index.ts";
-import { ToolRegistry, registerBuiltInTools } from "../packages/tools/src/index.ts";
+import { ToolRegistry, registerBuiltInTools, type SubagentJobRecord } from "../packages/tools/src/index.ts";
 import { LocalWorkspaceService } from "../packages/workspace/src/index.ts";
 
 test("runtime can resume the latest thread for the same workspace", async () => {
@@ -5850,8 +5850,18 @@ test("runtime propagates cancellation across the subagent subtree", async () => 
     });
 
     assert.ok(summary.run.status === "completed" || summary.run.status === "completed_with_warnings");
-    assert.match(summary.finalResponse, /parent-status=cancelled/);
-    assert.match(summary.finalResponse, /grandchild-status=(cancelled|completed)/);
+    const cancelledJobs = await waitForSubagentJobs(
+      () => sessionStore?.listSubagentJobs({ parentRunId: summary.run.id }) ?? [],
+      (jobs) => {
+        const parent = jobs.find((job) => job.objective.startsWith("Cancelable parent:"));
+        const grandchild = jobs.find((job) => job.objective.startsWith("Slow cancellable grandchild:"));
+        return parent?.status === "cancelled" && (grandchild?.status === "cancelled" || grandchild?.status === "completed");
+      },
+    );
+    const parent = cancelledJobs.find((job) => job.objective.startsWith("Cancelable parent:"));
+    const grandchild = cancelledJobs.find((job) => job.objective.startsWith("Slow cancellable grandchild:"));
+    assert.equal(parent?.status, "cancelled");
+    assert.match(grandchild?.status ?? "", /^(cancelled|completed)$/);
   } finally {
     await new Promise((resolvePromise) => setTimeout(resolvePromise, 250));
     sessionStore?.close();
@@ -10418,6 +10428,21 @@ function extractLatestJsonDetails<T>(
   } catch {
     return null;
   }
+}
+
+async function waitForSubagentJobs(
+  readJobs: () => readonly SubagentJobRecord[],
+  predicate: (jobs: readonly SubagentJobRecord[]) => boolean,
+): Promise<readonly SubagentJobRecord[]> {
+  let latest: readonly SubagentJobRecord[] = [];
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    latest = readJobs();
+    if (predicate(latest)) {
+      return latest;
+    }
+    await delay(50);
+  }
+  return latest;
 }
 
 function removeTempDir(path: string): void {
