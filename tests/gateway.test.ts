@@ -3234,15 +3234,20 @@ test("gateway enforces auth and delivers outbound route messages through filesys
 
     const outboxFiles = readdirSync(outboxRoot).filter((entry) => entry.endsWith(".json"));
     assert.ok(outboxFiles.length >= 2);
-    const latestOutboxPayload = JSON.parse(
-      readFileSync(join(outboxRoot, outboxFiles.at(-1) ?? ""), "utf8"),
-    ) as {
-      content?: string;
-      route?: { id?: string };
-      metadata?: { inboundMessageId?: string };
-    };
-    assert.equal(latestOutboxPayload.route?.id, routePayload.route?.id);
-    assert.ok(typeof latestOutboxPayload.content === "string" && latestOutboxPayload.content.length > 0);
+    const outboundPayloads = outboxFiles
+      .map((fileName) => JSON.parse(readFileSync(join(outboxRoot, fileName), "utf8")) as {
+        content?: string;
+        route?: { id?: string };
+        metadata?: { inboundMessageId?: string };
+      })
+      .filter((payload) => payload.route?.id === routePayload.route?.id && typeof payload.content === "string");
+    assert.ok(outboundPayloads.length >= 2);
+    assert.ok(outboundPayloads.every((payload) => (payload.content ?? "").length > 0));
+    const inboundReplyPayload = outboundPayloads.find(
+      (payload) => payload.metadata?.inboundMessageId === authorizedInboundPayload.inboundMessage?.id,
+    );
+    assert.equal(inboundReplyPayload?.route?.id, routePayload.route?.id);
+    assert.ok(typeof inboundReplyPayload?.content === "string" && inboundReplyPayload.content.length > 0);
   } finally {
     await server?.close();
     removeTempDir(workspaceRoot);
