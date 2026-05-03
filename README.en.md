@@ -1,4 +1,4 @@
-![Omni Agent banner](docs/assets/omni-agent-banner.svg)
+![Omni Agent banner](docs/assets/omni-agent-banner.png)
 
 # Omni Agent
 
