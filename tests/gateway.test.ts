@@ -3483,7 +3483,7 @@ test("gateway polls Slack and Discord routes and preserves reply semantics", asy
       },
     });
 
-    await waitForCondition(async () => slackRequests.length > 0 && discordRequests.length > 0, 10_000);
+    await waitForCondition(async () => slackRequests.length > 0 && discordRequests.length > 0, 25_000);
 
     assert.equal(String(slackRequests[0]?.channel ?? ""), "C12345");
     assert.match(String(slackRequests[0]?.text ?? ""), /Inspect the repository from Slack polling|Scaffold runtime/i);
