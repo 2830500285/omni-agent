@@ -1,0 +1,17 @@
+cff-version: 1.2.0
+message: "If you use Omni Agent in research, evaluation reports, benchmarks, or derivative tools, please cite it as below."
+title: "Omni Agent"
+type: software
+version: "0.1.0"
+authors:
+  - name: "2830500285"
+repository-code: "https://github.com/2830500285/omni-agent"
+url: "https://github.com/2830500285/omni-agent#readme"
+abstract: "Omni Agent is a verification-native local coding agent runtime with eval gates, memory, governed subagents, model profiles, and evidence-oriented run records."
+keywords:
+  - ai-agent
+  - coding-agent
+  - agent-evals
+  - verification
+  - local-first
+license: MIT
