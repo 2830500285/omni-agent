@@ -2,6 +2,7 @@
 
 <p align="center">
   <a href="README.en.md"><img alt="Docs" src="https://img.shields.io/badge/DOCS-README-22c55e?style=for-the-badge&labelColor=0b1f14"></a>
+  <a href="#current-scope"><img alt="Beta" src="https://img.shields.io/badge/STATUS-BETA-65a30d?style=for-the-badge&labelColor=0b1f14"></a>
   <a href="docs/tutorial/README.en.md"><img alt="Tutorials" src="https://img.shields.io/badge/TUTORIALS-BOOK-16a34a?style=for-the-badge&labelColor=0b1f14"></a>
   <a href="https://github.com/2830500285/omni-agent/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/2830500285/omni-agent/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=0b1f14&color=22c55e"></a>
   <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/LICENSE-MIT-84cc16?style=for-the-badge&labelColor=0b1f14"></a>
