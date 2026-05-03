@@ -5881,6 +5881,7 @@ function startManagedProcess(command: string, cwd: string, ownerWorkspaceRoot: s
     cwd,
     shell: true,
     windowsHide: true,
+    detached: process.platform !== "win32",
   });
   const id = randomUUID();
   const record: ManagedProcessRecord = {
@@ -5944,6 +5945,14 @@ async function killManagedProcessTree(child: ChildProcess): Promise<void> {
       killer.on("error", () => resolvePromise());
     });
     return;
+  }
+  if (child.pid) {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+      return;
+    } catch {
+      // Fall through to the direct child as a best-effort fallback.
+    }
   }
   try {
     child.kill();

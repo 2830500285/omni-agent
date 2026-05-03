@@ -1154,11 +1154,7 @@ export class LocalWorkspaceService {
         if (settled) {
           return;
         }
-        try {
-          child?.kill();
-        } catch {
-          // Best-effort cancellation.
-        }
+        terminateCommandProcess(child);
         settle({
           ok: false,
           command: execution.displayCommand,
@@ -1187,6 +1183,7 @@ export class LocalWorkspaceService {
           env: buildWorkspaceCommandEnv(),
           shell: true,
           windowsHide: true,
+          detached: process.platform !== "win32",
         });
       } catch (error) {
         settle({
@@ -1204,11 +1201,7 @@ export class LocalWorkspaceService {
       timer = options.timeoutMs
         ? setTimeout(() => {
             if (!settled) {
-              try {
-                child.kill();
-              } catch {
-                // Best-effort timeout cleanup.
-              }
+              terminateCommandProcess(child);
               void this.writeArtifact("command-timeout", `${execution.displayCommand}\n\n${stdout}\n${stderr}`).then(
                 (artifactPath) => {
                   settle({
@@ -2778,6 +2771,25 @@ export class LocalWorkspaceService {
         });
       });
     });
+  }
+}
+
+function terminateCommandProcess(child: ChildProcess | undefined): void {
+  if (!child) {
+    return;
+  }
+  if (process.platform !== "win32" && child.pid) {
+    try {
+      process.kill(-child.pid, "SIGTERM");
+      return;
+    } catch {
+      // Fall through to direct child termination.
+    }
+  }
+  try {
+    child.kill();
+  } catch {
+    // Best-effort command cleanup.
   }
 }
 
