@@ -15,7 +15,7 @@ function sanitizeSegment(value: string): string {
 }
 
 function isStoredWindowsAbsolutePath(value: string): boolean {
-  return win32.isAbsolute(value.trim());
+  return /^[a-zA-Z]:[\\/]/.test(value.trim()) || /^\\\\[^\\]/.test(value.trim());
 }
 
 function normalizeStoredPath(value: string): string {
