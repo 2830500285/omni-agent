@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { basename, join, relative } from "node:path";
+import { realpath } from "node:fs/promises";
+import { basename, isAbsolute, join, relative } from "node:path";
 
 import {
   classifyToolCall,
@@ -855,6 +856,16 @@ function resolveRuntimeToolPolicyContext(input: {
     threadId: input.threadId,
     sessionId: input.sessionId?.trim() || input.base?.sessionId || input.threadId,
   };
+}
+
+async function resolveExecutionRelativeSubpath(repoRoot: string, workspaceRoot: string): Promise<string> {
+  const realRepoRoot = await realpath(repoRoot).catch(() => repoRoot);
+  const realWorkspaceRoot = await realpath(workspaceRoot).catch(() => workspaceRoot);
+  const realRelative = relative(realRepoRoot, realWorkspaceRoot);
+  if (!realRelative.startsWith("..") && !isAbsolute(realRelative)) {
+    return realRelative;
+  }
+  return relative(repoRoot, workspaceRoot);
 }
 
 function resolveToolPolicyChannelKeys(context: RuntimeToolPolicyContext | undefined): string[] {
@@ -3708,7 +3719,7 @@ export class AgentRuntime {
       throw new Error("Worktree execution requires a git repository.");
     }
 
-    const relativeSubpath = relative(sourceSnapshot.repoRoot, this.workspace.root);
+    const relativeSubpath = await resolveExecutionRelativeSubpath(sourceSnapshot.repoRoot, this.workspace.root);
     const worktreeName = `run-${sanitizeSegment(run.id.slice(0, 8))}`;
     const worktreeBranch = `omni/${sanitizeSegment(thread.id.slice(0, 8))}/${sanitizeSegment(run.id.slice(0, 8))}`;
     const created = await this.workspace.createWorktree(worktreeName, worktreeBranch);
