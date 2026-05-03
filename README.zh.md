@@ -20,8 +20,33 @@ Omni Agent 的核心定位是 verification-native multi-agent runtime。任务�
 
 ## 教程
 
+这套教程不是简单的命令清单，而是按“书”的方式组织的入门材料。它默认读者可能还不了解 Agent runtime、eval harness、model profile、tool calling、benchmark evidence 等概念，所以每一章都会同时解释概念、代码位置和实际操作方法。
+
+从这里开始：
+
 - [英文教程](docs/tutorial/README.en.md)
 - [中文教程](docs/tutorial/README.zh.md)
+
+推荐阅读顺序：
+
+1. 先读项目目录地图。你会先知道每个目录负责什么，形成整体心智模型，再开始改代码。
+2. 再跑 quickstart 命令。目的不只是把 CLI 启动起来，而是在实际输出里理解 `runtime`、`workspace`、`model profile`、`doctor check` 这些词的含义。
+3. 接着读 runtime 运行循环。教程会把一个任务从 CLI 输入开始，一路追踪到模型选择、上下文构造、工具执行、验证命令和持久化 run record。
+4. Eval 章节要慢慢读。它会解释 synthetic benchmark、mock runtime check、real-model benchmark 的区别。这个区别很重要：synthetic 高分只能说明 harness、manifest 和评分逻辑没坏，不能说明真实模型完成了任务。
+5. 最后做一个小实现练习。新增或修改一个 eval scenario，跑检查，再查看证据。这样才能把 Omni Agent 当成工程系统理解，而不是只把它当作聊天机器人。
+
+教程里会反复出现的核心名词：
+
+- Agent runtime：Agent 的执行循环。它接收任务、准备上下文、调用模型、选择工具、执行安全策略，并记录结果。
+- Workspace：Agent 被允许检查和修改的本地仓库或项目目录。
+- Model profile：一个命名的模型配置，通常包含 provider 地址、model id、API key 环境变量名、是否支持 streaming、是否支持 tool calling。
+- Tool call：模型发起的结构化动作，例如读文件、运行命令、搜索记忆、调用 extension。
+- Approval policy：审批规则层。它决定哪些动作可以自动执行，哪些动作必须让操作者确认。
+- Trace 或 run artifact：一次任务的证据记录，包括模型回合、工具事件、验证命令、耗时、token usage 和失败原因。
+- Eval manifest：定义评测任务的 JSON suite，里面包含 fixture、期望修改文件、必需工具、必需输出片段和评分规则。
+- Capability-backed claim：有证据支撑的能力声明。公开说某项能力已经具备时，必须能对应到测试、benchmark scenario、maturity evidence 或 release gate。
+
+读完以后，读者应该能说清楚 Omni Agent 是什么，能在本地运行它，能安全地接入真实模型，能诚实解读 benchmark 结果，并且能用一个小的、可验证的改动扩展系统。
 
 ## 快速开始
 

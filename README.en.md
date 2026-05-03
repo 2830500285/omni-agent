@@ -15,8 +15,58 @@ are documented in `docs/omni-agent-paradigms.md`.
 
 ## Tutorials
 
+The tutorial is written as a guided book, not as a loose command list. It assumes
+the reader may be new to agent runtimes, eval harnesses, model profiles, tool
+calling, and benchmark evidence, so each chapter explains both the idea and the
+exact place where that idea appears in this repository.
+
+Start here:
+
 - [English tutorial](docs/tutorial/README.en.md)
 - [Chinese tutorial](docs/tutorial/README.zh.md)
+
+How to read it:
+
+1. Read the project map first. It explains the major directories and gives you
+   a mental model before you touch code.
+2. Run the quickstart commands. The goal is not only to start the CLI, but to
+   learn what "runtime", "workspace", "model profile", and "doctor check" mean
+   in practice.
+3. Follow the runtime chapter. It traces one task from CLI input, through model
+   selection, context building, tool execution, verification, and persisted run
+   records.
+4. Study the eval chapters slowly. They explain the difference between a
+   synthetic benchmark, a mock runtime check, and a real-model benchmark. This
+   distinction matters because a high synthetic score proves the harness works;
+   it does not prove a real model solved the tasks.
+5. Finish with one small implementation exercise. Add or change one eval
+   scenario, run the checks, and inspect the evidence. That is the fastest way
+   to understand Omni Agent as an engineering system rather than a chatbot demo.
+
+Core terms introduced in the tutorial:
+
+- Agent runtime: the execution loop that receives a task, prepares context,
+  calls a model, chooses tools, applies safety policy, and records the result.
+- Workspace: the local repository or project directory the agent is allowed to
+  inspect and modify.
+- Model profile: a named provider configuration, such as an OpenAI-compatible
+  endpoint, model id, key environment variable, streaming support, and tool-call
+  support.
+- Tool call: a structured action requested by the model, such as reading a
+  file, running a command, searching memory, or invoking an extension.
+- Approval policy: the rule layer that decides which actions can run
+  automatically and which actions require operator review.
+- Trace or run artifact: the stored evidence of what happened during a task,
+  including model turns, tool events, verification commands, duration, and
+  usage when available.
+- Eval manifest: a JSON suite that defines tasks, fixtures, expected files,
+  required tools, required snippets, and scoring rules.
+- Capability-backed claim: a public feature claim that is tied to tests,
+  benchmark scenarios, maturity evidence, or release gates.
+
+By the end, a reader should be able to explain what Omni Agent does, run it
+locally, connect a real model safely, interpret benchmark results honestly, and
+extend the system with a small verified change.
 
 ## Scripts
 
