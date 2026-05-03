@@ -1299,7 +1299,7 @@ export class LocalWorkspaceService {
     const safeName = sanitizePathSegment(name) || "worktree";
     const worktreePath = join(worktreesRoot, safeName);
     const branchName = branch ?? `omni/${safeName}`;
-    const result = await this.runCommand(`git worktree add "${worktreePath}" -b "${branchName}"`, {
+    const result = await this.runCommand(`git worktree add -b "${branchName}" "${worktreePath}"`, {
       cwd: ".",
       timeoutMs: 120_000,
     });

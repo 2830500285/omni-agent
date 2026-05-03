@@ -50,6 +50,14 @@ export interface ReferenceNativeCoverageSummary {
 
 export { nativeReferenceAdapters } from "./generated.js";
 export {
+  getReferenceSourceInventoryEntry,
+  hasReferenceSourceInventoryEntry,
+  normalizeReferenceSourcePath,
+  referenceSourceInventory,
+  type ReferenceSourceInventoryEntry,
+  type ReferenceSourceInventorySource,
+} from "./source-inventory.js";
+export {
   executeNativeImplementation,
   getNativeImplementationPlan,
   listNativeImplementationPlans,

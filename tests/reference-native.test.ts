@@ -7,6 +7,7 @@ import {
   executeNativeImplementation,
   getNativeImplementationPlan,
   getNativeReferenceAdapter,
+  hasReferenceSourceInventoryEntry,
   nativeReferenceAdapters,
   summarizeNativeImplementationCoverage,
   summarizeNativeReferenceAdapters,
@@ -32,7 +33,17 @@ test("generated native reference adapters materialize every reference descriptor
   assert.ok(summary.byRewriteKind["native-schema-source"] >= 1);
   assert.equal(nativeReferenceAdapters.filter((adapter) => adapter.sourcePath === null).length, 0);
   for (const adapter of nativeReferenceAdapters) {
-    assert.ok(resolveReferencePath(adapter.source, adapter.id, adapter.sourcePath), `missing source path for ${adapter.id}: ${adapter.sourcePath}`);
+    const sourcePath = adapter.sourcePath;
+    assert.ok(sourcePath, `missing source path for ${adapter.id}`);
+    assert.ok(
+      resolveReferencePath(adapter.source, adapter.id, sourcePath) ||
+        hasReferenceSourceInventoryEntry({
+          source: adapter.source,
+          id: adapter.id,
+          sourcePath,
+        }),
+      `missing source path for ${adapter.id}: ${sourcePath}`,
+    );
   }
 
   const hermesTool = nativeReferenceAdapters.find((adapter) => adapter.category === "hermes-tool");

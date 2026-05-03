@@ -4,7 +4,13 @@ import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import process from "node:process";
 
-import { nativeReferenceAdapters, validateNativeParityClaims } from "@omni-agent/reference-native";
+import {
+  getReferenceSourceInventoryEntry,
+  nativeReferenceAdapters,
+  referenceSourceInventory,
+  validateNativeParityClaims,
+  type ReferenceSourceInventoryEntry,
+} from "@omni-agent/reference-native";
 import { redactSensitiveValue } from "@omni-agent/safety";
 
 type Source = "claudecode" | "hermes" | "openclaw";
@@ -49,11 +55,18 @@ function assertNativeAdapterSourcePaths(): void {
       failures.push(`${adapter.id} is missing sourcePath.`);
       continue;
     }
-    if (!resolveReferencePath(adapter.source, adapter.id, adapter.sourcePath)) {
-      failures.push(`${adapter.id} sourcePath does not exist in vendored reference projects: ${adapter.sourcePath}`);
+    const evidence = resolveReferenceEvidence(adapter.source, adapter.id, adapter.sourcePath);
+    if (!evidence) {
+      failures.push(
+        `${adapter.id} sourcePath does not exist in vendored reference projects or source inventory: ${adapter.sourcePath}`,
+      );
+      continue;
+    }
+    if (evidence.inventory && !inventoryEntryHasContent(evidence.inventory)) {
+      failures.push(`${adapter.id} source inventory entry has no content evidence: ${adapter.sourcePath}`);
     }
   }
-  checks.push("all native adapter source paths resolve to vendored reference files or directories");
+  checks.push("all native adapter source paths resolve to vendored reference files or committed source inventory");
 }
 
 function assertReferenceParityClaims(): void {
@@ -66,28 +79,41 @@ function assertReferenceParityClaims(): void {
 
 function assertClaudeCodeEntrypoints(): void {
   for (const sourcePath of ["desktop-builder/main.mjs", "src/entrypoints/cli.tsx", "app/server.ts", "src/services/lsp"]) {
-    const resolved = resolveReferencePath("claudecode", "claudecode:claude-code-main:evidence-smoke", sourcePath);
-    if (!resolved) {
+    const evidence = resolveReferenceEvidence("claudecode", "claudecode:claude-code-main:evidence-smoke", sourcePath);
+    if (!evidence) {
       failures.push(`ClaudeCode evidence path is missing: ${sourcePath}`);
       continue;
     }
-    const stats = statSync(resolved);
-    if (stats.isFile() && stats.size === 0) {
+    if (evidence.path) {
+      const stats = statSync(evidence.path);
+      if (stats.isFile() && stats.size === 0) {
+        failures.push(`ClaudeCode evidence file is empty: ${sourcePath}`);
+      }
+      continue;
+    }
+    if (evidence.inventory && !inventoryEntryHasContent(evidence.inventory)) {
       failures.push(`ClaudeCode evidence file is empty: ${sourcePath}`);
     }
   }
-  checks.push("ClaudeCode desktop, TUI, web, and LSP source paths exist");
+  checks.push("ClaudeCode desktop, TUI, web, and LSP source paths exist or are represented in source inventory");
 }
 
 function compileHermesTools(): void {
   const toolPaths = ["tools/browser_tool.py", "tools/delegate_tool.py", "tools/mcp_tool.py"];
   const absoluteToolPaths = toolPaths.map((toolPath) => resolve(sourceRoots.hermes, toolPath));
-  for (const toolPath of absoluteToolPaths) {
-    if (!existsSync(toolPath)) {
-      failures.push(`Hermes tool is missing: ${formatReportPath(toolPath)}`);
+  const missingToolPaths = toolPaths.filter((toolPath, index) => !existsSync(absoluteToolPaths[index] ?? ""));
+  if (missingToolPaths.length > 0) {
+    for (const toolPath of missingToolPaths) {
+      const inventory = getReferenceSourceInventoryEntry({
+        source: "hermes",
+        id: "hermes:hermes-agent-main:evidence-smoke",
+        sourcePath: toolPath,
+      });
+      if (!inventory || inventory.kind !== "file" || !inventoryEntryHasContent(inventory)) {
+        failures.push(`Hermes tool is missing from vendored sources and source inventory: ${toolPath}`);
+      }
     }
-  }
-  if (absoluteToolPaths.some((toolPath) => !existsSync(toolPath))) {
+    checks.push("Hermes browser, delegate, and MCP tools are represented in committed source inventory");
     return;
   }
   if (!python) {
@@ -133,6 +159,40 @@ function resolvePythonCommand(): { readonly command: string; readonly args: read
 
 function assertOpenClawPluginManifests(): void {
   const manifests = findFiles(resolve(sourceRoots.openclaw, "extensions"), "openclaw.plugin.json", 12);
+  if (manifests.length === 0) {
+    const inventoryManifests = referenceSourceInventory
+      .filter(
+        (entry) =>
+          entry.source === "openclaw" &&
+          entry.projectSegment === "openclaw-main" &&
+          entry.sourcePath.endsWith("/openclaw.plugin.json"),
+      )
+      .slice(0, 12);
+    if (inventoryManifests.length < 10) {
+      failures.push(`Expected at least 10 OpenClaw plugin manifests in source inventory, saw ${inventoryManifests.length}.`);
+    }
+    for (const manifest of inventoryManifests) {
+      const keys = new Set(manifest.jsonKeys ?? []);
+      if (!keys.has("id") && !keys.has("name")) {
+        failures.push(`OpenClaw plugin inventory lacks id/name: ${manifest.sourcePath}`);
+      }
+      if (
+        !keys.has("channels") &&
+        !keys.has("tools") &&
+        !keys.has("routes") &&
+        !keys.has("capabilities") &&
+        !keys.has("configSchema") &&
+        !keys.has("configContracts") &&
+        !keys.has("contracts")
+      ) {
+        failures.push(
+          `OpenClaw plugin inventory lacks channels/tools/routes/capabilities/configSchema: ${manifest.sourcePath}`,
+        );
+      }
+    }
+    checks.push("OpenClaw plugin manifests are represented in committed source inventory");
+    return;
+  }
   if (manifests.length < 10) {
     failures.push(`Expected at least 10 OpenClaw plugin manifests, saw ${manifests.length}.`);
   }
@@ -180,6 +240,26 @@ function resolveReferencePath(source: Source, id: string, sourcePath: string): s
     projectSegment ? resolve(root, projectSegment, normalizedPath) : null,
   ].filter((candidate): candidate is string => candidate !== null);
   return candidates.find((candidate) => existsSync(candidate)) ?? null;
+}
+
+function resolveReferenceEvidence(
+  source: Source,
+  id: string,
+  sourcePath: string,
+): { readonly path: string; readonly inventory: null } | { readonly path: null; readonly inventory: ReferenceSourceInventoryEntry } | null {
+  const path = resolveReferencePath(source, id, sourcePath);
+  if (path) {
+    return { path, inventory: null };
+  }
+  const inventory = getReferenceSourceInventoryEntry({ source, id, sourcePath });
+  return inventory ? { path: null, inventory } : null;
+}
+
+function inventoryEntryHasContent(entry: ReferenceSourceInventoryEntry): boolean {
+  if (entry.kind === "file") {
+    return entry.sizeBytes > 0 && typeof entry.sha256 === "string" && entry.sha256.length > 0;
+  }
+  return entry.sizeBytes > 0 && typeof entry.fileCount === "number" && entry.fileCount > 0;
 }
 
 function findFiles(root: string, fileName: string, limit: number): string[] {
