@@ -1,5 +1,15 @@
 ![Omni Agent banner](docs/assets/omni-agent-banner.png)
 
+<p align="center">
+  <a href="README.zh.md"><img alt="Docs" src="https://img.shields.io/badge/DOCS-README-22c55e?style=for-the-badge&labelColor=0b1f14"></a>
+  <a href="docs/tutorial/README.zh.md"><img alt="Tutorials" src="https://img.shields.io/badge/TUTORIALS-BOOK-16a34a?style=for-the-badge&labelColor=0b1f14"></a>
+  <a href="https://github.com/2830500285/omni-agent/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/2830500285/omni-agent/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=0b1f14&color=22c55e"></a>
+  <a href="LICENSE"><img alt="License" src="https://img.shields.io/badge/LICENSE-MIT-84cc16?style=for-the-badge&labelColor=0b1f14"></a>
+  <a href="docs/security.md"><img alt="Security" src="https://img.shields.io/badge/SECURITY-READY-059669?style=for-the-badge&labelColor=0b1f14"></a>
+  <a href="examples/evals/suite.json"><img alt="Agent eval" src="https://img.shields.io/badge/AGENT_EVAL-REGRESSION-10b981?style=for-the-badge&labelColor=0b1f14"></a>
+  <a href="#运行模式"><img alt="Local runtime" src="https://img.shields.io/badge/LOCAL-RUNTIME-15803d?style=for-the-badge&labelColor=0b1f14"></a>
+</p>
+
 # Omni Agent
 
 语言：[English](README.en.md) | [中文](README.zh.md)
