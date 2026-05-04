@@ -7118,141 +7118,230 @@ Write one paragraph explaining whether the run passed, what it proves, and what 
 
 ## 26. 如何把能力声明变成证据链
 
+开源 Agent 项目最容易写出漂亮但空泛的能力声明：支持本地编码、支持记忆、支持子 Agent、支持 eval、支持安全工具、支持 gateway。问题是，读者看到这些句子时并不知道它们证明到什么程度。是已经在真实 runtime 中跑通，还是只有一个接口？是有测试和 benchmark，还是只有 README？是成熟能力，还是 beta 能力？本章要讲的就是把一句能力声明拆成证据链，让每一句公开说法都能被文件、测试、scenario、artifact 和门禁支撑。
 
-本章讨论的是：让 README 中的能力声明都能被源码、测试、eval、artifact 和报告支撑。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+Omni Agent 已经把这件事拆成三个文件和一条命令：公开声明写在 [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)，能力状态写在 [`examples/evals/capability-scorecard.json`](../../examples/evals/capability-scorecard.json)，验证逻辑写在 [`scripts/maturity-check.ts`](../../scripts/maturity-check.ts)，底层类型和 maturity 检查写在 [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)。运行 `npm run maturity:check` 时，脚本会检查 claim 是否映射到 scorecard capability，是否有 required scenario，是否有 implementation evidence、required tests、mature evidence、runbook 和 failure recovery tests。
 
+### 26.1 Claim 不是宣传语，而是可审计承诺
 
-### 26.1 本章先建立的心智模型
+`claim` 可以翻译成“声明”或“主张”。在项目 README 中，它通常表现为一句话：Omni Agent has usable eval and benchmark quality gates for release decisions. 这句话本身没有错，但如果没有证据，它只是一句宣传语。能力声明要变成工程承诺，至少要回答五个问题：
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，claim、scorecard 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+1. 这项能力对应哪个 capability id。
+2. 当前状态是 missing、scaffolded、usable 还是 mature。
+3. 哪些源码文件实现了这项能力。
+4. 哪些测试、benchmark scenario 或 release gate 保护它。
+5. 如果它还不是 mature，剩余风险是什么。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，evidence、maturity 和 artifact 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`docs/capability-backed-claims.md` 的表格就是这种结构。它包含 `Claim ID`、`Capability ID`、`Claim`、`Minimum Status`、`Required Scenario IDs` 和 `Risk If Not Mature`。这张表的价值不在于让文档更正式，而在于让每一句公开能力声明都能被机器检查。
 
-本章反复出现的关键词包括：`claim`、`evidence`、`scorecard`、`maturity`、`trace`、`artifact`、`gate`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+例如 `eval-benchmark-gates-usable` 声明 Omni Agent 有可用的 eval 和 benchmark quality gates。它要求的 capability 是 `benchmark-quality`，最低状态是 `usable`，required scenario 是 `benchmark-quality-gate`，风险说明是“多数 benchmark run 仍然使用 synthetic executor output，所以历史回归证据还不成熟”。这就是诚实的能力声明：它说明能力存在，也说明它还没有完全成熟。
 
-### 26.2 在仓库中找到入口
+### 26.2 Scorecard 是能力目录，不是愿望清单
 
-阅读本章时，建议从下面这些文件开始：
+`examples/evals/capability-scorecard.json` 是能力证据的主索引。每个 capability item 至少应该说明 `id`、`title`、`status`、`referenceProject`、`referenceStrength`、`evidenceFiles`、`requiredTests`、`scenarioIds`、`nextMilestone`、`matureCriteria` 和 `blockedBy`。如果要标成 mature，还需要 `matureEvidenceFiles`、`matureBenchmarkScenarioIds`、`liveOrContractTests`、`operationalRunbook` 和 `failureRecoveryTests`。
 
-1. [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`examples/evals/capability-scorecard.json`](../../examples/evals/capability-scorecard.json)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`scripts/maturity-check.ts`](../../scripts/maturity-check.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
+这些字段各自负责不同证据：
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，scorecard、trace 和 gate 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+| 字段 | 作用 | 常见错误 |
+| --- | --- | --- |
+| `status` | 说明成熟度 | 把 scaffolded 写成 usable |
+| `evidenceFiles` | 指向实现入口 | 只填 README |
+| `requiredTests` | 指向保护测试 | 没有失败路径测试 |
+| `scenarioIds` | 连接 eval coverage | scenario 不在 suite 中 |
+| `referenceProject` | 说明对标对象 | 只写“行业领先” |
+| `referenceStrength` | 说明参考项目强在哪里 | 不承认差距 |
+| `blockedBy` | 说明不能升 mature 的原因 | 写成空数组 |
+| `matureEvidenceFiles` | mature 级证据 | 用同一份基础实现充数 |
+| `operationalRunbook` | 运维恢复路径 | mature 但没有排错说明 |
+| `failureRecoveryTests` | 失败后恢复能力 | 只测 happy path |
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+把 scorecard 当成愿望清单会导致一个问题：每个 capability 都写得像已经完成，但没有任何门槛。正确做法是把它当成能力账本。账本里可以有 missing 和 scaffolded，这并不丢人。丢人的是把没有证据的能力写成 mature。
 
-### 26.3 它在一次 Agent 任务中怎样出现
+### 26.3 四个 maturity 状态如何理解
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，maturity、artifact 和 claim 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Omni Agent 当前的 maturity status 有四档：`missing`、`scaffolded`、`usable`、`mature`。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+`missing` 表示能力尚未存在，或者只有想法没有可运行实现。这个状态不应该出现在公开强声明里，但可以出现在路线图或 gap analysis 中。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+`scaffolded` 表示有接口、类型、占位实现或初步文档，但还不能作为用户可依赖能力。比如有 gateway 路由类型，但没有端到端测试和运维说明，就只能算 scaffolded。
 
-### 26.4 设计时最容易忽略的边界
+`usable` 表示能力已经能在真实项目中使用，并且有基础实现文件、required tests 和 eval scenario 支撑。但 usable 不等于成熟。它可能还缺少长期历史、复杂负例、跨平台测试、真实模型重复运行或操作员恢复手册。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，trace、gate 和 evidence 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`mature` 表示能力可以被强公开声明。它必须有 mature evidence、live 或 contract tests、mature benchmark scenario、operational runbook、failure recovery tests 和 explicit mature criteria。`packages/evals/src/index.ts` 中的 `validateCapabilityMaturityClaims` 会专门检查这些字段。测试 `mature capability validation requires mature evidence, contracts, runbook, recovery tests, and criteria` 也覆盖了这些条件。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+这四档的意义，是防止项目只有“支持/不支持”两种粗糙状态。Agent 能力很少一夜成熟。很多能力先从 scaffolded 到 usable，再经过真实失败样本和 release gate 才能到 mature。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+### 26.4 证据链应该怎样连接
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+一条完整证据链可以这样写：
 
-### 26.5 如何判断实现是否可靠
+```text
+README claim
+  -> docs/capability-backed-claims.md claim id
+  -> examples/evals/capability-scorecard.json capability id
+  -> evidenceFiles implementation
+  -> requiredTests test coverage
+  -> scenarioIds benchmark coverage
+  -> eval result or release gate artifact
+  -> maturity-check output
+```
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，artifact、claim 和 scorecard 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+以 `runtime-mutation-rollback-mature` 为例。README 或 claims 文档可以说 runtime mutation checkpoint rollback 已经 mature。这个 claim 必须映射到 `runtime-mutation-checkpoint-rollback` capability。scorecard 中要能看到实现文件、测试文件、mature benchmark scenario、operations runbook 和 failure recovery tests。`npm run maturity:check` 要通过。release 或 benchmark artifact 要能证明相关 scenario 真的跑过。缺少其中任何一环，这条声明都应该降级或补证据。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+证据链的核心不是“链接越多越好”。链接必须承担证明责任。源码文件证明能力有实现；测试证明行为被保护；scenario 证明它进入 benchmark；artifact 证明某次运行真的经过；runbook 证明失败时知道怎么恢复；blockedBy 证明维护者知道未成熟边界。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+不同证据的证明力也不一样。README 只能说明项目想表达什么，不能证明能力存在。源码能证明某个路径被实现，但不能证明它被正常调用。单元测试能证明某个局部行为，但不能证明真实 CLI 路径可用。Eval scenario 能证明能力被纳入任务集，但不证明每次真实模型都能通过。Benchmark artifact 能证明一次运行结果，但不证明长期稳定。Runbook 能证明维护者知道如何排错，但不证明代码没有缺陷。成熟声明必须把这些证据组合起来，而不是把其中一种证据夸大成全部证明。
 
-### 26.6 常见误区
+可以把证据分成四层。第一层是静态证据：源码、类型、配置、文档。它回答“项目里有没有这件事”。第二层是局部行为证据：单元测试、contract test、失败路径测试。它回答“关键行为是否被保护”。第三层是系统运行证据：eval scenario、benchmark artifact、release gate。它回答“能力是否进入真实流程”。第四层是运维证据：runbook、failure recovery tests、历史 trend、人工抽检记录。usable claim 至少要覆盖前三层中的基础部分，mature claim 则必须进一步覆盖运维和恢复证据。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，gate、evidence 和 maturity 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 26.5 `maturity:check` 实际检查什么
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+`scripts/maturity-check.ts` 做了两类检查。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+第一类是 scorecard maturity 检查。它调用 `buildCapabilityMaturityReport`，并设置 `requirePassingScenariosForMature: true` 和 `requireMatureBenchmarkScenarios: true`。这意味着 mature capability 不能只在 scorecard 里写一堆字段，还要引用必须通过的 benchmark scenario。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+第二类是 capability-backed claims 检查。脚本会解析 `docs/capability-backed-claims.md` 的表格，找到每条 claim 对应的 capability。它会检查 capability 是否存在，status 是否达到 minimum status，是否有 evidenceFiles 和 requiredTests，claim 要求的 scenario 是否被 capability 引用，scenario 是否真的存在于 eval suite 中。对于 mature claim，它还会要求 mature evidence、live 或 contract tests、benchmark scenarios、runbook 和 failure recovery tests。对于 non-mature claim，它要求写清 risk，而不能写 `None`。
 
-### 26.7 一个可操作的检查流程
+这条命令的价值，是让文档和代码之间有硬约束。没有它，README 很容易越写越大，scorecard 越写越满，但没有人记得补测试和 scenario。有了它，能力声明至少要经过机器检查，不能完全靠维护者记忆。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+读 `maturity:check` 输出时，要把它当成审计报告，而不是普通测试日志。`capabilityMaturity.countsByStatus` 告诉你当前项目能力分布：多少 missing，多少 scaffolded，多少 usable，多少 mature。`totalScore` 和 `maturityRate` 不是营销分数，而是能力账本的粗略健康度。`issues` 才是最重要部分，它会指出哪些 capability 缺少 evidence、test、scenario 或 mature 条件。`claimEvidence.risks` 则提醒你：这些 claim 可以存在，但不能当作成熟能力宣传。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，claim、scorecard 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+例如一个 usable claim 如果缺少 riskIfNotMature，脚本会报错。原因很简单：usable 不是 mature，公开声明必须告诉读者剩余风险。如果你写 `Risk If Not Mature: None`，等于用 usable 身份说 mature 的话。脚本阻止这种写法，是为了让项目文档保持诚实。
 
-### 26.8 与真实模型评测的关系
+再比如 mature claim 如果缺少 operationalRunbook，也会报错。成熟能力不只是“能跑通”，还要在失败时可恢复。一个 gateway 能力如果没有 runbook，用户遇到 route delivery failure 时不知道该看 route secret、adapterType、delivery status、dead letter 还是 transcript retention。没有运维路径，能力就不能算 mature。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，evidence、maturity 和 artifact 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 26.6 如何新增一条能力声明
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+假设你刚实现了一个新能力：CLI 可以导出运行摘要。不要直接在 README 中写“支持 run summary export”。应该按下面步骤做。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+第一步，在 scorecard 中新增或更新 capability。例如 `run-summary-export`，status 先写 `scaffolded` 或 `usable`，不要一开始写 mature。填入实现文件，例如 `apps/cli/src/index.ts` 和 `packages/session-store/src/index.ts`。填入 required tests，例如 `tests/cli-ops.test.ts`。填入 scenarioIds，例如 `headless-run-json-stream` 或新增 scenario。
 
-### 26.9 一个完整的小案例
+第二步，写测试。测试要覆盖成功路径和至少一个失败路径。例如输出 JSON 结构是否包含 run id、status、changedFiles、verificationStatus；当 artifact 缺失时是否给出清楚错误。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+第三步，写或更新 eval scenario。scenario 要说明这个能力在真实 Agent 任务中怎样被使用，而不是只测函数存在。比如要求 CLI 运行一个 task，输出 stream-json，并在 final summary 中保留 verification evidence。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+第四步，运行 `npm run maturity:check`。如果状态是 usable，确保 riskIfNotMature 写清楚；如果状态是 mature，确保 mature evidence、runbook 和 failure recovery tests 都存在。
 
-这个案例强调的是工程诚实。 在本章语境中，scorecard、trace 和 gate 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第五步，再更新 README 或 claims 文档。README 写短声明，claims 文档写可验证 claim，release notes 链接 artifact。这个顺序能防止“先吹能力，后补证据”的习惯。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+下面把这个流程套到一个真实已有 claim 上。`eval-benchmark-gates-usable` 这条 claim 的文字是：Omni Agent has usable eval and benchmark quality gates for release decisions. 如果只看这句话，读者不知道它凭什么成立。沿着证据链往下走，首先找到 capability id `benchmark-quality`。然后在 scorecard 中检查它是否有 `evidenceFiles`，例如 eval package、benchmark script 或 release check 相关文件；检查 `requiredTests` 是否包含 `tests/evals.test.ts` 或 release gate 测试；检查 `scenarioIds` 是否包含 `benchmark-quality-gate`；再看 claims 文档是否写明风险：多数 benchmark run 仍使用 synthetic executor output，历史回归证据还不成熟。
 
-### 26.10 排错时的分层问题表
+这一条 claim 的正确状态应该是 usable，而不是 mature。为什么？因为它已经有 manifest、runner、判分、quality report 和 release gate 能力，能用于工程回归；但如果真实模型运行、长期历史、跨模型重复、人工抽检还不稳定，就不能宣称成熟公开 benchmark。这个判断不是主观保守，而是证据链给出的结果。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+再看 `shell-file-safety` 这类能力。它可能有 `packages/approvals/src/command-policy.ts`、`packages/safety/src/index.ts`、`packages/tools/src/index.ts` 作为 evidenceFiles，有 `tests/approvals.test.ts`、`tests/safety.test.ts`、`tests/workspace.test.ts` 作为 requiredTests，有 destructive command 和 path escape 相关 scenario。这样的证据可以支持“usable shell and file safety”。但如果要 mature，还要证明更多：失败后 workspace 保持不变，审批原因可审计，路径解析覆盖 Windows 和 Unix 风格，危险命令有平台特定测试，operations runbook 能指导用户处理 blocked command。这就是 usable 到 mature 的差距。
 
-分层排错能减少无效尝试。 在本章语境中，maturity、artifact 和 claim 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 26.7 如何判断一条声明应该降级
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+不是所有能力都应该随着时间自动升级。有时应该降级。
 
-### 26.11 如何把本章内容写进团队流程
+第一种情况：测试失效或被删除。如果 capability 的 requiredTests 不再覆盖关键行为，usable 也可能不稳。第二种情况：scenario 仍存在，但真实 benchmark 长期失败。第三种情况：referenceProject 发生变化，原来对标的能力不再同级。第四种情况：安全边界发现新漏洞。第五种情况：能力只有 synthetic 证据，没有 mock 或真实 runtime 证据。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+降级不是失败，而是工程诚实。比如某项能力之前 mature，但新增平台发现 rollback 对二进制文件恢复不完整，就应该从 mature 降为 usable，并在 `blockedBy` 写明原因。等修复、补测试、补 failure recovery scenario 后再升回 mature。这样比继续维持高状态更可信。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，trace、gate 和 evidence 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+降级时要同时改三个地方。第一，scorecard 的 `status` 要改，不能只在 issue 里说“暂时不成熟”。第二，claim 的 `Risk If Not Mature` 要更新，让用户知道风险是什么。第三，README 或 release notes 中的措辞要同步降级。比如原来写“workspace checkpoints are mature for rollback”，降级后应改成“workspace checkpoints are usable, with known binary rollback recovery gaps”。如果只改 scorecard，不改 README，外部读者仍会被旧声明误导。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+升级也一样。把 usable 升 mature 不是把 status 改成 `mature` 就结束。你要先补 matureEvidenceFiles，说明除了基础实现之外还有哪些成熟证据；补 liveOrContractTests，说明不是只靠单元测试；补 matureBenchmarkScenarioIds，说明 release gate 会跑到它；补 operationalRunbook，说明出了问题怎么排；补 failureRecoveryTests，说明失败后不是只能重来；补 matureCriteria，说明以后如何判断它是否仍然成熟。最后运行 `npm run maturity:check` 和相关 benchmark，再更新 claim。
 
-### 26.12 练习
+### 26.8 Trace 和 artifact 在证据链中的位置
 
-1. 围绕 `claim` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `evidence` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `scorecard` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `maturity` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `trace` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `artifact` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+Trace 是一次运行的过程证据，artifact 是可保存、可引用的结果证据。它们不能替代源码和测试，但能证明“这次运行真的发生过”。在 capability-backed claim 中，trace 和 artifact 尤其适合支持 benchmark 报告、release gate 和真实模型结论。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+举例说，claim 声称 “verification-native runtime is usable”。源码可以证明系统支持 verification evidence 类型，测试可以证明缺少 evidence 时不能完成，scenario 可以证明 benchmark 会覆盖该能力，artifact 则证明某次 run 中确实有 passed command evidence。如果没有 artifact，读者只能相信你运行过；有 artifact，读者可以复查 observed run、tool events、verification status 和 failure reasons。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+但 artifact 也有边界。一次 artifact 只能证明一次运行，不证明长期稳定。真实模型 artifact 还会受模型版本、网络、rate limit、上下文窗口、成本限制影响。因此 mature claim 不能只靠一份 artifact，仍然要依赖 tests、scenario、runbook 和历史 trend。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+再用 runtime mutation rollback 举一个完整例子。这个能力的声明大致是：当运行在最终验证失败后需要回滚时，runtime 能基于 checkpoint 恢复工作区，并留下失败证据。要证明它 mature，首先要有源码证据，说明 runtime 确实创建 checkpoint、记录失败验证、执行 rollback、保存 artifact。其次要有 required tests，检查文本文件、二进制文件、新增文件、删除文件和 managed artifact 的恢复行为。再次要有 mature benchmark scenario，例如 `compat.runtime_mutation_checkpoint_rollback`，确保 release gate 会覆盖它。还要有 operations runbook，告诉操作者如何查看 checkpoint id、pre-rollback evidence 和 final failure artifact。最后要有 failure recovery tests，证明失败发生后系统不是静默吞掉错误，而是可审计地恢复。
+
+如果这条能力只具备前两项，它最多是 usable：本地代码和测试说明功能存在，但还不够支撑成熟发布。如果它没有 runbook，用户遇到 rollback 失败时不知道如何处理。如果它没有 mature benchmark scenario，release 前可能根本不会跑到这个路径。如果它没有 failure recovery tests，它可能只在 happy path 下看起来可靠。成熟不是形容词，而是一组证据条件。
+
+这个例子也说明了为什么 scorecard 中要有 `matureCriteria`。成熟标准不能只写“works well”。应该写成可检查句子：rollback 必须恢复 checkpoint 之后被修改的文本和二进制文件，移除 checkpoint 之后新增的文件，保留 managed artifacts，并留下可审计的 failed run evidence。这样的标准可以被测试、benchmark 和人工审查共同使用。
+
+### 26.9 公开 README 应该怎样写
+
+README 中的能力声明要短，但不能误导。推荐写法是：
+
+```text
+Omni Agent has usable eval and benchmark gates for release decisions.
+Evidence: docs/capability-backed-claims.md, examples/evals/suite.json, npm run maturity:check.
+Current limitation: default benchmark is synthetic unless --mode openai or --mode mock is specified.
+```
+
+不推荐写法是：
+
+```text
+Omni Agent objectively evaluates all agents and proves 97% capability.
+```
+
+后一种写法的问题有三个：它把 synthetic 分数说成真实能力；它把“agent capability”说得过宽；它没有告诉读者证据在哪里。README 面向外部读者，越要克制。强项目不靠夸张描述取胜，而靠证据链让读者自己判断。
+
+README 里还要避免“全称判断”。比如“supports all models”“secure by default”“production-ready benchmark”“fully self-improving agent”都很危险，因为它们要求极宽证据。更稳妥的写法是“通过 model profile 支持 OpenAI-compatible 和 Anthropic-style provider”“阻断已被测试覆盖的 destructive shell 与 path escape 风险”“提供 synthetic、mock、openai 三种 benchmark 模式并保存 artifact-backed reports”“从 verified runs 中记录 learned skills，并通过 maintenance review 防止低质量技能长期复用”。这些句子更长，但边界清楚。
+
+公开文档应该把能力边界写在能力旁边，而不是藏在后面的 FAQ。比如介绍 benchmark 时，马上说明 synthetic 不代表真实模型能力；介绍 model profile 时，马上说明价格、tool calling 和 streaming 取决于 provider；介绍 memory 时，马上说明 stale memory 会被拒绝但长期 recall precision 仍需更多 fixture。边界写得越早，读者越不容易误解。
+
+### 26.10 Claims 文档和 scorecard 不一致时怎么办
+
+不一致通常有四种。
+
+第一种是 claim 引用的 capability 不存在。此时应该先补 scorecard，或者删除 claim。第二种是 minimum status 高于 scorecard status。比如 claim 要 mature，但 scorecard 只有 usable。此时要么补成熟证据，要么把 claim 降级。第三种是 claim 要求的 scenario 不在 capability 的 scenarioIds 或 matureBenchmarkScenarioIds 中。此时要补链接，或者说明 claim 不应该依赖这个 scenario。第四种是 scenario id 在 scorecard 中存在，但 eval suite 中不存在。此时 benchmark 根本不会跑到它，claim 不应该通过。
+
+`maturity:check` 会把这些问题变成 error 或 risk。error 表示必须修，risk 表示可以存在但不能伪装 mature。处理顺序一般是先修 error，再审 risk。不要为了让命令通过而删除风险说明。风险说明是给维护者和用户看的，它告诉大家当前能力边界在哪里。
+
+如果你在审查中发现 claims 文档和 scorecard 都写得太乐观，最好先从 README 开始降噪。README 是用户第一眼看到的地方，夸张声明会放大误解。然后再修 claims 表，把 minimum status 调到真实状态。最后修 scorecard，把 blockedBy 和 nextMilestone 写具体。这个顺序能先降低外部误导风险，再逐步恢复内部证据结构。
+
+有时反过来，scorecard 已经有证据，但 README 没写。这种情况不需要把所有细节都塞进 README。可以在 README 中写一句短声明，再链接到 claims 文档。README 负责入口，claims 负责承诺，scorecard 负责证据，tests 和 evals 负责验证。每层文档承担自己的角色，项目会更容易维护。
+
+### 26.11 一份能力声明审查清单
+
+新增或修改 claim 前，按这份清单检查：
+
+1. README 里的句子是否过宽。
+2. claims 文档是否有对应 claim id。
+3. claim 是否引用真实存在的 capability id。
+4. minimum status 是否不高于 scorecard status。
+5. scorecard 是否有实现文件，而不是只引用文档。
+6. requiredTests 是否覆盖成功路径和失败路径。
+7. scenarioIds 是否存在于 eval suite。
+8. mature claim 是否有 matureEvidenceFiles、matureBenchmarkScenarioIds、liveOrContractTests、operationalRunbook、failureRecoveryTests 和 matureCriteria。
+9. non-mature claim 是否写清 riskIfNotMature。
+10. release notes 是否引用最新 artifact，而不是旧结果。
+11. blockedBy 是否具体到可以行动。
+12. nextMilestone 是否说明下一步硬化方向。
+
+如果一条 claim 不能通过这份清单，它可以继续存在于路线图，但不应该作为强能力放到 README 顶部。
+
+在 PR 审查中，可以把能力声明当成一个单独检查项。看到新增 README 描述时，先问：这句话有没有对应 claim？如果没有，它只是介绍性文字，还是实际能力承诺？看到 scorecard status 升级时，先问：新增了哪些证据，而不是只看 status 字段有没有改。看到新增 scenario 时，先问：它保护哪个 claim，失败时会不会影响 release gate。看到新增测试时，先问：它是否真的覆盖 claim 中最关键的风险。这样审查可以防止文档、测试、eval 各自增长，却没有形成闭环。
+
+PR 描述也应该写证据链，而不是只写“updated docs”。更好的描述是：“将 `benchmark-quality` 从 scaffolded 升级到 usable；新增 `benchmark-quality-gate` scenario；补充 `tests/evals.test.ts` 对 quality report 的断言；更新 `docs/capability-backed-claims.md`，但保留 synthetic executor 风险说明；验证命令为 `npm run maturity:check` 和 `npm run eval:benchmark -- --mode synthetic --no-save`。”这样的 PR 一眼就能看出能力、证据、风险和验证。
+
+如果 PR 只改 README，却声称能力提升，审查者应该要求补证据或降级措辞。如果 PR 只改代码，却不更新 scorecard，后续用户看不到能力状态变化。如果 PR 只改 scorecard，却没有测试和 scenario，它会被 `maturity:check` 或人工审查拦住。三者必须一起看。
+
+最后给几个改写示例。把“支持安全执行命令”改成“阻断已测试覆盖的 destructive command 和 workspace path escape，并在 `tests/approvals.test.ts`、`tests/tools.test.ts`、`tests/workspace.test.ts` 中保护”。把“支持真实模型评测”改成“`eval:benchmark` 支持 `openai` mode，并保存 model profile、usage、failure summary 和 artifact；默认 synthetic 结果只作为 harness 自检”。把“支持记忆”改成“运行时读取 workspace memory，并通过 stale-memory scenario 检查过期信息不会被当成当前事实”。这些句子更不浮夸，但更像工程项目。它们不会让读者误以为所有边界都已解决，却能准确说明当前已经完成的能力范围。长期看，这种写法也会让贡献者更愿意补证据，因为缺口被清楚地摆在台面上，维护者也能据此安排下一轮测试、场景和文档工作。
+
+本章的核心不是让文档变保守，而是让文档变可靠。可靠的声明能被检查、能被复现、能被降级、能被升级，也能在失败后指出下一步工程动作。这样写出来的项目，不靠口号吸引读者，而靠证据让读者愿意继续深入，也让维护者知道下一次应该补哪一个缺口、修哪一条测试、补哪一份报告、更新哪一处说明，最终形成稳定的工程节奏和可信的公开形象，减少反复解释成本。
+
+### 26.12 本章练习
+
+第一个练习：打开 [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)，任选一条 claim，沿着 claim id 找到 capability id，再在 [`examples/evals/capability-scorecard.json`](../../examples/evals/capability-scorecard.json) 中找出 evidenceFiles、requiredTests 和 scenarioIds。用自己的话说明这条 claim 现在是 usable 还是 mature。
+
+第二个练习：运行 `npm run maturity:check`，阅读输出中的 `capabilityMaturity` 和 `claimEvidence`。写出一个 error 或 risk 代表什么。如果当前没有 error，就故意在本地临时把一个 claim 的 scenario id 改成不存在的名字，观察命令如何失败，然后改回去。
+
+第三个练习：把一句 README 能力描述改写成 capability-backed claim。要求写出 claim、minimum status、required scenario、riskIfNotMature 和至少两个证据文件。
+
+第四个练习：找一个 scorecard 中的 usable capability，写出它不能升级 mature 的原因。不要只说“还不够完善”，要具体到缺少哪类 evidence、test、scenario 或 runbook。
+
+第五个练习：设计一条 mature claim 的失败样本。说明如果 mature claim 缺少 failureRecoveryTests，会导致什么风险。
 
 ### 26.13 本章参考资料
 
-- Omni Agent: [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)
-- Omni Agent: [`examples/evals/capability-scorecard.json`](../../examples/evals/capability-scorecard.json)
-- Omni Agent: [`scripts/maturity-check.ts`](../../scripts/maturity-check.ts)
-- Omni Agent: [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
+- Omni Agent claims registry: [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)
+- Omni Agent capability scorecard: [`examples/evals/capability-scorecard.json`](../../examples/evals/capability-scorecard.json)
+- Omni Agent maturity check: [`scripts/maturity-check.ts`](../../scripts/maturity-check.ts)
+- Omni Agent eval and maturity types: [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
+- Omni Agent eval tests: [`tests/evals.test.ts`](../../tests/evals.test.ts)
+- OpenAI evaluation best practices: [https://developers.openai.com/api/docs/guides/evaluation-best-practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices)
+- OpenAI graders guide: [https://developers.openai.com/api/docs/guides/graders](https://developers.openai.com/api/docs/guides/graders)
 - LangSmith evaluation concepts: [https://docs.smith.langchain.com/evaluation/concepts](https://docs.smith.langchain.com/evaluation/concepts)
 - Promptfoo assertions: [https://www.promptfoo.dev/docs/configuration/expected-outputs/](https://www.promptfoo.dev/docs/configuration/expected-outputs/)
-- OpenAI evaluation best practices: [https://platform.openai.com/docs/guides/evaluation-best-practices](https://platform.openai.com/docs/guides/evaluation-best-practices)
 
 ## 27. 新手最容易误解的十件事
 
