@@ -530,35 +530,256 @@ Omni Agent = Model + Runtime + Workspace + Tools + Approval + Context + Memory +
 
 ## 3. 阅读仓库之前必须懂的术语
 
-在进入代码前，我们先统一术语。很多 Agent 项目失败，不是因为模型调用写错了，而是因为团队对同一个词的理解不一致。这里列出的术语会在后面反复出现。
+### 3.1 为什么要先统一术语
 
-**Agent runtime**：Agent 的执行循环。它负责把用户任务变成一系列可执行步骤。一个 runtime 至少要处理任务输入、上下文、模型调用、工具调用、错误处理和结果记录。好的 runtime 还会处理审批、安全、验证、记忆、成本、trace 和恢复。
+读 Agent 项目源码之前，最容易踩的坑不是某个函数看不懂，而是同一个词在不同人脑子里代表不同东西。有人说 `runtime`，其实指的是模型调用；有人说 `tool`，其实指的是一段 prompt 里的自然语言说明；有人说 `benchmark`，其实只跑了 synthetic harness；有人说 `memory`，其实只是把旧聊天记录塞回上下文。词一旦混乱，后面的架构判断就会变形。
 
-**Workspace**：Agent 当前工作的项目目录。它可能是一个 git 仓库，也可能是一个普通文件夹。Workspace 不只是路径字符串，还包含可见文件、忽略规则、git 状态、memory files、instruction files、允许执行的命令范围等信息。
+Omni Agent 的教程需要先把术语讲清楚，因为这个项目的核心不是单一模型 API，而是一套运行系统。这个系统里有 CLI、runtime、model profile、workspace、tools、approval policy、context、memory、session store、run artifact、eval manifest、benchmark mode、capability-backed claim、subagent、gateway、workbench、execution domain、verification evidence 等概念。它们彼此相关，但职责不同。
 
-**Model profile**：模型配置。一个 profile 通常包含 provider 协议、base URL、model id、API key 环境变量名、是否支持 streaming、是否支持 tool calling、是否需要额外 headers 或 body。把模型配置命名成 profile，可以让系统在多个模型之间切换或 failover，而不用到处硬编码。
+学习时请记住一个原则：术语不是为了显得专业，而是为了减少误判。比如你知道 `synthetic benchmark` 和 `real-model benchmark` 的区别，就不会把 synthetic 高分误解成真实模型能力。你知道 `memory` 和 `context` 的区别，就不会把长期记忆当成当前上下文。你知道 `tool call` 和 `tool execution` 的区别，就不会以为模型能直接操作你的文件系统。你知道 `approval policy` 和普通确认弹窗的区别，就会意识到审批是 runtime 安全边界，而不是界面装饰。
 
-**Tool call**：模型请求 runtime 执行的结构化动作。比如读取文件、列目录、运行测试、搜索 memory、调用 MCP extension。模型本身不能直接访问你的磁盘或终端，它只能输出一个结构化请求，runtime 决定是否允许执行。
+本章会按“是什么、为什么重要、在 Omni Agent 里看哪里、常见误解”四个角度解释核心术语。你不需要一次背完，但建议先通读一遍。后面读源码时，遇到这些词就可以回来查。
 
-**Approval policy**：审批策略。它决定哪些动作可以自动执行，哪些动作必须让人确认，哪些动作永远不允许。比如读取普通文件可能可以自动执行；删除文件、修改权限、上传数据、执行高风险命令可能需要审批；访问密钥或越权路径应该被拒绝。
+### 3.2 Agent runtime
 
-**Context**：发送给模型的上下文。它可能包括用户任务、系统规则、workspace 摘要、相关文件片段、memory、历史消息、工具说明、当前验证状态。上下文不是越多越好，太多会浪费 token，也可能把模型带偏。
+`Agent runtime` 是 Agent 的执行运行时。它不是模型，不是 prompt，也不是 CLI 命令，而是把一个用户任务变成一系列可执行步骤的系统。
 
-**Memory**：跨任务保存的有用信息。比如某个仓库总是用 `npm run typecheck` 验证，某个用户偏好先写测试，某个项目的发布流程在哪里。Memory 必须服务当前任务，不能覆盖当前源码。旧 memory 与当前文件冲突时，当前文件优先。
+一个最小 runtime 至少要做六件事：接收任务、准备上下文、调用模型、处理工具调用、处理失败、返回结果。一个更成熟的 runtime 还要处理审批、安全、验证、记忆、成本、trace、artifact、恢复和 eval。Omni Agent 属于后者。它不满足于让模型回答一句话，而是要把一次任务执行成可检查的工程过程。
 
-**Session**：一次持续对话或任务线索。Session 里可能有多个 message、多个 run、多个 summary。Session 的价值是让 Agent 可以继续上下文，而不是每次都从零开始。
+在 Omni Agent 里，runtime 的核心实现主要在 `packages/core-runtime/src/index.ts`。这个文件会处理 runtime options、执行域、model profile、tool policy、memory providers、approval handler、event handler、subagent runtime、verification mode 等。你不需要一开始读懂所有代码，但要先理解它的角色：它是任务执行的中枢。
 
-**Run artifact**：一次任务运行的证据。它可能包含输入任务、模型 profile、工具事件、修改文件、验证命令、输出摘要、失败原因、耗时和 token usage。没有 artifact 的系统，很难证明自己到底做了什么。
+常见误解是把 runtime 等同于模型调用。模型调用只是 runtime 的一步。真正的 runtime 还要知道模型返回 tool call 后怎么办、工具失败后怎么办、验证失败后怎么办、任务达到最大迭代次数后怎么办、结果如何保存。另一个误解是把 runtime 等同于 CLI。CLI 是入口，runtime 是执行系统。CLI 可以换成 gateway 或 workbench，runtime 仍然是同一套核心。
 
-**Eval manifest**：评测任务定义文件。它描述要跑哪些 scenario，每个 scenario 的 fixture 在哪里，期望改哪些文件，必须调用哪些工具，必须输出哪些片段，评分规则是什么。Manifest 是 benchmark 的合同。
+理解 runtime 后，很多问题会变得更清楚。比如“为什么模型明明会写代码，Agent 还是失败？”答案可能是 runtime 没有给到正确上下文、工具结果不够清楚、验证命令没有进入 repair loop、approval 把动作拦住了，或者 artifact 没有把失败原因保存下来。模型能力只是其中一环。
 
-**Synthetic benchmark**：脚本化的模拟 benchmark。它不调用真实模型，而是构造 observed run 来验证 harness、manifest 和评分逻辑。这类 benchmark 很适合做回归，但不能证明真实模型能力。
+### 3.3 Workspace
 
-**Mock runtime benchmark**：走真实 runtime 路径，但不访问远程模型。它比 synthetic 更接近真实执行，因为会经过 CLI/runtime 逻辑，但仍然不能代表真实模型表现。
+`Workspace` 是 Agent 当前被允许观察和操作的项目目录。它可能是一个 Git 仓库，也可能是普通文件夹。对本地编码 Agent 来说，workspace 是整个任务世界的边界。
 
-**OpenAI mode benchmark**：这里的 `openai` 不是只指 OpenAI 公司，而是指 OpenAI-compatible provider 路径。只要 provider 兼容 OpenAI 风格 API，就可以通过这个模式接入真实模型。真实模型 benchmark 才能评估模型、prompt、工具契约和 runtime 的整体行为。
+不要把 workspace 误解成一个路径字符串。一个真正的 workspace 概念至少包含这些内容：根目录在哪里，哪些文件可见，哪些文件应该忽略，当前 git 状态是什么，有没有 instruction files，有没有 memory files，允许在哪个目录运行命令，写入是否需要隔离，是否可以使用 worktree 或 sandbox。
 
-**Capability-backed claim**：有证据支撑的能力声明。比如“支持 long-context modification”不是一句宣传语，而应该能指向 eval scenario、测试、run artifact 或 maturity evidence。这个概念是 Omni Agent 和普通 demo 项目的重要区别。
+Omni Agent 的本地优先定位决定了 workspace 很重要。用户运行：
+
+```bash
+npm run dev -- run --cwd "E:\repo" --task "Fix the failing build"
+```
+
+这里的 `--cwd` 就是在告诉 runtime：任务应该围绕哪个仓库执行。后续文件读取、搜索、命令执行、memory discovery、instruction loading、artifact 关联，都应该围绕这个 workspace 发生。
+
+常见误解是认为 Agent 可以“理解我的电脑”。更安全的说法是：Agent 只应该理解它被授权的 workspace。它不应该默认读取用户主目录、系统目录、浏览器缓存、密钥文件或其他项目。Workspace 是能力边界，也是安全边界。
+
+另一个误解是认为 workspace 越大越好。实际上，workspace 越大，搜索和上下文越容易噪音化。一个可靠的 Agent 应该能从 workspace 中挑选相关信息，而不是把所有文件都塞进 prompt。
+
+### 3.4 Model profile
+
+`Model profile` 是命名的模型配置。它描述 runtime 如何调用某个模型 provider。
+
+一个 profile 通常包含：`id`、provider 协议、base URL、model id、API key 环境变量名、是否支持 tool calling、是否支持 streaming、是否有额外 headers、是否有额外 body 参数、是否属于 failover 链。Omni Agent 的 `packages/model-client/src/index.ts` 里可以看到 `ModelProfile` 的字段和加载逻辑。
+
+Model profile 的价值是把模型接入变成显式配置，而不是散落在代码里的硬编码。比如同一套 runtime 可以通过不同 profile 调 OpenAI-compatible endpoint、Anthropic-style Messages API、本地模型服务或兼容代理。CLI 的 `models` 命令可以展示已加载 profile、工具支持情况和缺失的 API key 环境变量。这样开发者能先检查配置，再运行真实模型任务。
+
+常见误解是认为“有 API key 就能运行”。实际上还需要协议、base URL、model id、工具能力、streaming 能力、请求路径和 provider-specific 字段。另一个误解是把 `openai` 模式理解成只能用 OpenAI 官方模型。在 Omni Agent 的语境里，`openai` mode 更准确地说是 OpenAI-compatible provider path，只要接口兼容就可以通过 profile 接入。
+
+Model profile 还和证据有关。一次真实模型 benchmark 如果不记录 model profile，就很难复盘结果。你无法知道当时用的是哪个模型、哪个 provider、是否启用了工具调用、是否走了 fallback。真实评测报告应该把这些信息写进 trace 或 summary。
+
+### 3.5 Tool call
+
+`Tool call` 是模型请求 runtime 执行的结构化动作。它是 Agent 和普通聊天模型的重要分界线。
+
+模型本身不能直接读取你的文件，也不能直接运行命令。它只能输出一个结构化请求，比如“调用 `read_file`，参数是某个路径”或“调用 `run_command`，参数是 `npm run typecheck`”。Runtime 收到这个请求后，会检查工具是否存在、参数是否合法、是否越界、是否需要审批，然后才执行。
+
+这和“模型在回答里建议你运行命令”不同。自然语言建议没有结构化约束，也不会自动进入审计记录。Tool call 有明确名称、参数和结果，可以被记录、验证和回放。OpenAI 的 function calling 和 Anthropic 的 tool use 都遵循类似思想：模型生成工具请求，客户端或 runtime 执行工具，再把结果回传给模型。
+
+在 Omni Agent 里，工具调用会和 workspace、approval、artifact、eval 紧密关联。读文件工具要受 workspace 边界限制；写文件工具要受审批和执行域限制；命令工具要记录退出码和输出；验证工具要成为 evidence；eval manifest 可以要求某些工具必须被调用。
+
+常见误解是“模型会 tool call，所以它就能做事”。不对。模型只是提出动作，runtime 才执行动作。工具设计不好，模型可能传错参数；工具输出太长，模型可能读不到重点；工具失败信息不清楚，模型无法修复；审批策略缺失，工具可能危险。因此 tool call 的质量取决于模型、工具 schema、runtime 执行和审批策略的组合。
+
+### 3.6 Tool execution
+
+`Tool execution` 是 runtime 实际执行工具的过程。它和 tool call 不是一回事。
+
+Tool call 是模型提出的请求；tool execution 是 runtime 接受请求后执行工具、捕获输出、处理错误、记录事件的过程。这个区别很重要，因为安全边界发生在二者之间。模型请求删除文件，不等于文件会被删除；runtime 可以拒绝、提示审批或改用安全路径。
+
+一次工具执行通常应该记录这些信息：工具名称、输入参数、开始时间、结束时间、状态、输出摘要、错误信息、是否被审批、是否被阻止、是否产生 artifact。这样后续 run artifact 才能说明“发生了什么”。
+
+常见误解是只看最终回答，不看工具轨迹。一个 Agent 最终说“我检查过了”，但如果没有工具轨迹，就不知道它检查了什么。一个 Agent 最终说“测试通过”，但如果没有验证工具或命令输出，就不知道它是不是真的运行了测试。
+
+### 3.7 Approval policy
+
+`Approval policy` 是工具动作的审批规则层。它决定一个工具动作是自动允许、提示操作者确认，还是直接拒绝。
+
+本地 Agent 的风险来自真实副作用。读文件通常风险较低；写文件会改变 workspace；运行命令可能修改依赖、生成文件、删除数据；网络请求可能泄露信息；控制面操作可能启动服务、创建 route、触发 automation；subagent 可能并行修改文件。Approval policy 的作用就是把这些动作分类并控制。
+
+Omni Agent 的 `packages/approvals` 里有 approval class 的概念，例如只读范围操作、搜索、变更、可执行命令、控制面、交互式、其他。系统会结合 risk tier 和当前 policy 计算 allow、prompt 或 deny。这个设计意味着审批不是一个简单弹窗，而是运行时安全模型。
+
+常见误解是“我信任模型，所以不需要审批”。工程上不能这样想。审批不是对模型人格的不信任，而是对副作用的控制。即使模型很强，也可能误读需求、误判路径、执行过宽命令。审批层让系统在关键动作前停下来，让人确认边界。
+
+### 3.8 Context
+
+`Context` 是发送给模型的上下文。它包括用户任务、系统规则、工具说明、workspace 摘要、相关文件片段、memory、历史消息、验证状态、失败输出等。
+
+Context 的难点在于选择，而不是堆叠。模型上下文窗口有限，太少会缺信息，太多会引入噪音。一个本地 Agent 如果把整个仓库塞给模型，通常既浪费 token，又会让模型难以抓重点。更好的做法是根据任务、文件相关性、历史摘要、工具输出和 memory 逐步构造上下文。
+
+Omni Agent 里 context 相关逻辑会涉及 `packages/context`、runtime prompt 构造、thread compaction、workspace instruction files、memory providers 等。后面章节会专门讲 context 和 memory 的关系。
+
+常见误解是“上下文越长越强”。长上下文确实能容纳更多信息，但并不自动等于更好结果。上下文还需要结构、优先级、来源标记和更新机制。旧工具输出、过期 memory、无关文件都可能让模型偏离任务。
+
+### 3.9 Memory
+
+`Memory` 是跨任务保存的有用信息。它可以记录用户偏好、项目惯例、已验证经验、失败教训、发布流程、常用验证命令等。
+
+Memory 和 context 的区别在于生命周期。Context 是当前模型回合看到的信息；memory 是可以跨 run、跨 session 被保存和召回的信息。Memory 会进入 context，但 memory 本身不是当前上下文的全部。
+
+Omni Agent 强调 accountable memory。`docs/accountable-memory.md` 里提到 memory 应该带 source、scope、confidence、expiry、review 等 metadata。这样 runtime 能判断一条 memory 从哪里来、适用范围是什么、可信度如何、是否需要复核。
+
+常见误解是把 memory 当成事实。Memory 只是历史记录或经验，它可能过期。当前源码、当前配置、当前验证输出优先于旧 memory。如果 memory 说“这个项目用 npm”，但当前仓库已经迁移到 pnpm，就应该相信当前文件。
+
+另一个误解是把 memory 当成越多越好。低质量 memory 会污染上下文。真正有用的 memory 应该短、准、有来源、可复核，并且能帮助当前任务做判断。
+
+### 3.10 Session、Thread 与 Run
+
+`Session`、`Thread`、`Run` 是三个容易混淆的概念。
+
+Session 可以理解成一个持续工作上下文。它保存一组相关消息、摘要和状态。Thread 更像一次连续对话线索或任务线索，里面可以有多轮用户输入和模型响应。Run 则是一次具体任务执行。一个 thread 里可以有多个 run，一个 session 也可能跨多个任务持续使用。
+
+为什么要区分这些？因为 Agent 不是每次都从零开始。用户可能在同一个 thread 里先让 Agent 分析仓库，再让它修改文件，再让它写 benchmark 报告。系统需要知道哪些历史应该保留，哪些应该压缩，哪些 run 的 artifact 可以复用，哪些 memory 可以沉淀。
+
+Omni Agent 的 session store 负责持久化这些结构。CLI 中的 `threads`、`show-thread`、`show-run`、`usage`、`compact-thread` 等命令，就是让开发者检查这些状态。
+
+常见误解是把 session 当成聊天记录。聊天记录只是 session 的一部分。工程 Agent 的 session 还应该包含运行记录、工具事件、摘要、usage、artifact、memory 写入等信息。
+
+### 3.11 Run artifact
+
+`Run artifact` 是一次任务执行留下的证据文件或证据记录。它回答的问题是：“这次 Agent 到底做了什么？”
+
+一个有用的 run artifact 通常应该包含：任务合同、模型 profile、工具轨迹、审批记录、修改文件、diff 摘要、验证命令、验证结果、失败原因、耗时、usage、最终总结和残余风险。`docs/agent-run-artifacts.md` 里把 `agent-run` artifact 拆成 task contract、tool trace、approvals、diff、verification、summary 等部分。
+
+Run artifact 的价值在于复盘。没有 artifact，成功和失败都只能靠记忆。出了问题，你不知道模型是否读过正确文件，不知道测试是否真的跑过，不知道哪个工具失败，不知道审批是否阻止了关键动作，也不知道最终总结是否夸大。
+
+常见误解是把最终回答当成 artifact。最终回答是用户可读摘要，但它不是完整证据。真正的 artifact 应该能被后续工具、评测、维护者或 release 流程检查。
+
+### 3.12 Eval manifest
+
+`Eval manifest` 是评测任务定义文件。它规定要跑哪些 scenario、fixture 在哪里、每个 step 的期望是什么、需要哪些工具、需要哪些输出片段、如何评分。
+
+Manifest 是 benchmark 的合同。没有 manifest，评测就容易变成人工印象；有了 manifest，评测才可以重复运行、比较版本、定位退化。Omni Agent 的默认 eval suite 在 `examples/evals/suite.json`，eval 核心逻辑在 `packages/evals`。
+
+一个 scenario 可以很简单，比如要求 Agent 修改某个 fixture 文件并通过验证；也可以更复杂，比如多 step 任务、long-context retention、subagent 协作、benchmark-quality gate、release-decision readiness。Manifest 的设计决定了 benchmark 到底测什么。
+
+常见误解是把 eval manifest 当成测试文件。它和传统单元测试不同。单元测试通常测试函数行为；eval manifest 测的是 Agent 在任务环境中的行为，包括工具调用、文件修改、验证状态、输出片段、trace 和能力声明。
+
+### 3.13 Synthetic、Mock 与 Real-model Benchmark
+
+`Synthetic benchmark` 是脚本化模拟执行。它不调用真实模型，而是构造 observed run 来验证 harness、manifest、score 和 report。它适合快速回归，成本低，稳定性高。它不能证明真实模型能力。
+
+`Mock runtime benchmark` 会走真实 runtime 路径，但不访问远程模型。它适合验证 CLI/runtime/session/artifact 路径是否通畅。它比 synthetic 更接近运行系统，但仍然不能代表真实模型表现。
+
+`Real-model benchmark` 通过真实 provider 和 model profile 运行。Omni Agent 里通常通过 `--mode openai --model-profile <id>` 接入 OpenAI-compatible 或其他兼容 profile。它才开始评估模型、prompt、工具契约、上下文、runtime、验证 loop 的综合表现。
+
+这三个词必须严格区分。一个项目说“benchmark 通过”，你应该追问是哪一种。Synthetic 通过说明评测系统没有明显坏；mock 通过说明 runtime path 能走；真实模型通过才说明某个模型在某套任务上表现如何。
+
+常见误解是用 synthetic 结果宣传真实模型能力。Omni Agent 的 README 已经明确提醒：`npm run eval:benchmark` 默认 `--mode synthetic`，它证明 benchmark wiring、scoring 和 capability gates，不能声称真实模型完成任务。
+
+### 3.14 Verification evidence
+
+`Verification evidence` 是证明任务完成的证据。它可以是命令通过、测试通过、生成 artifact、trace 记录、报告文件等。
+
+`docs/verification-native-runtime.md` 里把 evidence kinds 分成 `command`、`test`、`artifact`、`trace`。这说明“完成”不是一句话，而是某种可检查记录。比如 `npm run typecheck` 退出码为 0 是 command evidence；某个测试 suite 通过是 test evidence；生成 benchmark report 是 artifact evidence；持久化 trace 证明某个检查发生过是 trace evidence。
+
+Verification evidence 与普通日志不同。日志只是发生过的输出，evidence 要能支撑一个判断。比如“测试通过”要对应命令、退出码和输出；“生成报告”要对应文件路径和内容；“工具执行成功”要对应 tool event。
+
+常见误解是“没有报错就是成功”。没有报错可能只是没有验证。一个 verification-native runtime 需要明确知道哪些证据足以支持完成。
+
+### 3.15 Capability-backed claim
+
+`Capability-backed claim` 是有证据支撑的能力声明。
+
+比如项目说“支持本地编码 runtime”，这应该能对应到测试、CLI 命令、runtime scenario、scorecard 条目和文档。项目说“支持 benchmark quality gate”，应该能对应到 eval suite、maturity check、benchmark script、report 和 release checklist。项目说“支持 governed subagents”，应该能对应到 subagent 工具、权限边界、测试和文档。
+
+Omni Agent 的 `docs/capability-backed-claims.md` 和 `examples/evals/capability-scorecard.json` 就是为这个目标服务的。它们把公开说法和证据连接起来，避免能力声明悬空。
+
+常见误解是把 capability claim 当成营销文案。对 verification-native 项目来说，claim 是工程合同。它必须能被检查。没有证据的 claim 不是成熟能力，而是待验证假设。
+
+### 3.16 Subagent
+
+`Subagent` 是由主 Agent 委派的受治理 worker。它不是“多开一个聊天窗口”。
+
+Subagent 的价值在于并行或分工：一个 worker 可以做只读调查，一个 worker 可以负责某个模块的补丁，一个 worker 可以跑验证或整理资料。但 subagent 也带来风险：它可能和主 Agent 冲突修改文件，可能越权访问路径，可能消耗过多预算，可能产生难以合并的结果。
+
+因此 Omni Agent 强调 governed subagents。`docs/governed-subagents.md` 里提到 authority、ownership、budget、scope、verification metadata。也就是说，委派任务时要说明权限、目标、写入范围、预算和需要返回的证据。
+
+常见误解是认为 subagent 越多越强。并行并不自动带来质量。没有边界的并行会增加混乱。好的 subagent 使用方式是任务明确、写集分离、权限有限、结果可检查。
+
+### 3.17 Gateway 与 Workbench
+
+`Gateway` 是把 runtime 暴露成服务的接口。CLI 是本地命令入口，gateway 是 HTTP/SSE/WS 入口。通过 gateway，外部系统可以创建任务、查看 run、订阅事件、管理 routes、连接 workbench 或自动化系统。
+
+`Workbench` 是操作者查看和管理系统状态的界面。它让 agents、runs、routes、automations、extensions、skills、maintenance 等信息变得可见。
+
+常见误解是认为 gateway 只是“另一个启动方式”。实际上 gateway 改变了使用形态：runtime 不再只由当前终端驱动，而可以被外部控制面编排。这样就需要更严格的 auth、token、route safety、event replay 和 artifact inspection。
+
+### 3.18 Execution domain
+
+`Execution domain` 是工具动作发生的执行域。常见域包括 `workspace`、`worktree`、`sandbox`。
+
+`workspace` 表示直接在当前工作目录操作。它最简单，但风险也最高，因为修改直接作用于当前文件。`worktree` 表示使用 Git worktree 做隔离，适合需要真实仓库语义但不想污染主工作区的任务。`sandbox` 表示复制或隔离执行，适合实验性修改。
+
+执行域影响审批、路径、rollback、artifact 和验证。一个危险改动如果在 workspace 里直接执行，风险更高；如果在 worktree 或 sandbox 中执行，风险更可控。
+
+常见误解是只关心工具是什么，不关心工具在哪里执行。同样的 `write_file`，在不同 execution domain 下风险不同。
+
+### 3.19 Release gate 与 Maturity check
+
+`Release gate` 是发布前必须通过的检查集合。它通常包括 typecheck、build、测试、eval、benchmark、maturity check、安全文档检查、release artifact smoke 等。
+
+`Maturity check` 是能力成熟度检查。它会确认能力声明是否有 scorecard、scenario、evidence、docs 或 tests 支撑。Omni Agent 的 `npm run maturity:check` 就服务于这个目标。
+
+常见误解是“测试通过就可以发布”。对 Agent runtime 来说，仅单元测试通过不够。还要看 eval、benchmark、security、docs、artifact、capability claims 是否一致。发布的是一个系统，而不是一个函数。
+
+### 3.20 本章小结
+
+本章的术语可以按四组记忆。
+
+第一组是执行系统：runtime、workspace、model profile、tool call、tool execution、approval policy、execution domain。它们回答“任务如何被执行，以及边界在哪里”。
+
+第二组是信息系统：context、memory、session、thread、run、session store。它们回答“模型看见什么，系统记住什么，历史如何延续”。
+
+第三组是证据系统：verification evidence、run artifact、trace、eval manifest、benchmark mode、maturity check、release gate。它们回答“我们如何证明做过什么，如何证明能力没有退化”。
+
+第四组是协作和服务系统：subagent、gateway、workbench、automation、route。它们回答“一个本地 Agent 如何扩展成受控协作和服务接口”。
+
+读源码时，如果你遇到一个陌生文件，可以先问它属于哪一组。属于执行系统，就看它如何影响任务动作；属于信息系统，就看它如何影响上下文和记忆；属于证据系统，就看它如何保存或评估事实；属于协作和服务系统，就看它如何暴露 runtime 能力并控制权限。
+
+### 3.21 本章参考资料
+
+#### 本项目参考
+
+- [README.zh.md](../../README.zh.md)：项目内核心术语、runtime modes、eval、workspace memory、gateway 和能力声明的概览。
+- [docs/verification-native-runtime.md](../verification-native-runtime.md)：verification evidence 的定义，包括 command、test、artifact、trace。
+- [docs/capability-backed-claims.md](../capability-backed-claims.md)：capability-backed claim 与 maturity check 的关系。
+- [docs/accountable-memory.md](../accountable-memory.md)：memory metadata：source、scope、confidence、expiry、review。
+- [docs/agent-run-artifacts.md](../agent-run-artifacts.md)：run artifact 的结构：task contract、tool trace、approvals、diff、verification、summary。
+- [docs/governed-subagents.md](../governed-subagents.md)：subagent 的 authority、ownership、budget、scope 和 verification metadata。
+- [docs/operations.md](../operations.md)：model runtime、memory、automation、subagent、tool lifecycle 等运维语境下的术语使用。
+- [docs/release-checklist.md](../release-checklist.md)：release gate 和发布前检查的具体命令。
+- [examples/evals/suite.json](../../examples/evals/suite.json)：eval manifest 的实际例子。
+- [examples/evals/capability-scorecard.json](../../examples/evals/capability-scorecard.json)：能力成熟度和证据映射的实际例子。
+- [packages/core-runtime/src/index.ts](../../packages/core-runtime/src/index.ts)：runtime、run、tool events、verification、metrics 的核心实现。
+- [packages/model-client/src/index.ts](../../packages/model-client/src/index.ts)：model profile、provider protocol、tool support、streaming support。
+- [packages/approvals/src/index.ts](../../packages/approvals/src/index.ts)：approval class、risk tier、approval decision。
+- [packages/evals/src/index.ts](../../packages/evals/src/index.ts)：eval score type、suite schema、report。
+- [packages/session-store/src/index.ts](../../packages/session-store/src/index.ts)：session、run、memory、artifact 的持久化实现。
+
+#### 外部参考
+
+- [OpenAI Function Calling](https://platform.openai.com/docs/guides/function-calling)：理解 tool call、schema、structured arguments 的官方参考。
+- [Anthropic Tool Use with Claude](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)：理解 tool use 基本循环：模型请求、客户端执行、结果回传。
+- [OpenAI Agents SDK](https://platform.openai.com/docs/guides/agents-sdk/)：理解 agents、tools、handoffs、guardrails、tracing 等 runtime 术语。
+- [Anthropic: Building Effective AI Agents](https://www.anthropic.com/engineering/building-effective-agents)：理解 workflow、agent、tools、feedback loops 和 control patterns。
+- [OpenAI Evaluation Best Practices](https://platform.openai.com/docs/guides/evaluation-best-practices)：理解 eval、rubric、dataset、human review 和持续评测。
+- [OpenAI Agent Evals](https://platform.openai.com/docs/guides/agent-evals)：理解多步 agent 任务如何设计 eval。
+- [SWE-bench paper](https://arxiv.org/abs/2310.06770)：理解真实 GitHub issue 软件工程 benchmark。
+- [OpenTelemetry GenAI Agent and Framework Spans](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/)：理解 trace、span、agent observability 的标准术语。
 
 ---
 
