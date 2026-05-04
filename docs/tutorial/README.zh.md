@@ -8318,142 +8318,394 @@ Eval 贡献最容易犯的错误，是只新增 scenario，却不说明它证明
 - GitHub Docs: [Navigating code on GitHub](https://docs.github.com/en/repositories/working-with-files/using-files/navigating-code-on-github)
 ## 32. 命令手册：把常用命令变成稳定工作流
 
+命令手册不是命令列表。真正有用的命令手册，应该告诉你每条命令在工作流里承担什么责任，什么时候该运行，失败时先看哪里，运行成功又能证明到什么程度。对 Omni Agent 这种本地 coding-agent runtime 来说，命令更像工程证据的入口：有的命令证明类型正确，有的命令证明构建产物可用，有的命令证明 runtime 路径能走通，有的命令证明 benchmark harness 没坏，有的命令证明发布物可以交给外部用户。
 
-本章讨论的是：把安装、测试、typecheck、eval、benchmark、diagnostics、release 变成可靠命令序列。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章围绕 [`package.json`](../../package.json) 中的 scripts 来讲。你可以把这些命令分成九类：安装与开发、构建、测试、eval、benchmark、release、reference parity、fixture、真实 CLI 使用。学习时不要只记命令名，而要记住“它验证哪一层”。
 
+### 32.1 安装和本地开发
 
-### 32.1 本章先建立的心智模型
+第一次进入仓库，先安装依赖：
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，command handbook、test 和 benchmark 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+```bash
+npm install
+```
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，typecheck、eval 和 diagnostics 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这个命令的作用是根据 `package.json` 和 lockfile 安装 workspace 依赖。它不证明代码正确，也不证明 CLI 能运行。它只证明你的 Node 和 npm 环境能把项目依赖装起来。如果安装失败，先看 Node 版本、npm 版本、网络、lockfile 和本地缓存，不要去改源码。
 
-本章反复出现的关键词包括：`command handbook`、`typecheck`、`test`、`eval`、`benchmark`、`diagnostics`、`release`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+日常开发入口是：
 
-### 32.2 在仓库中找到入口
+```bash
+npm run dev -- <command>
+```
 
-阅读本章时，建议从下面这些文件开始：
+它会通过 `tsx` 使用 `tsconfig.base.json` 直接运行 `apps/cli/src/index.ts`。开发入口适合调试 CLI、doctor、models、evals、serve 等命令，因为你不用先构建 dist。它证明的是源码开发路径可运行，不证明发布包可用。比如 `npm run dev -- --help` 能跑，不代表 `npm start -- --help` 也一定能跑，因为后者依赖 `dist/omni-agent.js`。
 
-1. [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`package.json`](../../package.json)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`docs/operations.md`](../../docs/operations.md)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`scripts`](../../scripts)：用来观察本章在仓库中的实现、测试或运维入口。
+如果你要验证发布后的 CLI，必须先构建，再用 `npm start` 或直接执行 dist。开发命令和发布命令要分开理解。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，test、benchmark 和 release 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 32.2 类型检查和构建
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+最基础的代码门禁是：
 
-### 32.3 它在一次 Agent 任务中怎样出现
+```bash
+npm run typecheck
+```
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，eval、diagnostics 和 command handbook 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+它实际执行 `tsc -b --pretty false --force`。这个命令证明 TypeScript 项目引用、类型声明、导入导出和编译配置没有明显错误。它不运行测试，不执行 runtime，不检查 benchmark，也不保证逻辑正确。但如果 typecheck 失败，后面的 build、release、diagnostics 通常都没有意义。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+构建命令是：
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+```bash
+npm run build
+```
 
-### 32.4 设计时最容易忽略的边界
+它先运行 typecheck，再运行 `scripts/build.mjs`。构建成功说明源码能被打包成 `dist/omni-agent.js` 这类发布产物。它比 typecheck 更接近用户视角，但仍然不是完整验证。构建成功只能说明产物生成了，不代表安装包包含正确文件，不代表 CLI 子命令都能执行，也不代表 Docker 镜像能启动。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，benchmark、release 和 typecheck 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+排查构建失败时，要先区分是 typecheck 阶段失败，还是 bundling 阶段失败。Typecheck 失败通常看类型错误和文件引用；build 脚本失败通常看 entrypoint、bundle 配置、依赖是否缺失。不要把构建失败归因于模型或 eval。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+### 32.3 测试命令怎么选
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+全量测试是：
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+```bash
+npm test
+```
 
-### 32.5 如何判断实现是否可靠
+它运行 `scripts/run-tests.mjs`，覆盖仓库中的测试集合。全量测试适合提交前、发布前、跨模块改动后运行。它证明当前测试定义的行为没有回归，但不证明真实模型能力，也不证明 release artifact 可安装。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，diagnostics、command handbook 和 test 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+更推荐的日常方式是先跑 targeted test。项目已经把测试分成几组：
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+```bash
+npm run test:core
+npm run test:gateway
+npm run test:ops
+```
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+`test:core` 覆盖 safety、session-store、workspace、runtime、context、tools、approvals、evals。改核心 runtime、工具、工作区、审批、评测时先看它。
 
-### 32.6 常见误区
+`test:gateway` 覆盖 gateway、messages、channel contracts、automation、mobile node client、mobile native shell。改网关、通道、移动端桥接或自动化时先看它。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，release、typecheck 和 eval 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`test:ops` 覆盖 CLI ops、chat、doctor、config、model-client、extensions、deploy templates、release check、maturity artifacts。改操作命令、模型配置、部署模板或发布门禁时先看它。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+如果只改一个模块，可以直接运行：
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+```bash
+node ./scripts/run-tests.mjs tests/evals.test.ts
+node ./scripts/run-tests.mjs tests/workspace.test.ts
+node ./scripts/run-tests.mjs tests/model-client.test.ts
+```
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+选择测试命令时看风险。文档小改不需要全量测试；eval parser 改动至少跑 evals test 和 eval smoke；workspace 写入边界改动至少跑 workspace test、runtime test 和相关 CLI 测试；安全边界改动要跑 safety、tools、workspace、extensions、diagnostics，必要时再跑 release check。
 
-### 32.7 一个可操作的检查流程
+### 32.4 Eval smoke、benchmark 和 program check
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+轻量 eval 是：
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，command handbook、test 和 benchmark 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+```bash
+npm run eval:smoke
+```
 
-### 32.8 与真实模型评测的关系
+它适合快速确认 eval runner、manifest 读取、基础 scenario 和判分逻辑没有坏。Smoke eval 的证明力有限。它不是完整 benchmark，也不是 release-local runtime 验证，更不是真实模型评测。它适合在改 eval schema、expectation、CLI eval 参数后先跑一次。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，typecheck、eval 和 diagnostics 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+完整默认 benchmark 是：
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+```bash
+npm run eval:benchmark
+```
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+默认情况下它是 synthetic mode，主要证明 harness、manifest、scoring、quality gate、artifact 保存、history 和 trend 没坏。它不证明真实模型在任务上成功。运行后应该看 `.artifacts/benchmarks` 下的 `summary.json`、`quality.json`、`history.json`、`trend.json` 和 `report.md`。
 
-### 32.9 一个完整的小案例
+如果要跑 runtime 或真实模型路径，应该显式写 mode 或 model profile：
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+```bash
+npm run eval:benchmark -- --mode mock
+npm run eval:benchmark -- --model-profile deepseek-flash
+```
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+`mock` 证明 CLI runtime 路径，不证明真实供应商模型能力。带 model profile 的真实模型运行才可以支持模型能力讨论，但必须保存 trace、cost、duration、failure summary 和 manifest 信息。
 
-这个案例强调的是工程诚实。 在本章语境中，test、benchmark 和 release 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Eval program 检查是：
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+```bash
+npm run eval:program
+```
 
-### 32.10 排错时的分层问题表
+它关注 eval program 元数据和治理信息，例如 release decision、dataset versioning、judge role、trace artifact、blocking gate 等。它不是跑任务，而是检查 benchmark 是否有足够的评测合同。改 eval suite 的治理字段时应该跑它。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+### 32.5 Release-local 和发布门禁
 
-分层排错能减少无效尝试。 在本章语境中，eval、diagnostics 和 command handbook 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Release-local eval 是：
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+```bash
+npm run eval:release-local
+```
 
-### 32.11 如何把本章内容写进团队流程
+它使用 `examples/evals/release-local.json`，mode 是 mock，但会走 CLI runtime eval 路径，并要求 verification。它证明 release 关键场景能产生 observed run、thread id、duration、turn count、tool events、successful run verification、rollback evidence、subagent evidence 等。它比 smoke eval 更接近 release 行为，但仍然不是真实模型能力评测。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+完整发布检查入口是：
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，benchmark、release 和 typecheck 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+```bash
+npm run release:check
+```
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+它先检查 required files，再按顺序运行 typecheck、build、release artifact smoke、release-local eval、release diagnostics、reference evidence smoke、reference parity、test、eval smoke、benchmark、maturity check。它适合发布前和高风险改动后运行。它耗时更长，不适合每次文档小改都跑。
 
-### 32.12 练习
+发布物 smoke 是：
 
-1. 围绕 `command handbook` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `typecheck` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `test` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `eval` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `benchmark` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `diagnostics` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+```bash
+npm run release:artifact-smoke
+```
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+它验证 built CLI help、npm pack dry run、tarball 内容、临时安装和 installed CLI help。它证明发布包从用户视角可启动。它不证明所有子命令可用，也不证明 Docker 镜像可启动。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+发布诊断是：
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+```bash
+npm run release:diagnostics
+```
 
-### 32.13 本章参考资料
+它检查脚本、CI、dist redaction marker、safety marker、scorecard、release-local manifest、channel contract、MCP governance、model profile diagnostics 等。它适合发现“测试没覆盖但发布会出事”的一致性问题。
 
-- Omni Agent: [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)
+成熟度检查是：
+
+```bash
+npm run maturity:check
+```
+
+它检查 capability scorecard 和成熟声明。只要你改能力状态、成熟标准、blockedBy、liveOrContractTests 或公开能力描述，就应该考虑运行它。
+
+### 32.6 Reference 命令
+
+项目中有一组 reference 命令：
+
+```bash
+npm run reference:evidence-smoke
+npm run reference:parity -- --strict
+npm run reference:native
+npm run reference:native-report
+npm run reference:sync
+npm run reference:translate
+```
+
+这些命令服务于参考实现、能力对齐和证据报告。普通贡献者不需要每天跑全部 reference 命令，但如果你改了对外能力对比、参考证据、parity 报告或来自强参考项目的能力说明，就必须理解它们。
+
+`reference:evidence-smoke` 用来确认 reference evidence 的基本结构可读。`reference:parity -- --strict` 用来严格检查 parity 声明是否成立。`reference:native` 和 `reference:native-report` 更偏生成报告。`reference:sync` 和 `reference:translate` 涉及同步和翻译参考项目资料，运行前要确认当前工作区没有未提交的重要改动，并理解生成物会落在哪里。
+
+这类命令最容易被误用成“能力已经相同”的证明。实际上 parity 命令只能证明当前定义的参考证据和检查规则通过。它不能替代真实 runtime 实现，也不能替代 eval benchmark。Reference 命令的输出应该和 capability scorecard、README、benchmark 报告互相印证。
+
+### 32.7 Fixture 命令
+
+项目提供两个 fixture 命令：
+
+```bash
+npm run fixture:business
+npm run fixture:paper
+```
+
+它们用于创建业务或论文相关的本地 fixture。Fixture 的作用是给测试、eval 或演示提供稳定输入。不要把 fixture 当作真实用户数据，也不要把 fixture 成功当成真实场景能力。Fixture 越稳定，越适合做回归；真实任务越复杂，越需要另外保存 trace 和失败样本。
+
+如果你新增 fixture，要写清它解决什么测试缺口，是否包含敏感信息，是否会影响 benchmark 历史。Fixture 文件应该小、可读、可复现，不应该引入大量无关数据。
+
+### 32.8 一套日常工作流
+
+文档改动可以这样做：
+
+```bash
+npm run typecheck
+```
+
+如果只改 Markdown，typecheck 不是严格必须，但跑一下能确认项目基础状态没有意外坏掉。更重要的是检查链接和章节内容。
+
+局部代码修复可以这样做：
+
+```bash
+npm run typecheck
+node ./scripts/run-tests.mjs tests/<target>.test.ts
+```
+
+先用 targeted test 缩短反馈，再根据影响范围扩展到 `npm test`。
+
+Eval 改动可以这样做：
+
+```bash
+npm run typecheck
+node ./scripts/run-tests.mjs tests/evals.test.ts
+npm run eval:smoke
+npm run eval:benchmark
+```
+
+如果改的是 benchmark program 合同，再加 `npm run eval:program`。如果改的是真实模型模式，必须保存运行参数和 artifact。
+
+Release 相关改动可以这样做：
+
+```bash
+npm run typecheck
+npm run build
+npm run release:artifact-smoke
+npm run release:diagnostics
+npm run release:check
+```
+
+如果时间有限，先跑最相关 gate；但 PR 或 release notes 里要诚实写明哪些没跑。
+
+### 32.9 失败时的排查顺序
+
+命令失败时，先看命令属于哪一层。
+
+安装失败，看 Node、npm、lockfile 和网络。开发命令失败，看 CLI 参数和源码入口。Typecheck 失败，看类型和项目引用。Build 失败，看构建脚本、entrypoint、依赖。测试失败，看对应测试名称和断言。Eval 失败，看 manifest、expectation、observed run 和 artifact。Benchmark 分数异常，看 mode、suite、history 和 failure summary。Release diagnostics 失败，看 area。Artifact smoke 失败，看 dist、pack、tarball 和 installed CLI。Docker health 失败，看镜像构建、端口、启动命令和环境变量。
+
+不要把所有失败都归因于模型。很多命令根本没有调用真实模型。比如 typecheck、build、artifact smoke、diagnostics、maturity check 都主要检查工程结构。只有带真实 model profile 的 eval 或 runtime 才能说明模型相关问题。
+
+### 32.10 命令输出应该如何记录
+
+PR 描述里不要只写“tests passed”。更好的记录方式是：
+
+```text
+Verification:
+- npm run typecheck: passed
+- node ./scripts/run-tests.mjs tests/evals.test.ts: passed
+- npm run eval:smoke: passed
+- npm run eval:benchmark: synthetic mode, artifact saved under .artifacts/benchmarks
+```
+
+如果命令没跑，也写清原因：
+
+```text
+Not run:
+- npm run release:check: not relevant for docs-only change
+- real-model benchmark: no provider key configured in this environment
+```
+
+这种记录让 reviewer 立刻知道证据范围。它也能防止以后有人误把局部验证当成完整发布验证。
+
+### 32.11 命令选择决策树
+
+如果你不知道该跑哪条命令，可以按下面的决策树思考。
+
+第一问：你是否改了 TypeScript 源码？如果是，至少跑 `typecheck`。类型检查是最便宜的结构门禁。它不能证明逻辑正确，但能快速发现导入、导出、泛型、返回值、项目引用和构建配置问题。只要源码改动会进入编译，就不应该跳过它。
+
+第二问：你是否改了某个明确模块？如果是，先跑该模块的 targeted test。改 evals 跑 evals test，改 workspace 跑 workspace test，改 model client 跑 model-client test，改 gateway 跑 gateway test。先跑 targeted test 的好处是反馈快，也能让你更清楚这次改动到底保护了什么行为。
+
+第三问：你是否改了跨模块行为？如果一个改动同时影响 CLI、runtime、tools、workspace 或 eval，就不能只跑一个测试文件。跨模块改动需要组合测试，至少覆盖入口层、核心行为层和输出证据层。比如改 CLI eval 参数，既要跑 CLI 相关测试，也要跑 eval smoke；改工具事件记录，既要跑 tools test，也要跑 runtime 或 evals test。
+
+第四问：你是否改了对外声明？如果改 README、tutorial、capability scorecard、benchmark 文案或 release notes，就要检查证据是否跟上。文档改动不一定需要全量测试，但如果文档说某个能力成熟，就必须有 scorecard、eval、test 或 artifact 支撑。命令选择不只是代码问题，也是声明问题。
+
+第五问：你是否改了发布物？如果改 package files、build、dist、Dockerfile、deployment template、release check 或 diagnostics，就要跑 release 相关命令。发布物风险不一定会被普通测试发现，因为普通测试多半在源码目录里运行，而用户使用的是打包后的产物或容器镜像。
+
+第六问：你是否改了安全边界？如果涉及命令执行、路径访问、审批、密钥、trace、redaction、credential、MCP、browser artifact 或 model routing，应该把安全测试、diagnostics 和文档一起考虑。安全边界不能只靠 happy path 命令证明。
+
+这个决策树的价值，是让你根据风险选择命令，而不是每次机械跑完整套。完整套当然最稳，但太慢；只跑最小命令又可能漏风险。成熟的工程习惯，是知道什么时候可以小验证，什么时候必须扩大验证。
+
+### 32.12 常见组合场景
+
+场景一：只改一段教程文字。你应该先检查链接、标题、章节内容和语义准确性。如果文字涉及命令，可以运行对应命令确认没有写错。如果只是语言润色，不需要 release gate；如果文档修改了 benchmark 结论，就要检查 benchmark artifact 或相关章节是否一致。
+
+场景二：修复一个 eval expectation bug。最小路径是 typecheck、evals test、eval smoke。因为 expectation 影响判分，你还应该跑一次 benchmark，确认 artifact 能生成，并打开 report 看输出是否符合预期。如果这个 bug 会改变历史分数解释，PR 里要说明旧分数和新分数的可比性。
+
+场景三：修改 CLI 参数。先跑 CLI 测试，再用 `npm run dev -- <command>` 手动执行受影响命令。CLI 参数错误常常不会被底层模块测试发现，因为底层模块收到的输入已经是结构化对象。改 CLI 时要同时看 help 文案、错误提示和参数传递。
+
+场景四：修改 model profile。先跑 model-client test，再跑 doctor 或 models 命令。不要一开始就跑真实模型 benchmark。先确认 profile 被正确发现、诊断输出没有泄露密钥、fallback 和 cost 估算逻辑没坏，再决定是否跑真实 provider。
+
+场景五：修改 workspace 写入逻辑。先跑 workspace test，再跑 runtime 或 CLI 相关测试。如果涉及 checkpoint 或 rollback，要找 release-local 或相关测试证明工具事件和 artifact 仍然存在。workspace 改动风险高，因为它直接影响用户文件。
+
+场景六：修改 release pipeline。先跑 release-check 相关测试，再跑 artifact smoke 和 diagnostics。只有当构建、打包、诊断都通过后，才考虑 full release check。发布流程改动必须更新 release checklist，否则后续维护者会不知道新 gate 的意义。
+
+场景七：新增真实模型 benchmark 结论。必须记录 model profile、mode、manifest、run id、trace、cost、duration、failure summary 和 artifact 路径。不要只贴一个分数。真实模型结果如果不能复现，就要明确说它是一次观察，而不是稳定 benchmark claim。
+
+### 32.13 命令和证据边界
+
+每条命令都有证明边界。理解边界，比记住命令更重要。
+
+`typecheck` 证明类型结构，不证明运行时行为。一个函数类型正确，仍然可能逻辑错误。一个工具参数类型正确，仍然可能执行危险命令。类型检查是入口门禁，不是行为保证。
+
+`build` 证明发布产物可以生成，不证明发布产物可以安装。要证明安装，需要 artifact smoke；要证明容器运行，需要 Docker build 和 health check；要证明 gateway 可用，需要真实启动服务。
+
+`npm test` 证明测试定义的行为没有回归，不证明没有未覆盖风险。测试越具体，证明越强；测试越少，绿色结果越不能被过度解读。测试通过后仍然要看改动是否触碰未覆盖边界。
+
+`eval:smoke` 证明 eval 基础路径，不证明完整 benchmark。`eval:benchmark` 默认证明 synthetic benchmark，不证明真实模型能力。`eval:release-local` 证明 mock runtime release path，不证明真实 provider。带 model profile 的真实运行才接近模型能力证据，但它也需要 trace 和失败解释。
+
+`release:diagnostics` 证明发布契约和安全 marker 的一部分，不证明用户部署一定成功。它能发现脚本缺失、CI 缺命令、dist 缺 redaction marker、scorecard 不完整等问题，但不能替代端到端部署验证。
+
+`release:check` 是组合门禁，但它也不是万能。它不自动替代所有人工发布步骤，不一定包含真实模型密钥环境，不一定跑 Docker health。发布者仍然要阅读 release checklist，把自动 gate 和人工 gate 合起来判断。
+
+命令成功只能说明“这条命令覆盖的条件成立”。命令失败也不一定说明系统整体坏了，它只说明某一层证据不满足。成熟的排查方式，是先定位命令层级，再定位失败文件，再决定修复范围。
+
+### 32.14 命令手册如何写进团队习惯
+
+团队使用命令手册时，应该把它写进三个地方。
+
+第一，写进 PR 模板。PR 模板里应该要求作者列出运行过的命令、没运行的命令、没运行原因和 artifact 路径。这样 reviewer 不需要反复追问验证范围。
+
+第二，写进 issue 标签。文档问题、eval 问题、runtime 问题、release 问题、安全问题应该对应不同推荐命令。新贡献者看到标签，就知道起步验证是什么。
+
+第三，写进 release notes。发布说明不应该只说“CI passed”。它应该列出关键 gate、benchmark mode、run id、maturity issues、Docker health 和任何人工豁免。这样未来回看版本时，能知道当时的证据状态。
+
+命令手册不是静态文档。每次新增 gate、修改 eval 模式、调整发布流程，都应该更新它。否则命令会逐渐和实际工作流脱节，最后又回到“凭经验运行”的状态。
+
+### 32.15 从失败命令写复盘
+
+命令失败后，最差的处理方式是只说“失败了”。更好的处理方式，是把失败写成一条可复盘记录。这样的记录至少包含五部分。
+
+第一，运行背景。写清你为什么运行这条命令：是提交前验证，还是 release 前检查，还是排查某个 issue，还是确认文档命令是否仍然有效。背景不同，失败的严重程度不同。文档示例命令失败，可能是文档过期；release gate 失败，可能阻止发布；真实模型 benchmark 失败，可能只是某个 provider 配置缺失。
+
+第二，完整命令。不要只写“跑了 benchmark”。要写具体命令、参数、工作目录和相关环境。比如是否传了 `--mode mock`，是否传了 `--model-profile`，是否用了自定义 manifest，是否设置了 storage root。这些细节决定别人能不能复现。
+
+第三，失败层级。判断失败发生在安装、构建、测试、eval、benchmark、release、部署还是真实模型调用。层级判断能防止错误修复。比如 eval result 没生成，可能是 CLI 子进程失败；benchmark trend 异常，可能是 history 数据不可比；release diagnostics 报 dist marker 缺失，可能是没有重新 build。
+
+第四，证据路径。写出 stderr、artifact、summary、report、diagnostics output 或测试文件位置。对 Omni Agent 来说，证据路径特别重要，因为很多命令会生成 JSON 和 Markdown 报告。没有路径，别人只能看你的口头描述。
+
+第五，下一步动作。失败记录应该给出可执行下一步：修源码、补测试、更新文档、重跑命令、降级声明、跳过并说明原因，还是需要真实密钥后再验证。不要让复盘停在“待调查”。
+
+例如，一条好的失败记录可以这样写：
+
+```text
+Command: npm run eval:benchmark -- --mode mock --run-id release-candidate-mock
+Context: release candidate runtime verification
+Failure layer: runtime eval subprocess
+Evidence: .artifacts/benchmarks/runs/release-candidate-mock/cli-stderr.log
+Observed: eval-result.json was not produced
+Next step: inspect CLI args and storage root, then rerun same run id after fix
+```
+
+这样的记录比“mock benchmark 挂了”有用得多。它告诉维护者命令、语境、层级、证据和下一步。长期看，团队里如果每个人都这样记录失败，命令手册就会自然长成排错手册。
+
+### 32.16 命令命名习惯
+
+读 `package.json` 时，你还可以学习项目的命名习惯。冒号前通常表示领域，冒号后表示动作或目标。`eval:benchmark` 表示 eval 领域里的 benchmark；`release:diagnostics` 表示 release 领域里的 diagnostics；`reference:parity` 表示 reference 领域里的 parity 检查；`fixture:business` 表示 fixture 领域里的 business fixture 创建。
+
+这种命名方式的好处是可扩展。以后新增命令时，不要随便起一个孤立名称。比如新增一个 release 前的 gateway health check，更好的名字可能是 `release:gateway-smoke`，而不是 `check-health`。新增一个真实模型 benchmark 报告命令，更好的名字可能是 `eval:real-model-report`，而不是 `run-ai-test`。
+
+命令名应该让维护者一眼看出责任边界。`test:*` 应该运行测试，`eval:*` 应该生成评测证据，`release:*` 应该服务发布，`reference:*` 应该服务参考实现和对齐，`fixture:*` 应该生成可复现输入。命名清楚，后续文档、CI、PR 模板和 release checklist 才能保持一致。
+
+如果你要新增命令，至少写清三件事：它属于哪个领域，它输出什么证据，它失败时应该阻止什么流程。没有这三点，新命令很容易变成维护负担。
+
+命令更新也要同步文档。新增命令后，要检查 README、教程、release checklist、CI workflow 和贡献指南是否需要更新。删除或改名命令时，更要搜索旧名称，避免文档里留下过期入口。命令是项目的公共接口，不只是维护者自己的快捷方式。一个命令一旦写进文档，就会被读者、CI、脚本和 release 流程依赖。随意改命令，会让教程、自动化和贡献者经验一起失效。
+
+因此，维护命令手册就是维护项目的操作契约。代码告诉系统怎么运行，命令告诉人如何稳定地触发这些运行。两者保持一致，项目才不会变成只能靠少数维护者记忆操作的黑盒，也能让新读者更快进入真实工作流，独立完成验证和排错，减少学习阻力，提高贡献质量和发布可靠性，降低维护风险和误用风险，保留证据链。
+
+### 32.17 练习
+
+1. 把 `package.json` 中的 scripts 按安装、构建、测试、eval、release、reference、fixture 分类。
+2. 选择一个失败命令，写出它属于哪一层，应该先看哪些文件。
+3. 写一套“文档改动”的最小验证命令。
+4. 写一套“eval schema 改动”的验证命令。
+5. 写一套“release gate 改动”的验证命令。
+6. 解释 `eval:smoke`、`eval:benchmark`、`eval:release-local` 三者证明力的区别。
+7. 解释为什么 `npm run dev -- --help` 不能替代 `release:artifact-smoke`。
+8. 写一个 PR verification block，明确哪些命令通过、哪些命令没跑、为什么没跑。
+
+完成这些练习后，你应该能把命令当成工作流，而不是零散口诀。命令手册的价值，是让你在不同风险等级下选择正确验证，而不是每次凭感觉跑一堆命令。
+
+### 32.18 本章参考资料
+
 - Omni Agent: [`package.json`](../../package.json)
-- Omni Agent: [`docs/operations.md`](../../docs/operations.md)
-- Omni Agent: [`scripts`](../../scripts)
+- Omni Agent: [`scripts/run-tests.mjs`](../../scripts/run-tests.mjs)
+- Omni Agent: [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
+- Omni Agent: [`scripts/eval-release-local.ts`](../../scripts/eval-release-local.ts)
+- Omni Agent: [`scripts/release-check.ts`](../../scripts/release-check.ts)
+- Omni Agent: [`scripts/release-artifact-smoke.ts`](../../scripts/release-artifact-smoke.ts)
+- Omni Agent: [`scripts/release-diagnostics.ts`](../../scripts/release-diagnostics.ts)
 - npm scripts documentation: [https://docs.npmjs.com/cli/v10/using-npm/scripts](https://docs.npmjs.com/cli/v10/using-npm/scripts)
-- Node.js test runner: [https://nodejs.org/api/test.html](https://nodejs.org/api/test.html)
-- GitHub Actions workflow syntax: [https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions)
-
+- TypeScript project references: [https://www.typescriptlang.org/docs/handbook/project-references.html](https://www.typescriptlang.org/docs/handbook/project-references.html)
 ## 33. Prompt 与 Tool Contract：让模型知道如何行动
 
 
