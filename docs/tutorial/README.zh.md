@@ -9392,142 +9392,201 @@ Omni Agent 把 live tests 设计成 opt-in。`OMNI_LIVE_CHANNEL_TESTS=1` 才跑�
 - TypeScript 官方文档：[Project References](https://www.typescriptlang.org/docs/handbook/project-references.html)
 ## 37. 附录一：课堂讲义式学习计划
 
+这一附录把整本教程改写成一套可以授课的学习计划。它适合三类人使用：第一类是项目维护者，希望带新人快速理解 Omni Agent；第二类是课程或工作坊讲师，希望用一个真实仓库讲清楚本地 Agent runtime；第三类是自学者，希望把前面 36 章拆成可执行的学习节奏。它不是把目录简单分成几天读完，而是把学习目标、课堂活动、演示任务、讨论问题、作业和评分标准对齐。
 
-本章讨论的是：把整套教程拆成可授课的四讲：概念、运行、评测、安全与发布。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+好的技术教学不能只让学生“听懂概念”。学习 Omni Agent 的目标，是让读者能在真实仓库里做判断：知道 Agent runtime 和聊天模型有什么区别，知道工具调用为什么需要合同，知道 benchmark 分数证明什么、不证明什么，知道真实模型失败时如何分类原因，知道安全边界和运维证据在哪里。也就是说，本课程的终点不是背出模块名称，而是能独立完成一次小型排障、一次 eval 设计、一次运行证据审查和一次安全边界判断。
 
+本计划参考了课程设计中的一个基本原则：目标、教学活动和评估方式要对齐。你希望学生会做什么，就要让课堂练习什么，并用作业检查什么。对 Omni Agent 这类工程系统，最合适的学习方式是“讲解 + 源码定位 + 命令演示 + 证据复盘 + 小组讨论 + 课后实践”。只讲概念会飘，只跑命令会碎，只读源码会累，三者结合才能形成工程判断。
 
-### 37.1 本章先建立的心智模型
+### 37.1 课程总体目标
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，lesson plan、demo 和 discussion 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+完成这套学习计划后，学习者应该能做到八件事。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，teaching、homework 和 rubric 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一，能用自己的话解释 Omni Agent 是什么。这里的解释必须包含 local-first、coding agent、runtime、tool、approval、verification、session store 和 eval harness。不能只说“它是一个会写代码的 AI”。
 
-本章反复出现的关键词包括：`lesson plan`、`teaching`、`demo`、`homework`、`discussion`、`rubric`、`review`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+第二，能从仓库目录定位一个能力的实现位置。比如 model profile 相关问题去 `packages/model-client` 和 CLI 配置；approval 问题去 `packages/approvals`；workspace path 问题去 `packages/workspace`；eval 判分问题去 `packages/evals`；gateway 问题去 `packages/gateway`。
 
-### 37.2 在仓库中找到入口
+第三，能运行最小本地检查。至少包括 `npm install`、`npm run typecheck`、`npm run dev -- models`、`npm run dev -- doctor --cwd "."`、targeted test 和基本 eval。学生不一定要连接真实模型，但必须理解真实模型连接前本地路径为什么要先通。
 
-阅读本章时，建议从下面这些文件开始：
+第四，能区分 synthetic、mock 和 real-model benchmark。学生需要知道 synthetic 证明 harness 合同，mock 验证 runtime 路径，real-model 才能观察模型、prompt、tool contract 和 runtime 的组合表现。
 
-1. [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`docs/omni-agent-paradigms.md`](../../docs/omni-agent-paradigms.md)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`README.zh.md`](../../README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`examples/evals/suite.json`](../../examples/evals/suite.json)：用来观察本章在仓库中的实现、测试或运维入口。
+第五，能阅读一次 run artifact 或 observed run。给学生一段 tool events、verification status、changed files 和 final response，他们应该能判断证据是否足够支持“任务完成”。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，demo、discussion 和 review 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第六，能解释一个安全边界。比如为什么 workspace 文件不可信，为什么 shell 需要 approval，为什么 path escape 被拒绝，为什么 secret 要 redaction，为什么 MCP server 要 allowlist。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+第七，能做一次故障分诊。看到 CI 失败、benchmark 失败、模型失败、tool blocked、path escape、gateway health 正常但能力失败，能按层级找检查入口，而不是直接猜。
 
-### 37.3 它在一次 Agent 任务中怎样出现
+第八，能为一个新能力写最小证据链。包括源码入口、测试入口、eval scenario、验证命令、文档说明和残余风险。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，homework、rubric 和 lesson plan 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 37.2 课前准备
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+课前准备分教师准备和学习者准备。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+教师准备包括四项。第一，准备一个干净的本地仓库或教学分支，确保 `npm install`、`npm run typecheck` 和基础 CLI 能跑。第二，准备一份失败样例，例如一个 eval expectation 失败、一个 path escape 失败、一个 tool blocked 事件或一个真实模型失败报告。第三，准备投影演示路径：从 README 到 `package.json`，再到 `packages/context`、`packages/tools`、`packages/evals`、`docs/operations.md`。第四，准备课堂时间表，避免一开始就陷入某个源码细节。
 
-### 37.4 设计时最容易忽略的边界
+学习者准备包括三项。第一，提前安装 Node.js、npm、git，并 clone 仓库。第二，读完教程第 1 到第 4 章，至少知道本地环境和第一次运行。第三，带着一个问题来上课：自己最想弄懂的是模型接入、工具执行、eval、benchmark、安全还是运维。这个问题会帮助教师在讨论环节连接真实需求。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，discussion、review 和 teaching 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果是线上课程，教师应该提前提供一个“故障备用包”。里面可以包含一份已经保存的 `npm run typecheck` 输出、一份 eval JSON、一份 run artifact、一份 benchmark 报告。这样即使学生本地环境临时失败，课堂仍然能继续分析证据，而不是把所有时间花在安装依赖上。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+### 37.3 四讲结构总览
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+这套课程建议拆成四讲，每讲 90 到 120 分钟。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+第一讲：从聊天模型到 verifiable runtime。目标是建立心智模型。内容覆盖第 1 到第 6 章：Agent runtime、workspace、model profile、tools、approval、runtime loop。课堂演示是运行 `doctor` 和一次最小任务，然后追踪任务从 CLI 到 runtime 的路径。讨论题是：如果没有工具合同，一个模型说“我修好了 bug”有什么证据问题？
 
-### 37.5 如何判断实现是否可靠
+第二讲：工具、上下文、记忆和证据。目标是让学生理解模型如何行动、如何记住、如何留下 run artifact。内容覆盖第 7 到第 14 章以及第 33 章。课堂演示是查看 `TaskContract`、`ExecutionContext`、`ToolDefinition`、session store artifact。讨论题是：为什么 final response 不是证据本身？作业是给一个简单任务设计成功标准和验证命令。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，rubric、lesson plan 和 demo 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第三讲：eval、benchmark 和真实模型评测。目标是让学生区分 harness 回归和真实模型能力。内容覆盖第 15 到第 17 章、第 24 到第 28 章。课堂演示是打开 `examples/evals/suite.json`，查看 `requiredSuccessfulToolNames` 和 `requiredVerificationEvidenceKinds`，再对比 synthetic、mock、real-model 结果。讨论题是：一个 97% synthetic benchmark 到底证明了什么？作业是设计一个 eval scenario，并说明它如何避免只看 final response。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+第四讲：安全、发布、运维和排障。目标是让学生能维护系统。内容覆盖第 18 章、第 29 到第 36 章。课堂演示是命令风险分类、path containment 测试、`docs/security.md`、`docs/operations.md`、`release:check` 阶段拆解。讨论题是：本地 Agent 最危险的不是模型说错话，而是什么？作业是给一个失败现象写排障步骤和验证方式。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+四讲之间的顺序不能随便调。先讲 runtime，再讲工具和证据，再讲 eval，最后讲安全和运维。因为学生如果不懂 runtime，就无法理解工具事件；不懂工具事件，就无法理解 eval；不懂 eval，就无法理解能力声明；不懂能力声明，就很难理解发布和运维为什么要保存证据。
 
-### 37.6 常见误区
+### 37.4 第一讲详细安排
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，review、teaching 和 homework 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一讲建议分为五段。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+第一段 15 分钟：问题引入。教师不要一开始介绍所有目录，而是用一个简单对比开场：聊天模型可以生成代码块，本地 Agent 要在仓库里改文件、运行命令、验证结果、保存证据。让学生列出他们认为“会写代码的 AI”需要哪些能力。教师把答案归类到 workspace、tools、approval、verification、memory、eval。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+第二段 20 分钟：运行本地最小路径。教师演示 `npm run dev -- models` 和 `npm run dev -- doctor --cwd "."`。重点不是命令本身，而是解释输出每一块代表什么：模型配置、workspace 状态、存储、gateway、routes、automations、extensions。学生要理解 doctor 是健康检查，不是 benchmark。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+第三段 25 分钟：源码地图。教师打开 `package.json` 和主要目录。不要逐行读源码，而是讲模块责任：CLI 负责入口，core-runtime 负责任务循环，workspace 负责本地仓库，tools 负责动作接口，approvals 负责风险，session-store 负责证据，evals 负责评测。让学生用 5 分钟在仓库中找到每个目录，并写下一个它可能负责的问题。
 
-### 37.7 一个可操作的检查流程
+第四段 20 分钟：runtime loop。教师用白板画出 task -> context -> model -> tool call -> approval -> execution -> verification -> artifact -> final response。然后打开第 6 章对应内容，说明一次任务不是单轮回答。这里要强调阶段：understanding、acting、verifying、repairing、blocked、done。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+第五段 10 分钟：课堂小结。让学生回答三个问题：Omni Agent 和普通聊天工具的区别是什么？为什么本地执行需要 approval？为什么没有验证不能说完成？这三个问题答不出来，就不要进入第二讲。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，lesson plan、demo 和 discussion 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 37.5 第二讲详细安排
 
-### 37.8 与真实模型评测的关系
+第二讲重点是 Prompt、Tool Contract、Context、Memory 和 Artifact。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，teaching、homework 和 rubric 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一段 20 分钟：从 `TaskContract` 开始。教师打开 [`packages/context/src/index.ts`](../../packages/context/src/index.ts)，让学生找到 `TaskContract` 和 `ExecutionContext`。逐字段解释 objective、successCriteria、constraints、verificationMode、cwd、workspaceSnapshot、workspaceInstructions、taskState。练习是把“修复 CI”改写成一个具体 TaskContract。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+第二段 25 分钟：工具合同。教师打开 [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)，解释 `ToolDefinition` 的 name、description、inputHint、riskHint、execute。然后比较 `run_command` 和 `run_verification` 的语义差别。练习是给一个假想工具 `generate_report` 写工具合同，不写实现，只写它何时使用、输入、风险、输出和失败状态。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+第三段 20 分钟：记忆和上下文。教师讲 workspace instruction、memory files、thread summary 的区别。重点是旧信息不能覆盖当前源码，外部内容要带 source label。课堂讨论：如果 memory 说“这个项目用 pnpm”，但当前 package.json 只有 npm，应该相信谁？
 
-### 37.9 一个完整的小案例
+第四段 25 分钟：证据和 artifact。教师展示 session-store 测试或一份 agent-run artifact，指出 taskContract、approvals、diff、verification、summary。学生练习判断一份 final response 是否有足够证据支撑。这里要反复强调：最终回答是证据索引，不是证据本身。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+第五段 10 分钟：作业布置。学生选择一个小任务，写出 TaskContract、需要的工具、成功标准、验证命令和最终回答应该包含的信息。评分不看答案是否华丽，看是否可执行、可验证、可审计。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+### 37.6 第三讲详细安排
 
-这个案例强调的是工程诚实。 在本章语境中，demo、discussion 和 review 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第三讲要让学生真正理解 eval。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+第一段 20 分钟：为什么评测 Agent 不是评测一句回答。教师用一个例子说明：模型 final response 写“测试通过”，但 trace 没有验证命令，这不能算通过。然后解释 eval scenario、step、expectation、observedRun、toolEvents、verificationEvidence。
 
-### 37.10 排错时的分层问题表
+第二段 30 分钟：读 `examples/evals/suite.json`。让学生找出一个 scenario，看 requiredToolNames、requiredSuccessfulToolNames、requiredFinalResponseIncludes。教师解释这些字段如何把自然语言任务变成判分合同。特别讲 `run_verification` 为什么能派生 command evidence。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+第三段 20 分钟：三种 benchmark 模式。教师把 synthetic、mock、real-model 放在表格里。synthetic 证明 harness 和 manifest；mock 验证 runtime 路径；real-model 才观察真实模型行动。课堂讨论：如果 synthetic 97%，能不能在 README 里说“Agent 真实任务完成率 97%”？学生必须能说不能，并说明原因。
 
-分层排错能减少无效尝试。 在本章语境中，homework、rubric 和 lesson plan 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第四段 25 分钟：真实模型失败复盘。打开 [`docs/deepseek-system-test-2026-04-30.md`](../deepseek-system-test-2026-04-30.md)，分析 Flash、Pro、Pro continuation 的差异。学生要指出失败来自哪些层：模型编辑能力、broad replacement、iteration budget、verification feedback、artifact read boundary。这个练习能防止学生把所有失败都简单归因于“模型弱”。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+第五段 15 分钟：设计自己的 eval。学生选择一个能力，例如 path containment、tool presentation、memory freshness、release diagnostics，写一个 scenario 草案。草案必须包含任务、fixture、期望工具、验证证据和失败原因分类。
 
-### 37.11 如何把本章内容写进团队流程
+### 37.7 第四讲详细安排
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+第四讲把工程系统带到发布和维护。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，discussion、review 和 teaching 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一段 25 分钟：安全威胁模型。教师打开 [`docs/security.md`](../security.md)，讲资产、信任边界、攻击者能力、prompt injection、command risk、path containment、secret redaction、MCP boundary。演示 `tests/approvals.test.ts` 中的危险命令分类，和 `tests/workspace.test.ts` 中的 path escape 拒绝。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+第二段 20 分钟：发布检查。教师打开 [`docs/release-checklist.md`](../release-checklist.md)，解释 `release:check` 各阶段分别证明什么。学生练习把一个 release gate 失败映射到具体层级：typecheck、build、artifact smoke、release-local eval、diagnostics、benchmark、maturity check。
 
-### 37.12 练习
+第三段 25 分钟：运维排障。教师打开 [`docs/operations.md`](../operations.md)，按症状讲 gateway、channels、MCP、model runtime、memory、subagent、automation。练习是给学生一个错误现象，例如“/health 正常但任务失败”，让他们列检查顺序。
 
-1. 围绕 `lesson plan` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `teaching` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `demo` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `homework` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `discussion` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `rubric` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+第四段 25 分钟：完整案例演练。教师给出一个案例：模型修改了文件，第一次验证失败，第二次通过，但状态是 completed_with_warnings。学生要根据 toolEvents、verificationStatus、changedFiles 和 finalResponse 判断是否可以交付，是否需要在最终回答中说明 warning。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+第五段 15 分钟：课程总结。让学生回到第一讲的问题：一个可信 Agent 系统需要什么？最终答案应该包括 runtime、tools、approval、verification、artifact、eval、安全、operations。若学生能把这些词和仓库文件对应起来，课程目标就达到了。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 37.8 作业与评分标准
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+课后作业建议分三档。
 
-### 37.13 本章参考资料
+基础作业：完成本地环境检查，运行 `models`、`doctor`、`typecheck`，并写一份 500 字说明：每个命令证明了什么，不能证明什么。评分重点是是否区分健康检查、类型合同和真实能力。
 
-- Omni Agent: [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)
-- Omni Agent: [`docs/omni-agent-paradigms.md`](../../docs/omni-agent-paradigms.md)
-- Omni Agent: [`README.zh.md`](../../README.zh.md)
-- Omni Agent: [`examples/evals/suite.json`](../../examples/evals/suite.json)
-- Anthropic building effective agents: [https://www.anthropic.com/engineering/building-effective-agents](https://www.anthropic.com/engineering/building-effective-agents)
-- LangGraph documentation: [https://langchain-ai.github.io/langgraph/](https://langchain-ai.github.io/langgraph/)
-- OpenAI evals guide: [https://platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
+进阶作业：设计一个 eval scenario。学生需要写出任务描述、fixture、预期工具、验证 evidence、final response 要求和失败分类。评分重点是 expectation 是否能防止模型只靠文字过关。
 
+综合作业：选择一个失败现象，写完整排障报告。报告必须包含现象、影响范围、检查入口、根因假设、证据、修复动作、验证命令、残余风险。可以选择 CI 失败、真实模型失败、tool blocked、path escape、release gate 失败或 gateway route 失败。评分重点是排障链路是否可复现。
+
+评分可以采用 100 分制：概念准确 20 分，仓库定位 20 分，证据意识 20 分，验证设计 20 分，表达清晰 20 分。不要奖励空泛大词，也不要只奖励跑命令。真正值得高分的是能把概念、源码、命令和证据连起来。
+
+### 37.9 教师复盘
+
+每次授课后，教师应复盘三件事。
+
+第一，学生最常卡在哪里。如果大多数人分不清 synthetic 和 real-model benchmark，说明 eval 章节需要更多例子；如果大多数人看不懂 tool contract，说明第二讲需要更慢；如果大家都能跑命令但说不出证明力，说明需要加强“什么能证明什么”的训练。
+
+第二，课堂演示是否稳定。真实模型、live channel、外部 MCP 都可能不稳定，正式授课不要把它们作为唯一演示路径。最好同时准备 mock path、保存好的 trace、截图或 artifact。教学的目标是理解工程判断，不是和网络环境搏斗。
+
+第三，教程是否需要回写。学生提出的问题如果反复出现，就应该写进 FAQ、练习作业或术语表。教学不是单向输出，它也是项目文档的测试。一个读者经常误解的地方，就是文档还不够清楚的地方。
+
+### 37.10 十周自学路线
+
+如果没有教师带读，可以把四讲拆成十周自学路线。每周只解决一个主要问题，避免一口气读完整本教程却没有实际产出。
+
+第一周：理解问题背景。阅读第 1 到第 3 章，写一页笔记回答“为什么 Agent runtime 不是聊天模型”。本周不要求跑真实模型，只要求把术语解释清楚。输出物是一张概念表：Agent runtime、workspace、tool call、approval、verification、artifact、eval manifest 各是什么意思。
+
+第二周：跑通本地入口。阅读第 4 章和第 32 章，运行安装、typecheck、models、doctor 和一次最小任务。输出物是一份命令记录，说明每个命令的成功输出、失败时可能原因、它能证明什么、不能证明什么。
+
+第三周：画仓库地图。阅读第 5 章、第 31 章，打开 `apps/`、`packages/`、`scripts/`、`docs/`、`examples/evals/`。输出物是一张目录责任表。要求每个模块至少写一个“它负责的问题”和一个“它不负责的问题”。
+
+第四周：追踪一次 runtime loop。阅读第 6 章、第 12 章，理解任务如何变成上下文、工具调用、验证和 artifact。输出物是一张流程图，必须包含 taskContract、model turn、tool event、approval、verification 和 final response。
+
+第五周：理解工具和审批。阅读第 9 章、第 10 章、第 33 章，选择三个工具写出工具合同。输出物包括工具名、使用场景、输入、风险、输出、失败状态和对应验证。再选择一个危险命令，解释它为什么应该被拦截。
+
+第六周：理解上下文和记忆。阅读第 8 章、第 11 章，检查 workspace instruction、memory file、thread summary 的区别。输出物是一份冲突处理规则：当当前源码、旧 memory、项目说明和用户最新要求冲突时，谁优先。
+
+第七周：设计 eval。阅读第 15 章、第 24 章，打开 `examples/evals/suite.json`。输出物是一个新 scenario 草案，包含任务、fixture、预期工具、验证 evidence、final response 要求和失败分类。重点不是写很多任务，而是写一个能证明能力的任务。
+
+第八周：理解 benchmark。阅读第 16、17、25、28 章。输出物是一份 benchmark 解释报告：synthetic、mock、real-model 各自证明什么；默认高分不能说明什么；真实模型运行应该保存哪些 trace、cost、duration 和 failure reason。
+
+第九周：安全和发布。阅读第 18、29、34 章。输出物是一份小型 threat model，至少列出资产、入口、出口、攻击路径和缓解措施。再写一份 release gate 拆解表，说明 `release:check` 每一步对应的风险。
+
+第十周：运维和完整复盘。阅读第 35、36、41、42 章。选择一个失败案例，写完整复盘：现象、影响范围、证据、根因、修复、验证、残余风险、应该写回哪份文档。完成后再回到第 1 章，重写自己对 Omni Agent 的定义。比较第一周和第十周的答案，你会看到自己是否真的建立了工程判断。
+
+这条路线的关键是每周都有产出。只读教程很容易产生“我好像懂了”的错觉；写出表格、流程图、scenario、threat model 和复盘报告，才能暴露理解漏洞。自学者也可以把这些产出提交到 issue 或 discussion，让维护者检查。
+
+### 37.11 课堂材料清单
+
+教师开课前建议准备六类材料。
+
+第一类是命令材料。包括本地安装命令、健康检查命令、targeted test 命令、eval smoke 命令、release check 命令。每条命令旁边都要写“何时运行”和“成功输出说明什么”。学生最容易把命令当成咒语，所以教师必须不断提醒命令的证明力。
+
+第二类是源码材料。不要把整份源码投给学生。每讲只准备少数关键文件：第一讲用 `package.json` 和目录树；第二讲用 `packages/context/src/index.ts`、`packages/tools/src/index.ts`、`tests/session-store.test.ts`；第三讲用 `packages/evals/src/index.ts`、`examples/evals/suite.json`；第四讲用 `docs/security.md`、`docs/operations.md`、`packages/approvals/src/command-policy.ts`。
+
+第三类是失败材料。至少准备三个失败样例：一个工具被审批阻断，一个验证失败后修复，一个真实模型没有单轮完成。失败样例比成功演示更有教学价值，因为它迫使学生区分模型问题、工具问题、验证问题和合同问题。
+
+第四类是评分材料。评分表要提前给学生。不要只写“完成作业”，而要写清楚：是否有明确目标，是否有证据，是否能定位源码，是否能说明验证方式，是否诚实说明残余风险。这样学生会从一开始就按工程证据写作。
+
+第五类是讨论材料。准备开放题，例如“默认 benchmark 高分可以写进 README 吗”“什么时候应该让 subagent 写文件”“为什么 workspace instruction 不可信”“completed_with_warnings 是否算成功”。这些题没有一句话标准答案，适合训练判断。
+
+第六类是复盘材料。课程结束后，收集学生最常误解的 10 个点，把它们写回 FAQ 或练习题。教学材料应该随项目一起更新；如果课程每次都卡在同一个地方，说明文档还没有把那个边界讲清楚。
+
+课堂节奏也要提前设计。源码细节很容易吸走全部时间，教师需要明确哪些内容课堂讲，哪些内容课后读。课堂应该讲边界、路径和判断：这个模块负责什么，失败时去哪查，什么证据算有效。课后再让学生逐行阅读实现。不要在第一讲解释所有 TypeScript 类型，也不要在第三讲现场修复杂 eval bug。课堂目标是建立路线图，课后作业才负责深入。
+
+如果学生水平差异很大，可以采用双层任务。基础学生完成命令记录和概念表，高阶学生补充源码调用链和测试分析。这样不会让新手被细节压垮，也不会让有经验的开发者只听概念。教学者要把“人人都能完成的最低任务”和“进一步挑战任务”分开。
+
+这也是保证课堂稳定的关键。
+
+### 37.12 本章小结
+
+课堂式学习计划的核心，是把整本教程从“读完”变成“会用”。学习者要经历四次转变：从把 Agent 看成聊天模型，到看成 runtime；从把工具看成函数，到看成合同；从把 benchmark 看成分数，到看成证据系统；从把安全运维看成附加项，到看成长期可信的基础。
+
+如果你是自学者，可以把四讲当成四周计划；如果你是教师，可以把它当成工作坊大纲；如果你是项目维护者，可以把它当成 onboarding 路线。关键不是一次讲完所有源码，而是让学习者每一步都能把一个概念落到一个文件、一个命令、一份证据和一个判断。
+
+### 37.13 参考资料
+
+- 本项目教程入口：[`docs/tutorial/README.md`](README.md)
+- 本项目中文教程：[`docs/tutorial/README.zh.md`](README.zh.md)
+- 本项目文档：[`docs/omni-agent-paradigms.md`](../omni-agent-paradigms.md)
+- 本项目文档：[`docs/operations.md`](../operations.md)
+- 本项目文档：[`docs/security.md`](../security.md)
+- 本项目文档：[`docs/release-checklist.md`](../release-checklist.md)
+- 本项目评测：[`examples/evals/suite.json`](../../examples/evals/suite.json)
+- Carnegie Mellon Eberly Center：[Learning Objectives](https://www.cmu.edu/teaching/designteach/design/learningobjectives.html)
+- Carnegie Mellon Eberly Center：[Bloom's Taxonomy](https://www.cmu.edu/teaching/designteach/design/bloomsTaxonomy.html)
+- University of Washington：[Active and engaged teaching](https://teaching.washington.edu/engaging-students/active-learning/)
+- Google SRE 官方书籍：[Service Level Objectives](https://sre.google/sre-book/service-level-objectives/)
 ## 38. 附录二：十个循序渐进的练习作业
 
 
