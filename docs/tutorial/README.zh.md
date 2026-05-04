@@ -9805,142 +9805,224 @@ Omni Agent 把 live tests 设计成 opt-in。`OMNI_LIVE_CHANNEL_TESTS=1` 才跑�
 - Google SRE 官方书籍：[Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)
 ## 39. 附录三：读者自检表
 
+这一附录是一份自检表，用来判断你是否真正读懂了 Omni Agent 教程。它不问“你有没有看完”，而问“你能不能用证据证明自己理解了”。很多人读技术教程时会产生熟悉感：术语看过，命令见过，图也能复述。但一旦遇到真实问题，例如 benchmark 分数该如何解释、tool blocked 是否是 bug、真实模型失败是否说明模型太弱，就会发现自己还没有建立判断框架。
 
-本章讨论的是：用清单确认读者是否理解概念、目录、命令、模型、工具、安全、eval 和证据链。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本自检表按能力分组。每一组都有三种等级：未掌握、基本掌握、可维护。未掌握表示你只能复述文字；基本掌握表示你能定位文件、运行命令、解释结果；可维护表示你能在失败情况下排查、修复、验证并写清残余风险。学习 Omni Agent 的目标不是所有人都立刻成为维护者，但你至少要知道自己处在哪个等级。
 
+使用方法很简单：逐项打勾，但每个勾都必须有证据。证据可以是命令输出、文件路径、笔记、流程图、eval 草案、威胁模型、排障报告、commit diff 或 run artifact。没有证据的勾不算数。自检表不是考试装饰，而是帮助你找到下一步学习缺口。
 
-### 39.1 本章先建立的心智模型
+### 39.1 概念自检
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，self check、understanding 和 gap 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果你真正理解了 Omni Agent 的基本概念，应该能回答下面这些问题。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，checklist、readiness 和 evidence 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+你能否解释 Agent runtime 和聊天模型的区别？合格答案必须提到：runtime 会组织上下文、调用模型、解析工具调用、执行工具、应用审批、运行验证、保存 artifact、生成最终回答。只说“Agent 更会做事”不合格。
 
-本章反复出现的关键词包括：`self check`、`checklist`、`understanding`、`readiness`、`gap`、`evidence`、`review`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+你能否解释 local-first 的含义？合格答案必须提到：主要执行环境是本地 workspace，工具会接触真实文件和命令，因此需要 workspace boundary、path containment、approval、redaction 和 run artifact。
 
-### 39.2 在仓库中找到入口
+你能否解释 verification-native 的含义？合格答案必须说明：任务不能只因为 final response 声称完成就算完成，trace 中需要有可以检查或回放的验证证据，例如 `run_verification`、test result、artifact 或 trace。
 
-阅读本章时，建议从下面这些文件开始：
+你能否解释 capability-backed claim？合格答案必须说明：能力声明需要映射到 scorecard、eval scenario、测试、maturity check 或 release gate。README 里的句子不是能力证据本身。
 
-1. [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`packages/gateway/src/routes.ts`](../../packages/gateway/src/routes.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`docs/operations.md`](../../docs/operations.md)：用来观察本章在仓库中的实现、测试或运维入口。
+自评分：如果你只能背术语，是未掌握；如果能把术语和本项目文件对应，是基本掌握；如果能指出每个术语在失败排查中的作用，是可维护。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，understanding、gap 和 review 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 39.2 命令自检
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+你应该能解释常用命令证明什么、不能证明什么。
 
-### 39.3 它在一次 Agent 任务中怎样出现
+`npm run typecheck` 证明 TypeScript 项目引用和类型合同可编译，但不证明运行时逻辑正确。`npm run build` 证明构建产物能生成，但不证明真实模型任务可完成。`npm test` 证明当前测试套件通过，但不证明没有未覆盖风险。`npm run eval:benchmark` 在默认模式下主要证明 harness、manifest 和判分合同，不能自动证明真实模型能力。`npm run eval:release-local` 验证 release-local runtime 路径，但如果使用 mock mode，也不是真实 provider 能力。`npm run release:check` 是发布总 gate，失败时要拆分到子阶段定位。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，readiness、evidence 和 self check 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+自检问题：你能否拿到一个失败输出，判断是哪条命令失败？你能否说明下一步应该跑完整套测试还是 targeted test？你能否解释为什么 live tests 默认不应该进普通 CI？你能否在没有真实 API key 的情况下完成 synthetic/mock/eval 合同学习？
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+证据要求：保存一份命令记录，至少包含 `typecheck`、`models`、`doctor`、一个 targeted test、一个 eval 或 release 相关命令。每条命令后写两句话：它证明什么，它不证明什么。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+### 39.3 源码定位自检
 
-### 39.4 设计时最容易忽略的边界
+你应该能把问题映射到目录。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，gap、review 和 checklist 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+CLI 命令入口看 `apps/cli`。任务执行主循环看 `packages/core-runtime`。模型 provider 和协议看 `packages/model-client`。工具定义和工具结果看 `packages/tools`。workspace 文件、路径、git 状态看 `packages/workspace`。上下文、任务合同、压缩、角色合同看 `packages/context`。session、run、artifact、memory、route、automation 持久化看 `packages/session-store`。审批和命令风险看 `packages/approvals`。eval suite、observed run、判分逻辑看 `packages/evals`。gateway、routes、MCP status、subagent control、automation API 看 `packages/gateway`。安全文档看 `docs/security.md`，运维看 `docs/operations.md`，发布看 `docs/release-checklist.md`。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+自检问题：如果工具被拒绝，你先看哪里？如果 final response 没有证据，你先看哪里？如果 benchmark 通过但真实模型失败，你先看哪里？如果 path escape 被拒绝，你先看哪里？如果 gateway health 正常但 route 不工作，你先看哪里？
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+证据要求：写一张“问题 -> 第一检查入口 -> 理由”的表。至少包含十个问题。能写出文件路径和理由，才算基本掌握。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+### 39.4 TaskContract 与 Prompt 自检
 
-### 39.5 如何判断实现是否可靠
+你应该能把模糊请求转成任务合同。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，evidence、self check 和 understanding 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+给你一句“继续”“解决这些问题”“跑完整 benchmark”“使用 DeepSeek key 测试”，你能否恢复上下文并写出 objective、successCriteria、constraints、verificationMode、cwd、preferredExecutionDomain？你能否识别用户限制，例如“一次只写一章”“不用每次检查 CI”“不要一次生成好几章”？你能否判断哪些限制必须进入 task contract，而不是只留在聊天历史？
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+自检方式：选择三个历史请求，分别写 TaskContract。然后让别人只看合同，不看原始对话，判断是否知道要做什么、不能做什么、如何验证。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+可维护标准：你不只会写合同，还能解释合同字段在失败排查中的作用。例如 successCriteria 告诉你缺什么证据，constraints 告诉你哪些动作不能做，verificationMode 告诉你是否能无验证完成。
 
-### 39.6 常见误区
+### 39.5 Tool 与 Approval 自检
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，review、checklist 和 readiness 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+你应该能区分工具合同和工具实现。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+自检问题：`ToolDefinition` 里 name、description、inputHint、riskHint、execute 分别影响什么？为什么 `run_command` 和 `run_verification` 语义不同？为什么工具名稳定很重要？为什么任意 shell 比专用只读工具风险更高？为什么 approval class 和 risk tier 要进入 trace？
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+你还应该能判断命令风险。`git status`、`git diff` 通常是只读；`npm install` 会修改依赖或环境；`git reset --hard` 会丢弃本地改动；`curl | sh` 或 PowerShell `iwr | iex` 是 download-and-execute；递归删除和权限提升必须高风险处理。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+证据要求：选择三个工具，写工具合同；选择五条命令，写风险分类和原因。至少引用一次 [`packages/approvals/src/command-policy.ts`](../../packages/approvals/src/command-policy.ts) 或 [`tests/approvals.test.ts`](../../tests/approvals.test.ts)。
 
-### 39.7 一个可操作的检查流程
+### 39.6 Eval 与 Benchmark 自检
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+你应该能解释一个 eval scenario 如何判分。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，self check、understanding 和 gap 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+自检问题：`requiredToolNames` 和 `requiredSuccessfulToolNames` 有什么区别？`requiredFinalResponseIncludes` 有什么局限？`requiredVerificationEvidenceKinds` 为什么重要？为什么 `run_verification` 成功事件可以成为 command evidence？synthetic、mock、real-model 三种模式分别证明什么？
 
-### 39.8 与真实模型评测的关系
+证据要求：打开 [`examples/evals/suite.json`](../../examples/evals/suite.json)，选择一个 scenario，写出它的任务、期望工具、最终回答要求和验证证据。再写一句：这个 scenario 是否足以证明真实模型能力？如果不足，还需要什么真实运行证据？
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，checklist、readiness 和 evidence 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+可维护标准：你能设计一个新 scenario，并说明它防止了哪类假通过。例如防止 final response 自称验证、防止工具未调用、防止没有 artifact、防止 path escape 被忽略。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+### 39.7 安全自检
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+你应该能从资产和信任边界讲安全，而不是只说“注意密钥”。
 
-### 39.9 一个完整的小案例
+自检问题：本地 Agent 要保护哪些资产？workspace 文件为什么不可信？项目 instruction 为什么不能覆盖系统策略？shell 为什么需要审批？path containment 解决什么问题？redaction 解决什么问题、不能解决什么问题？MCP server 和 channel plugin 为什么是外部边界？checkpoint 和 rollback 为什么不是授权绕过？
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+证据要求：选择一个能力面写小型 threat model。至少列出资产、入口、出口、攻击路径、缓解措施、测试证据和残余风险。缓解措施必须落到具体层：approval、path containment、redaction、allowlist、artifact ownership、release gate。只写“提示模型不要做”不合格。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+### 39.8 运维自检
 
-这个案例强调的是工程诚实。 在本章语境中，understanding、gap 和 review 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+你应该能按现象排障。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+自检问题：`/health` 正常但任务失败，你会查哪些能力面？模型 provider 进入 cooldown，你会查哪些字段？通道 delivery 进入 dead_letter，你会查 route 还是模型？MCP server 不可用，你会看 `/mcp/status` 的哪些部分？subagent queued 很久，你会看 budget、blockedReason、file leases 还是 final response？
 
-### 39.10 排错时的分层问题表
+证据要求：选择一个故障现象写排障步骤。每一步要说明检查入口和预期证据。最后写退出条件：什么状态说明故障已经恢复，什么状态需要升级人工维护者。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+可维护标准：你能把一次故障结论写回合适位置。临时状态写 run note，重复故障写 operations runbook，评测退步写 benchmark history，安全边界写 security review。
 
-分层排错能减少无效尝试。 在本章语境中，readiness、evidence 和 self check 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 39.9 贡献 readiness 自检
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+如果你准备给 Omni Agent 提 PR 或长期维护，至少要满足下面条件。
 
-### 39.11 如何把本章内容写进团队流程
+你能保持改动范围小。每一行改动都能追溯到任务目标。你不会顺手重构无关代码。你能在修改前确认工作区状态，避免覆盖用户改动。你能为代码改动跑 targeted test，为文档改动跑链接检查和 `git diff --check`，为 eval 改动跑对应 eval/test。你能在 PR 描述里写清修改内容、验证命令、未验证项和残余风险。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+你能读失败，而不是害怕失败。测试失败时，你先定位第一失败点；benchmark 失败时，你看 scenario reason；工具 blocked 时，你看 approval payload；真实模型失败时，你看 tool calls、verification 和 budget；CI 失败时，你看 job 的第一个失败命令。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，gap、review 和 checklist 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+你能写证据，不只写结论。比如“修复了 parser”不够，要写改了哪个文件、跑了什么测试、测试结果是什么、还有什么没覆盖。这样的贡献才符合 verification-native 项目的风格。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+### 39.10 自评分表
 
-### 39.12 练习
+可以按 100 分给自己打分。
 
-1. 围绕 `self check` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `checklist` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `understanding` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `readiness` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `gap` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `evidence` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+概念理解 15 分：能解释 runtime、workspace、tool、approval、verification、artifact、eval。命令能力 10 分：能运行并解释常用命令。源码定位 15 分：能把问题映射到目录和文件。任务合同 10 分：能把模糊请求写成可验证合同。工具和审批 10 分：能写工具合同并判断命令风险。eval 和 benchmark 15 分：能读 scenario、解释模式、设计 evidence。安全 10 分：能写小型 threat model。运维 10 分：能按症状排障。表达和证据 5 分：报告清楚、链接有效、结论诚实。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+80 分以上可以尝试做小型贡献。60 到 79 分适合继续做练习作业。60 分以下建议回到第 1 到第 12 章，重新建立基础。分数不是为了排名，而是为了找到学习缺口。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 39.11 逐项问答题库
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+下面这组题可以用来做闭卷自测。你不需要背原文，但必须能用自己的话回答，并能指出仓库中的证据位置。
 
-### 39.13 本章参考资料
+题一：为什么一个本地 Agent 不能只依赖 prompt？参考答案要点：prompt 只能影响模型输出，不能替代工具合同、审批策略、路径边界、验证证据和持久化记录。没有 runtime 层，模型可以说自己完成了任务，但系统无法证明文件是否修改、命令是否运行、验证是否通过。
 
-- Omni Agent: [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)
-- Omni Agent: [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)
-- Omni Agent: [`packages/gateway/src/routes.ts`](../../packages/gateway/src/routes.ts)
-- Omni Agent: [`docs/operations.md`](../../docs/operations.md)
-- Model Context Protocol specification: [https://modelcontextprotocol.io/specification](https://modelcontextprotocol.io/specification)
-- OpenAI function calling guide: [https://platform.openai.com/docs/guides/function-calling](https://platform.openai.com/docs/guides/function-calling)
-- LangGraph documentation: [https://langchain-ai.github.io/langgraph/](https://langchain-ai.github.io/langgraph/)
+题二：为什么 workspace instruction 是不可信输入？参考答案要点：它来自仓库文件，可能由第三方提交、生成器写入或被恶意污染。它可以提供项目约定，但不能覆盖系统级安全策略。可疑 instruction 需要扫描、截断、标注来源，不能原样升级成最高权威。
 
+题三：为什么 `run_verification` 不等同于普通 `run_command`？参考答案要点：两者可能都执行命令，但合同语义不同。`run_verification` 表示为了证明任务完成而运行验证，eval harness 可以把成功事件识别为 command evidence。普通命令不一定能满足 verification-native policy。
+
+题四：为什么 final response 不是证据？参考答案要点：final response 是给用户看的总结，它可能引用证据，但不能替代证据。真正的证据在 tool events、diff、artifact、verification output、session store 和 eval observedRun 中。最终回答如果无法追溯到这些记录，就只是声明。
+
+题五：为什么 synthetic benchmark 仍然有价值？参考答案要点：它不证明真实模型能力，但能稳定验证 harness、manifest、expectation 和判分逻辑。它适合作为工程回归。问题不在 synthetic，而在把 synthetic 分数宣传成真实模型能力。
+
+题六：为什么真实模型失败不能立刻归因于模型太弱？参考答案要点：失败可能来自 prompt 不清、工具描述弱、编辑工具过粗、迭代预算不足、验证反馈不可读、上下文压缩丢信息、路径边界阻断 artifact 读取。需要先看 trace 和失败分类。
+
+题七：为什么 path escape 被拒绝通常是好事？参考答案要点：本地 Agent 不能随意读取仓库外文件。`../`、符号链接、junction、外部 checkpoint 都可能越界。拒绝 path escape 保护用户本地文件、密钥和非任务资产。
+
+题八：为什么 live test 要显式开关？参考答案要点：live test 可能花钱、发送外部消息、依赖真实凭证、受网络和平台状态影响。普通 CI 应该稳定可重复，live test 应该在有预算和授权时运行。
+
+题九：为什么 completed_with_warnings 需要解释？参考答案要点：它表示最终目标可能达到，但过程中存在失败工具、被阻断动作、fallback、重试或恢复。用户需要知道结果可用但过程不干净，维护者也需要保留 warning 以便复盘。
+
+题十：为什么 release gate 失败不能只看最后一行？参考答案要点：`release:check` 是总 gate，包含多个子阶段。必须找第一个失败阶段，判断是类型、构建、artifact、runtime eval、diagnostics、reference parity、benchmark 还是 maturity 问题。不同阶段对应不同修复路径。
+
+### 39.12 证据缺口修复表
+
+自检时如果发现自己答不上来，不要只回去重读全文。更有效的方式是把缺口转成补救动作。
+
+如果你说不清 Agent runtime 和聊天模型的区别，补救动作是画一次 task -> context -> model -> tool -> approval -> verification -> artifact 的流程图，并把每个节点对应到仓库文件。
+
+如果你说不清常用命令证明什么，补救动作是重新运行 `typecheck`、`doctor`、targeted test 和 eval smoke，为每条命令写“证明范围”和“不能证明的东西”。
+
+如果你说不清 benchmark 模式，补救动作是打开 benchmark 脚本和 suite，写一张 synthetic/mock/real-model 对比表，列出 executor、是否真实模型、是否真实 runtime、是否记录 cost、是否能支持公开能力声明。
+
+如果你说不清工具风险，补救动作是选择十条命令做风险分类，并对照 command-policy 找 rule id。至少包括只读 git 命令、npm install、git reset hard、递归删除、download-and-execute、PowerShell wrapper。
+
+如果你说不清安全边界，补救动作是写一个最小 threat model。只选一个能力面，不要写全系统。把资产、入口、出口、攻击路径、缓解措施、测试证据列成表。
+
+如果你说不清 eval 判分，补救动作是选择一个 scenario，手写一个通过 observedRun 和一个失败 observedRun。通过这个练习，你会更快理解 requiredToolNames、requiredSuccessfulToolNames 和 verification evidence。
+
+如果你说不清运维排障，补救动作是从 `docs/operations.md` 抄一类 symptoms，然后改写成自己的检查步骤。检查步骤必须包含入口、字段、可能结论和恢复动作。
+
+如果你说不清自己是否具备贡献 readiness，补救动作是做一个最小 PR 练习：只改一段文档或一个小测试，写成功标准，跑对应验证，写提交说明。真实小改动比空泛自评更能暴露问题。
+
+### 39.13 常见自我误判
+
+第一种误判是“我能读懂，所以我会维护”。读懂一段解释不等于能在失败时排查。维护能力要看你是否能定位第一失败点、选择最小修复、运行相关验证、说明残余风险。
+
+第二种误判是“我能跑完整命令，所以我懂系统”。命令通过只是结果，你还要知道它覆盖了哪些风险、没有覆盖哪些风险。不会解释命令证明力的人，很容易把 smoke test 当成熟证据。
+
+第三种误判是“我会连真实模型，所以我更懂 Agent”。连接真实模型只是配置能力。真正的工程能力是能解释真实模型失败：是模型、prompt、工具、预算、验证还是任务难度导致。
+
+第四种误判是“安全问题以后再说”。本地 Agent 一旦能运行命令和读写文件，安全就是基础能力。prompt injection、path escape、secret leakage、tool approval 都不是发布后才补的功能。
+
+第五种误判是“文档不需要验证”。教程链接、命令、章节标题、引用路径都可能坏。文档也是工程产物，至少需要链接检查、空白检查和人工可读性检查。
+
+第六种误判是“写得越多越好”。报告要详细，但不能堆砌。好的报告是每段都有证据，每个结论能追溯，每个风险有边界。空泛长文不等于深入。
+
+### 39.14 复查节奏
+
+建议在三个时间点做自检。第一次是在读完第 12 章之后，重点检查基础概念、命令和源码定位。第二次是在读完第 28 章之后，重点检查 eval、benchmark、真实模型和能力声明。第三次是在读完全书之后，重点检查安全、运维、贡献 readiness 和完整案例能力。
+
+每次自检都应该保留记录。第一次记录可以很粗，第三次记录应该更具体。你可以比较三次记录，看哪些问题仍然答不好。如果同一类问题连续三次答不好，就不要继续往后堆新内容，应该回到对应章节做练习。
+
+团队学习时，可以把自检结果做成匿名统计。比如多少人分不清 synthetic/mock，多少人不会写 TaskContract，多少人不能解释 path escape。统计结果可以指导下一次培训重点，也可以反向改进教程。
+
+自检不是为了制造压力，而是为了减少盲区。Agent 系统复杂，没人一开始全部掌握。诚实发现缺口，是成为维护者的第一步。
+
+### 39.15 自检记录模板
+
+建议每次自检都按同一个模板记录。模板第一栏写检查日期和当前学习进度，例如“读完第 28 章”或“完成作业六”。第二栏写本次最有把握的三项能力，例如“能解释 TaskContract”“能区分 synthetic/mock”“能定位 approval policy”。第三栏写最薄弱的三项能力，例如“不会读 gateway route”“不会设计真实模型 benchmark”“不确定 memory freshness 怎么判断”。
+
+第四栏写证据。每项能力后面必须贴一个证据位置：命令输出摘要、文件路径、笔记链接、scenario 草案、排障报告、测试结果。第五栏写下一步行动，不要写“继续学习”这种空话，而要写具体动作：重读第 16 章，手写一个 observedRun；运行 `tests/approvals.test.ts`，解释五条命令风险；阅读 `docs/operations.md`，改写一类 symptoms。
+
+第六栏写复查时间。没有复查时间，自检很容易变成一次性情绪。建议一周后回看，看薄弱项是否减少。如果没有减少，就缩小任务，不要继续扩大范围。比如不懂 eval，就先只研究一个 scenario，不要同时研究完整 benchmark、scorecard 和 release gate。
+
+这个模板也适合团队使用。每个人提交自己的自检记录，维护者可以看到培训整体缺口。如果十个人里八个人都不懂 verification evidence，说明教程或课堂需要加强这一段；如果只有一个人卡在本地环境，可能是个体环境问题。自检记录能把教学问题从感觉变成数据。
+
+判定规则要简单：没有证据的能力不计入掌握；只能复述概念算入门；能定位文件和命令算基本掌握；能处理失败并写出验证算可维护。每次自检只选择三项薄弱点改进，太多目标会让学习计划失焦。
+
+自检结果最好保留版本，不要覆盖旧记录。对比旧记录，才能看到自己哪些判断变准了，哪些误解仍在重复出现。
+
+这种对比本身就是学习证据。
+
+也能帮助教师调整讲解重点。
+
+持续复查会减少盲区。
+
+也会提高判断质量。
+
+这是长期能力。
+
+值得反复训练。
+
+很重要。
+
+### 39.16 本章小结
+
+读者自检表的价值，是把“我好像懂了”改成“我能证明自己懂了”。如果你能用证据回答概念、命令、源码、合同、工具、eval、安全、运维和贡献问题，就说明你已经从阅读者变成了可以参与工程讨论的人。下一章会从教学者角度继续展开，讲如何带读这套教程。
+
+### 39.17 参考资料
+
+- 本项目教程：[`docs/tutorial/README.zh.md`](README.zh.md)
+- 本项目源码：[`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)
+- 本项目源码：[`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
+- 本项目源码：[`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
+- 本项目源码：[`packages/approvals/src/command-policy.ts`](../../packages/approvals/src/command-policy.ts)
+- 本项目文档：[`docs/operations.md`](../operations.md)
+- 本项目文档：[`docs/security.md`](../security.md)
+- 本项目文档：[`docs/capability-backed-claims.md`](../capability-backed-claims.md)
+- 本项目评测：[`examples/evals/suite.json`](../../examples/evals/suite.json)
+- Carnegie Mellon Eberly Center：[Assessing Student Learning](https://www.cmu.edu/teaching/assessment/index.html)
 ## 40. 附录四：教学者如何带读这套教程
 
 
