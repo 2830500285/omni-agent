@@ -2898,21 +2898,236 @@ Omni Agent 的 workspace 层包含创建和移除 worktree 的能力。创建 wo
 
 ## 9. Tools：模型为什么不能直接“做事”
 
-模型本身只会生成 token。它不会真的读文件，不会真的运行命令，不会真的访问网络。所谓“Agent 会做事”，本质上是 runtime 允许模型通过结构化协议请求工具，然后 runtime 替它执行。
+模型本身不会真的“做事”。它不会自己读取硬盘，不会自己打开浏览器，不会自己运行测试，也不会自己修改文件。模型能做的事情，本质上是根据上下文预测下一段 token。我们平时说“Agent 会执行任务”，真正含义是：runtime 允许模型通过结构化协议提出工具调用请求，然后由 runtime 检查请求、执行工具、记录结果，再把结果反馈给模型。
 
-这就是 tool call 的意义。Tool call 把“想做什么”变成机器可检查的结构。比如模型不是说“我看看 package.json”，而是输出一个读取文件工具请求，参数是路径 `package.json`。Runtime 可以检查路径是否合法，工具是否存在，结果是否需要截断，然后把结果返回给模型。
+这一层就是 tools。它是模型能力和现实世界之间的接口，也是本地 Agent 安全性、可验证性和可审计性的核心。
 
-工具设计有几个原则。
+在 Omni Agent 中，工具实现主要位于 [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)，测试位于 [`tests/tools.test.ts`](../../tests/tools.test.ts)。工具会调用 workspace、approval、session store、context、browser、subagent 等包，因此它不是一个孤立模块。阅读工具层时，你要始终问三个问题：模型请求了什么？runtime 允许它做什么？执行后留下了什么证据？
 
-第一，工具名要清楚。`read_file` 比 `do_action` 好，因为模型和 eval 都能理解它的意图。第二，参数要结构化。路径、命令、工作目录、超时、搜索 query，都应该是明确字段。第三，输出要稳定。工具结果最好有 status、stdout、stderr、exitCode、data 等字段，而不是随意拼文本。第四，工具要可审计。每次 tool call 都应该进入 run artifact。第五，工具要可限制。不是所有工具都应该在所有任务里可用。
+### 9.1 从“自然语言意图”到“结构化动作”
 
-工具失败也很重要。比如读取文件失败，可能是路径不存在；命令失败，可能是测试失败；网络失败，可能是 provider 不可用。Runtime 不应该把所有失败都变成“工具调用失败”一句话，而应该保留足够细节，让模型能 repair，也让人能复盘。
+没有工具协议时，模型只能用自然语言表达意图。比如它会说：“我需要看看 `package.json`。”这句话对人类很清楚，但对 runtime 来说还不是可执行动作。runtime 不知道路径是不是 `package.json`，不知道要读多少字符，不知道读完后怎么返回，也不知道这个动作是否违反边界。
 
-在 eval 中，工具事件常常是评分依据。一个 scenario 可能要求模型必须调用 `run_verification`，否则即使自然语言回答很好，也不能算完成。原因是 Agent 的价值不在于说“我认为没问题”，而在于执行验证并留下证据。
+有工具协议后，模型应该产生类似这样的结构化请求：
 
-所以，当你看到真实模型 benchmark 失败时，不要只看最后回答。要看 required tool 是否出现，tool status 是否 ok，verification exit code 是什么，是否修改了 required file，是否输出 required snippet。这些比“回答看起来像不像”更重要。
+```json
+{
+  "tool": "read_file",
+  "arguments": {
+    "path": "package.json",
+    "maxChars": 12000
+  }
+}
+```
 
----
+这就不再是一句模糊表达，而是一个可以检查的对象。Runtime 可以检查工具名是否存在，参数是否符合 schema，路径是否位于 workspace 内，当前 agent 是否有 read 权限，结果是否需要截断，执行事件是否需要写入 trace。
+
+这就是 tool call 的根本意义：把模型的“想做什么”转换成机器可以验证、可以拒绝、可以记录的动作。
+
+### 9.2 ToolRegistry：工具不是散落的函数
+
+`ToolRegistry` 是工具层的入口。它负责注册工具定义、列出工具规格、执行工具、维护诊断信息，并支持根据允许列表创建子 registry。这个设计让工具集合不再是散落在代码里的临时函数，而是一个可枚举、可检查、可限制的能力表面。
+
+一个 `ToolDefinition` 通常包含名称、描述、输入提示、风险提示和执行函数。名称告诉模型该工具做什么；描述帮助模型选择工具；输入提示帮助模型构造参数；风险提示帮助 runtime 和用户理解它可能带来的影响；执行函数才是真正做事的部分。
+
+工具注册还有一个隐含价值：eval 可以依赖工具名。比如一个 scenario 要求 Agent 在完成任务前必须调用 `git_diff` 或 `run_verification`，这只有在工具名稳定时才可评分。如果工具只是自然语言行为，eval 很难判断 Agent 是否真的验证过。
+
+`ToolRegistry` 还维护 runtime diagnostics。工具不只是“能不能调用”，还应该能告诉你近期是否失败、最后错误是什么、是否受限、是否被策略过滤。真实系统排错时，工具诊断比最后回答更有价值。
+
+### 9.3 ToolExecutionContext：工具执行时知道什么
+
+工具执行不是只拿一组参数就够了。它还需要上下文。Omni Agent 的 `ToolExecutionContext` 包含 workspace、execution domain、abort signal、session store、workspace id、agent id、thread id、run id、subagent job id、agent role、authority、allowed tool names、allowed write targets 和 subagent controller 等字段。
+
+这些字段决定了同一个工具在不同场景下的行为。
+
+比如 `workspace` 告诉工具在哪个本地仓库操作。`executionDomain` 告诉工具当前是在原 workspace、worktree 还是 sandbox 中执行。`abortSignal` 允许长任务被取消。`sessionStore` 允许工具保存记忆、任务、artifact 和运行记录。`allowedToolNames` 可以限制当前模型只能看到部分工具。`allowedWriteTargets` 可以限制 subagent 只能写自己负责的文件。
+
+这说明工具层不是“模型给参数，函数照做”。工具必须知道自己处于哪个运行边界内。否则同一个 `write_file` 在主 agent 和 leaf subagent 中都会拥有同样权限，这会让多 Agent 协作变得不可控。
+
+### 9.4 工具输出：ToolResult 为什么要结构化
+
+一个成熟工具不应该随便返回一段字符串。Omni Agent 的 `ToolResult` 至少包含 `ok`、`summary`、`data`、`artifactPaths`、`warnings`、`interrupt` 和 `presentation` 等字段。
+
+`ok` 是最基本的状态。模型和 runtime 可以根据它判断下一步是继续、修复、重试还是停止。
+
+`summary` 是给模型和用户看的简短说明。它应该足够具体，但不能把所有原始输出都塞进去。
+
+`data` 是结构化数据。例如 `workspace_info` 可以返回 snapshot，`git_status` 可以返回 changed files，`search_tools` 可以返回工具列表。结构化数据比长文本更适合后续推理和 eval。
+
+`artifactPaths` 指向保存在本地的证据。命令输出、截图、trace、benchmark report 都可能很长，不适合全部进入模型上下文。把它们保存为 artifact，可以兼顾可追溯和上下文控制。
+
+`warnings` 用来表达“工具成功了，但有注意事项”。比如搜索结果被截断、某些文件因为权限跳过、某个 backend 缺少配置。
+
+`interrupt` 允许工具主动请求用户澄清。比如 `ask_user` 工具可以让当前 run 暂停，让用户回答关键问题。
+
+`presentation` 则面向 UI。它可以告诉 workbench：这是一次 read、edit、execute、search 或 fetch；有哪些位置；是否有 diff 或文本内容。这样的结果比纯字符串更容易被前端展示。
+
+### 9.5 工具名要清楚，参数要稳定
+
+工具设计的第一条原则是：名称必须表达意图。`read_file`、`search_text`、`git_diff`、`run_verification`、`create_checkpoint` 都比 `do_action`、`operate`、`handle` 更好。因为清楚的名称能帮助三类读者：模型、开发者和 eval。
+
+模型需要根据工具描述选择下一步。如果工具名太抽象，模型会误用。开发者需要从 trace 中理解 Agent 做过什么。如果工具名太模糊，排错时会很痛苦。Eval 需要判断 required tool 是否出现。如果工具名不稳定，评分会变得脆弱。
+
+参数也必须稳定。路径应该是 `path`，搜索关键词应该是 `query`，数量限制应该是 `limit`，超时应该是 `timeoutMs`。不要今天叫 `file`，明天叫 `filepath`，后天叫 `target`。参数不稳定会让模型学习错误模式，也会让测试和文档难以维护。
+
+工具参数还应尽量避免自由格式字符串。比如运行命令不可避免需要 `command` 字符串，但文件编辑最好用 `path`、`oldText`、`newText` 或 range 操作，而不是让模型返回一段“请把某处改成某处”的自然语言。
+
+### 9.6 工具失败必须可解释
+
+工具失败不是异常情况，而是 Agent 正常工作的一部分。读文件可能路径不存在，搜索可能没有结果，命令可能退出码非零，浏览器可能超时，模型 provider 可能限速，subagent 可能超过预算。关键不是避免所有失败，而是让失败有类型、有证据、有下一步。
+
+一个差的工具失败会返回“failed”。模型不知道为什么失败，用户也不知道如何修复。一个好的工具失败会说明：工具名、参数摘要、失败类型、错误消息、是否写入 artifact、是否可以重试。
+
+比如命令失败时，`exitCode`、`stdout`、`stderr`、`durationMs` 和 artifact path 都很重要。exit code 告诉你命令是否成功；stdout/stderr 告诉你失败内容；duration 告诉你是否可能是超时；artifact path 让长输出可复盘。
+
+工具失败还应该尽量区分能力问题和环境问题。模型没能修复测试是一种失败；测试命令不存在是另一种失败；当前目录不是 repo root 又是另一种失败。把这些失败混成一句话，会让 benchmark 结果毫无解释力。
+
+### 9.7 工具可限制：不是所有 Agent 都该拿到所有工具
+
+强工具带来强能力，也带来强风险。一个能读文件、写文件、运行命令、打开浏览器、生成 subagent、保存 memory 的 Agent，不能在所有任务里都默认拥有全部权限。
+
+`allowedToolNames` 提供了工具级别的限制。比如一个只做代码阅读的 subagent，可以只拿到 `search_text`、`read_file`、`git_status`。一个负责实现补丁的 worker 可以拿到写入工具和验证工具。一个负责外部资料查找的 agent 不应该拿到写仓库文件的能力。
+
+`allowedWriteTargets` 提供了写路径限制。它尤其适合 subagent。父 agent 可以指定某个 subagent 只允许修改 `packages/evals`，另一个只允许修改 `docs/`。如果 subagent 尝试写出目标范围，工具层应该拒绝。这比事后靠人工 review 发现越界更可靠。
+
+工具限制还有一个教学意义：它迫使你把任务拆清楚。一个任务如果说不清需要哪些工具，往往说明任务边界也不清楚。工具权限表是任务设计的一部分。
+
+### 9.8 内置工具族：从观察到行动
+
+Omni Agent 的 built-in tools 可以按用途分成几组。
+
+第一组是 workspace 观察工具，例如 `workspace_info`、`git_status`、`search_text`、`search_files`、`list_directory`、`git_diff`。它们帮助模型建立事实，不直接改变仓库。
+
+第二组是修改和恢复工具，例如 checkpoint、rollback、文件写入、事务补丁。这类工具会改变 workspace，需要更高审慎度。
+
+第三组是任务管理工具，例如 `update_plan`、`read_plan`、`todo_write`、`create_task`、`list_tasks`、`update_task`。它们帮助长任务保持状态。注意，计划不是完成工作的证据；计划只是让工作过程更可控。
+
+第四组是 memory 和 skill 工具，例如 `save_memory`、`search_memory`、`search_workspace_skills`、`skills_list`、`select_skills`、`apply_skills`、`skill_manage`。它们让 Agent 能复用经验，但也需要防止把旧信息当成永远正确的事实。
+
+第五组是 browser 工具，例如 `browser_open`、snapshot、click、type、screenshot 等。它们适合真实 UI 验证，但会引入页面状态、网络、登录和截图 artifact 等复杂性。
+
+第六组是 subagent 工具。它们让父 agent 可以创建、等待、暂停、恢复、取消子任务。它们不是简单“多开几个聊天窗口”，而是受预算、角色、权限和 artifact 控制的执行单元。
+
+第七组是 reference tools。它们用于从参考项目中查看、映射或导入能力，例如 Hermes、OpenClaw、ClaudeCode 相关的适配器和 native implementation。它们的价值在于能力借鉴，而不是无边界复制。
+
+### 9.9 Tool call 与 approval policy 的关系
+
+工具层和审批层容易被混淆。工具层回答“有哪些动作可以执行、如何执行、如何返回结果”。审批层回答“这个动作在当前上下文中是否允许、是否需要用户确认、风险等级是什么”。
+
+比如 `run_command` 是一个工具能力，但不是所有命令都应该直接运行。`npm test` 通常是低风险验证；`rm -rf` 是破坏性命令；跨 shell 拼接删除命令在 Windows 上尤其危险。工具层可以调用 approval 包里的 `assertSafeCommand`，但审批策略本身应该集中维护，而不是散落在每个工具里。
+
+这种分层很重要。如果工具自己随意决定安全规则，策略会很难统一；如果审批层不知道工具语义，也无法准确判断风险。好的系统应该让工具声明风险，让审批层统一裁决，让 runtime 记录裁决结果。
+
+下一章会专门讲 approval policy。这里先记住一句话：工具让模型能够行动，审批让行动保持可控。
+
+### 9.10 工具事件是 eval 的核心证据
+
+在 Agent Eval 中，最后回答并不是最可靠的评分依据。一个模型可能回答“我已经运行测试并通过”，但实际上没有运行任何命令。另一个模型可能最后回答很短，却完整地读取文件、修改代码、运行测试并保存 artifact。
+
+因此，高质量 eval 应该检查工具事件。它可以要求：
+
+```json
+{
+  "requiredTools": ["search_text", "git_diff", "run_verification"],
+  "requiredArtifacts": ["command-output"],
+  "requiredFileChanges": ["packages/evals/src/index.ts"]
+}
+```
+
+这样的评分比“回答看起来专业”更接近真实能力。它能判断 Agent 是否真的观察、是否真的修改、是否真的验证、是否真的留下证据。
+
+工具事件还能帮助分析失败原因。比如一个 scenario 失败，可能是模型没选对工具，可能是工具参数错了，可能是工具执行失败，可能是工具成功但模型没有利用结果。每一种失败对应不同改进方向。只看最后文本，无法区分这些情况。
+
+### 9.11 MCP 与工具生态
+
+现代 Agent 系统不会只使用内置工具。MCP 这类协议尝试把外部工具、资源和 prompts 标准化，让不同 runtime 能以类似方式连接文件系统、数据库、浏览器、GitHub、Slack、文档系统等能力。
+
+对 Omni Agent 来说，MCP 的启发在于：工具应该有明确描述、结构化输入、结构化输出和可发现性。模型不应该靠猜测使用工具，而应该能看到工具列表、输入提示和限制条件。
+
+但 MCP 或任何外部工具协议都不等于安全。外部工具也可能有副作用，也可能读取敏感数据，也可能返回 prompt injection 文本。Runtime 仍然需要 approval、workspace boundary、artifact、trace 和 eval。协议解决互操作，不自动解决治理。
+
+因此，学习工具层时要同时看两个方向：一方面学习 OpenAI/Anthropic/MCP 等通用 tool calling 思想；另一方面看 Omni Agent 如何把这些思想落到本地 workspace、审批、评测和证据链中。
+
+### 9.12 如何判断一个工具设计得好不好
+
+你可以用下面的问题审查任何工具。
+
+第一，工具名是否能直接表达动作？如果只看 trace，不看源码，能不能知道它做了什么？
+
+第二，参数是否结构化？路径、命令、query、limit、timeout、scope 是否有明确字段？
+
+第三，工具是否有边界？它能不能读写 workspace 外部？能不能运行危险命令？subagent 能不能越权写文件？
+
+第四，输出是否可解释？成功和失败是否都有稳定字段？长输出是否进入 artifact？是否有 warnings？
+
+第五，工具是否可评测？Eval 能不能检查它是否被调用、参数是否合理、结果是否满足条件？
+
+第六，工具是否容易误用？模型会不会把搜索工具当读取工具，把计划工具当完成工具，把浏览器截图当验证证据？
+
+第七，工具是否遵守最小权限？是否能按角色、任务、路径或 execution domain 缩小能力？
+
+如果一个工具无法回答这些问题，它很可能只是一个 demo 函数，而不是生产级 Agent 工具。
+
+### 9.13 一次工具调用在系统里怎样流动
+
+为了把抽象概念落地，我们可以把一次工具调用拆成完整链路。
+
+第一步，模型根据当前上下文选择工具。这个选择来自 prompt、工具描述、历史工具结果和任务目标。如果 prompt 说“先检查 git 状态”，工具描述里又有 `git_status`，模型就更可能调用它。工具描述写得越清楚，模型越不需要猜。
+
+第二步，model client 把工具调用结果交给 runtime。不同 provider 的工具协议并不完全一样，有的返回 OpenAI 风格 tool calls，有的返回 Anthropic 风格 content blocks，有的兼容接口只返回一段 JSON 文本。Runtime 需要把这些差异归一成内部工具请求。
+
+第三步，runtime 查找 `ToolRegistry`。如果工具名不存在，请求应该失败，而不是让模型自由构造新能力。这个失败本身也应该进入 trace，因为它说明模型试图调用一个不可用工具，可能是 prompt、工具描述或 provider 适配存在问题。
+
+第四步，runtime 检查上下文权限。当前 agent 是否允许使用这个工具？如果是 subagent，它是否有对应 authority？如果工具要写文件，目标路径是否在 allowed write targets 里？如果工具要运行命令，审批策略是否允许？这些检查决定工具能否进入执行阶段。
+
+第五步，工具调用 workspace、session store、browser 或其他底层服务。真正的文件读写、命令执行、浏览器操作都发生在这里。工具层应该尽量把底层结果转换成稳定的 `ToolResult`，不要把底层异常原样泄露成一团不可解析文本。
+
+第六步，runtime 把工具结果写入 run timeline 或 artifact。这个步骤让后续 eval、debug、用户审计都能看到工具发生过什么。没有记录的工具调用，在工程上等于没有证据。
+
+第七步，模型读取工具结果并决定下一步。它可能继续搜索、读取文件、修改代码、运行验证，或者向用户提问。一次复杂任务通常包含多轮工具调用，而不是一次工具就结束。
+
+这条链路说明，工具调用不是“模型直接执行函数”。中间每一层都可以观察、拒绝、记录和解释。Agent 的可靠性正是来自这些中间层，而不是来自模型单独的聪明程度。
+
+### 9.14 工具设计中的反模式
+
+第一个反模式是万能工具。比如设计一个 `execute_anything`，让模型传入任意 action 和 payload。这样的工具看起来灵活，实际会破坏治理。审批层无法理解具体风险，eval 无法判断行为是否正确，模型也更容易构造错误参数。
+
+第二个反模式是把工具结果写成故事。工具可以有 summary，但核心数据必须结构化。如果 `git_status` 返回一段“当前仓库似乎有一些修改”，后续步骤很难精确使用；如果它返回 changed files、dirty flag、status lines，就能被模型和 eval 继续消费。
+
+第三个反模式是静默失败。工具内部捕获异常后返回成功摘要，会让 runtime 和用户都误以为动作完成。宁可失败得清楚，也不要成功得含糊。尤其是写文件、运行命令、保存 memory 这类工具，静默失败会直接破坏信任。
+
+第四个反模式是工具副作用过大。一个名为 `read_project` 的工具如果顺便修改缓存、安装依赖、创建文件，就会让用户难以理解发生了什么。工具名、描述和副作用必须一致。
+
+第五个反模式是没有最小权限。所有工具默认开放给所有角色，会让 subagent 治理失去意义。一个只负责阅读的 agent 不应该能写文件；一个只负责评审的 agent 不应该能启动长期服务；一个只负责生成报告的 agent 不应该能删除 checkpoint。
+
+第六个反模式是缺少 artifact。复杂工具如果不保存证据，失败后只能靠模型回忆。比如浏览器测试没有截图，benchmark 没有 report，命令失败没有 stderr artifact，后续排错都会非常困难。
+
+识别这些反模式很重要，因为很多 demo Agent 看起来功能很多，实际工具层却很脆弱。判断一个 Agent 是否成熟，不要只看工具数量，而要看每个工具是否清楚、可控、可测、可审计。
+
+最后还要记住：工具越强，越需要边界。一个没有边界的强工具，会把模型的一次误判放大成真实破坏；一个有边界的强工具，才会把模型的推理变成可靠执行。
+
+### 9.15 本章练习
+
+第一个练习：打开 [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)，搜索 `registerBuiltInTools`。把内置工具按“观察、修改、验证、记忆、浏览器、subagent、reference”分类。不要只抄工具名，要写清每类工具的风险和适用场景。
+
+第二个练习：打开 [`tests/tools.test.ts`](../../tests/tools.test.ts)，找到 checkpoint、memory、skill、subagent 相关测试。解释每个测试实际保护的行为。比如 checkpoint 测试不只是“能创建快照”，还验证 rollback 后新文件会消失、旧文件会恢复。
+
+第三个练习：设计一个 `run_lint` 工具的输入输出。写出工具名、description、inputHint、可能的 `ToolResult` 字段、失败类型和 eval 如何判断它被正确使用。然后思考它是否应该只是 `run_command` 的一个固定参数封装。
+
+第四个练习：找一个真实任务 trace，检查模型是否先观察再修改，是否在修改后调用验证工具，是否在失败时读取 artifact。用这个练习训练自己不要被最后回答迷惑，而要看工具事件。
+
+第五个练习：挑选一个你认为危险的工具，例如命令执行或文件写入，为它写一份审批说明。说明哪些参数必须检查，哪些场景需要用户确认，哪些结果必须写入 artifact，哪些错误可以重试。这个练习会帮助你理解工具层和审批层如何协作。
+
+### 9.16 本章参考资料
+
+- Omni Agent tools implementation: [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
+- Omni Agent tools tests: [`tests/tools.test.ts`](../../tests/tools.test.ts)
+- Omni Agent security notes: [`docs/security.md`](../security.md)
+- OpenAI function calling guide: [https://platform.openai.com/docs/guides/function-calling](https://platform.openai.com/docs/guides/function-calling)
+- OpenAI built-in tools guide: [https://platform.openai.com/docs/guides/tools](https://platform.openai.com/docs/guides/tools)
+- Anthropic tool use overview: [https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)
+- Model Context Protocol specification: [https://modelcontextprotocol.io/specification](https://modelcontextprotocol.io/specification)
+- OWASP MCP Top 10: [https://genai.owasp.org/resource/owasp-top-10-for-mcp/](https://genai.owasp.org/resource/owasp-top-10-for-mcp/)
 
 ## 10. Approval Policy：让 Agent 可控，而不是让模型裸奔
 
