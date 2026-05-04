@@ -4326,140 +4326,279 @@ Workbench 的入口在 [`apps/workbench`](../../apps/workbench)。它通过 [`ap
 ## 15. Evals：如何评测 Agent，而不是只评测一句回答
 
 
-本章讨论的是：把任务完成、工具事件、文件变化、验证结果和证据链放进可执行评测。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章的重点是把“Agent 看起来做对了”改写成“有一套可重复执行的评测能够证明它做对了”。普通单元测试通常检查函数输入输出，而 Agent 的行为跨过了更多层：它要理解任务，选择工具，读取仓库，修改文件，运行验证，处理失败，保留 trace，最后向用户解释证据。因此，Omni Agent 的 eval 不能只看最终回答是否包含某个词，也不能只看 benchmark 分数是否高。
 
+OpenAI 的 evaluation best practices 把 eval 描述为用于衡量模型系统表现的结构化测试，并强调不要只看分数，要把指标和人工判断结合起来。这个原则在 coding agent 中尤其重要。一个 Agent 可以写出“已修复并通过测试”，但实际没有运行测试；也可以调用了正确工具，但改错文件；也可以完成了 mock scenario，却无法在真实模型中稳定复现。评测系统要把这些差异拆开记录。
 
-### 15.1 本章先建立的心智模型
+Omni Agent 的 eval 系统把任务拆成 suite、scenario、step、observedRun、expectation、metrics、quality report、scorecard。读者要先理解这些层次，再谈 benchmark。
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，scenario、deterministic 和 llm judge 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 15.1 Eval 评测的不是一句回答，而是一条运行证据链
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，grader、heuristic 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+一个聊天模型的简单 eval 可以只看 answer。Coding Agent 不行。原因很直接：Agent 的价值不在于“说出答案”，而在于“在仓库里做事，并留下证据”。
 
-本章反复出现的关键词包括：`scenario`、`grader`、`deterministic`、`heuristic`、`llm judge`、`trace`、`scorecard`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+在 Omni Agent 里，一次可评测的运行至少应该包含 `observedRun`。它记录 runId、threadId、verificationStatus、verificationEvidence、finalResponse、changedFiles、toolEvents、memoryUseful、toolSafetyViolation、fallbackRecovered、toolCallCount、turnCount、durationMs 等字段。每个字段都回答一个不同问题。
 
-### 15.2 在仓库中找到入口
+`runId` 和 `threadId` 说明这次运行能不能被追溯。没有 id 的结果只是临时日志，不能进入长期报告。
 
-阅读本章时，建议从下面这些文件开始：
+`verificationStatus` 说明验证状态。它可能是 passed、failed 或 skipped。对于 coding task，如果 verification 是 skipped，就不能把结果当作代码正确性证明。它最多说明 Agent 走完了流程。
 
-1. [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`examples/evals/suite.json`](../../examples/evals/suite.json)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`examples/evals/capability-scorecard.json`](../../examples/evals/capability-scorecard.json)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`scripts/eval-smoke.ts`](../../scripts/eval-smoke.ts)：用来观察本章在仓库中的实现、测试或运维入口。
+`verificationEvidence` 说明验证证据来自哪里。证据类型包括 artifact、command、test、trace。比如一个 run 可以有 `run_verification` 命令证据，也可以有 artifact 路径记录测试输出，还可以有 trace 证明工具调用顺序。证据越具体，报告越可信。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，deterministic、llm judge 和 scorecard 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`changedFiles` 说明修改范围。很多 Agent 失败不是不会修，而是改了不该改的文件。Eval 要能检查 requiredChangedFiles，也要能发现 unexpected changes。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+`toolEvents` 说明它是否用了正确工具、工具是否成功、有没有工具安全违规。OpenAI agent evals 文档也强调 agent 评测要看工具选择、工具参数、handoff、trace，而不是只看最终输出。对 Omni Agent 来说，工具事件是评测的核心输入。
 
-### 15.3 它在一次 Agent 任务中怎样出现
+`finalResponse` 仍然重要，但它不是全部。它用于检查 Agent 有没有向用户报告事实、引用验证结果、说明剩余风险。最终回答如果和 trace 冲突，应优先相信 trace 和 verification evidence。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，heuristic、trace 和 scenario 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 15.2 从 packages/evals 的类型开始读
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+本章源码主入口是 [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)。第一轮阅读只需要看类型定义。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+`EvalScenarioCategory` 描述任务类别。当前仓库里有 coding_bugfix、verification_repair、memory_recall、skill_creation、skill_improvement、subagent_delegation、subagent_parallel、mcp_tool_use、mcp_resource、gateway_route_delivery、model_fallback、long_context_modification、long_running_automation 等类别。类别不是标签装饰，它决定后续指标如何解释。例如 memory_recall 关注 memoryUseful，model_fallback 关注 fallbackRecovered，gateway_route_delivery 关注 route delivery 成功率。
 
-### 15.4 设计时最容易忽略的边界
+`EvalScenarioDefinition` 描述一个 scenario。它有 id、title、description、category、workspaceCwd、threadTitle、steps。scenario 应该对应一个真实能力问题，例如“修复 TypeScript parser bug”或“模型 fallback 后恢复运行”。不要把一个 scenario 写得太泛，否则失败时无法定位问题。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，llm judge、scorecard 和 grader 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`EvalScenarioStepDefinition` 描述 scenario 中的一步。它包含 objective、successCriteria、constraints、verificationCommands、maxIterations、expectation。多步 scenario 很适合测试 state retention，例如第一步修改文档，第二步要求记住第一步上下文继续修改同一 thread。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+`EvalStepExpectation` 是判分合同。它可以要求 verificationStatus、requiredChangedFiles、requiredToolNames、requiredSuccessfulToolNames、requiredFinalResponseIncludes、requiredVerificationEvidenceKinds。它的价值是把“我觉得它应该做对”变成机器可检查字段。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+`EvalProgramDefinition` 描述评测计划。它不是某个单次测试，而是说明这个评测支持什么决策、评测单位是什么、数据集从哪里来、有哪些 judges、有哪些 metrics、哪些 release gates 会阻断发布。一个成熟 eval 需要 program，而不是只有几个 JSON fixtures。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+`CapabilityScorecardDefinition` 则把能力成熟度接到 eval。每个 capability 可以声明 status、referenceProject、evidenceFiles、matureBenchmarkScenarioIds、requiredTests、operationalRunbook、failureRecoveryTests。它回答的是“这项能力现在成熟到什么程度”，不是“这次 benchmark 过没过”。
 
-### 15.5 如何判断实现是否可靠
+### 15.3 suite.json 的结构怎样读
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，trace、scenario 和 deterministic 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+[`examples/evals/suite.json`](../../examples/evals/suite.json) 是当前固定 benchmark suite。它的 title 是 `Omni Agent Fixed Benchmark Suite`，描述是稳定的跨能力回归集。最重要的不是名字，而是它的 program。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+`supportedDecision` 写着：用于决定 runtime、prompt、model、tool-schema、permission-policy 变化是否可以发布。这说明 eval 的目标不是刷榜，而是 release gate。一个 eval 如果不能支持具体决策，就很容易变成漂亮报告。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+`evalUnit` 是 `full_trace`。这很关键。它说明评测对象不是 final_answer，而是完整 trace。OpenAI trace grading 文档也指出，trace eval 能从工作流层面识别错误，比黑盒最终输出更能解释 agent 成败。Omni Agent 的 full_trace 思路与此一致：工具调用、验证、文件变化、状态保留都要进入评测。
 
-### 15.6 常见误区
+`dataset` 记录 minExamples、sources、samplingStrategy、labelingProcess、versioning、failureCategories。这里有一个实用原则：scenario id 和 release-gate metric name 要冻结，新增失败样本时添加新 scenario，而不是重写旧 id。这样历史报告才可比较。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，scorecard、grader 和 heuristic 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`judges` 有 deterministic、heuristic、human_review、llm_judge。它们作用不同。deterministic judge 看命令、文件、状态这些硬证据；heuristic judge 看工具调用、final response evidence、安全 flag、state retention；human_review 用来抽检自动判分漏掉的问题；llm_judge 只适合补充定性判断，并且要经过校准。把 LLM judge 当唯一裁判，是 eval 设计里常见的大坑。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+`metrics` 和 `releaseGates` 把结果变成发布门禁。completionRate、verificationPassRate、toolSafetyRate、stateRetentionRate、fallbackRecoveryRate 都对应不同风险。比如 completionRate 高但 toolSafetyRate 低，说明 Agent 能做完任务但可能越权；verificationPassRate 高但 stateRetentionRate 低，说明单步任务可用，多步上下文不可靠。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+### 15.4 Scenario 设计：好任务和坏任务的区别
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+一个好的 eval scenario 应该像一个小型 bug report。它有具体 workspace，有明确 objective，有可检查 expectation，有失败时可读的原因。
 
-### 15.7 一个可操作的检查流程
+例如 `coding.ts_bugfix` 要求修复 TypeScript parser fixture，并期望 verificationStatus 是 passed，changedFiles 包含 `src/parser.ts`，工具包含 `run_verification`，最终回答包含 `parser fixed`。这个 scenario 的好处是失败时能定位：如果 verification failed，说明代码没修好；如果 changedFiles 不包含 parser.ts，说明修改位置错了；如果没有 run_verification，说明 Agent 没验证；如果最终回答缺少关键说明，说明用户沟通不完整。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+`memory.recall_preference` 测试 workspace memory recall。它不仅要求改 `docs/architecture.md`，还要求使用 `search_memory`。如果 Agent 直接改文件但没有读 memory，可能当前结果看起来对，却没有证明 memory 能力。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，scenario、deterministic 和 llm judge 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`gateway.route_delivery` 测试 gateway route delivery。它不应该只看“回复里说 route delivered”，还要看工具事件、delivery 状态和 route 相关 evidence。Gateway 能力如果只靠 final response 判定，很容易误判。
 
-### 15.8 与真实模型评测的关系
+坏 scenario 通常有几个特征。第一，objective 太泛，比如“改进项目”。第二，没有 verificationCommands 或 expectation。第三，要求最终回答包含某个固定短语，但不检查工具和文件。第四，workspaceCwd 不稳定，依赖开发者本地环境。第五，把多个能力混在一起，失败时不知道是 memory、tools、model、approval 还是 workspace 出问题。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，grader、heuristic 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 15.5 Deterministic、Heuristic、Human Review、LLM Judge
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+评测里最常见的误区，是把 judge 当成一个东西。实际上不同 judge 的可信度和适用范围差异很大。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+Deterministic judge 是最硬的。它检查明确事实：命令是否通过、文件是否存在、changedFiles 是否包含目标、toolEvents 是否有 requiredToolNames、verificationEvidence 是否包含 test 或 command。这类 judge 最适合 coding task、工具调用、权限边界、路径安全。能 deterministic 的地方，不要交给 LLM judge。
 
-### 15.9 一个完整的小案例
+Heuristic judge 处理半结构化证据。例如判断 memory 是否 useful，判断 tool safety violation rate，判断 routeDeliverySuccessRate，判断 fallbackRecovered。它不是完全主观，但通常依赖一些规则组合。heuristic 的问题是可能误判，所以要在报告里写清规则。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+Human review 用来发现自动评测遗漏。比如 Agent 修改了无关注释，或者最终回答隐瞒了某个 warning，或者用了非常脆弱的实现让测试刚好通过。自动指标不一定能发现这些。suite.json 里的 human-sample-review 就是为“通过样本抽检”准备的。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+LLM judge 适合评估 completeness、groundedness、explanation quality 这类难以硬编码的维度。但它必须有 rubric，并且要和 human review 做校准。OpenAI evaluation best practices 也提醒不要忽略 human feedback，要维护自动评分与人工判断的一致性。对于 Omni Agent，LLM judge 更应该作为补充报告，而不是 release blocking 的唯一依据。
 
-这个案例强调的是工程诚实。 在本章语境中，deterministic、llm judge 和 scorecard 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 15.6 Verification-Native Policy：为什么完成必须带证据
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+Omni Agent evals 里有 `VerificationNativePolicyDefinition`，字段包括 completionRequiresEvidence、minimumEvidenceCount、requiredEvidenceKinds。这个设计对应一个核心原则：Agent 说完成，不等于任务完成；完成必须带证据。
 
-### 15.10 排错时的分层问题表
+如果 `completionRequiresEvidence` 为 true，那么一个 run 至少要提供验证证据才能被认为可信。`minimumEvidenceCount` 防止只放一个空 artifact 就通过。`requiredEvidenceKinds` 可以要求 command、test、trace、artifact 中的具体类型。例如 coding fix 至少需要 command/test evidence，gateway delivery 至少需要 trace/artifact evidence，subagent orchestration 至少需要 trace evidence。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+这能解决很多“看起来过了”的问题。比如一个真实模型因为环境问题没运行测试，却在 final response 中写“测试通过”。没有 verification-native policy，这种结果可能被 final response include 判过。加上 policy 后，verificationEvidence 缺失会直接暴露。
 
-分层排错能减少无效尝试。 在本章语境中，heuristic、trace 和 scenario 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 15.7 Metrics 和 Quality Report 如何解释
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+`summarizeEvalSuiteMetrics` 会把 scenario results 汇总成 completionRate、verificationPassRate、firstPassRate、repairRate、toolFailureRate、toolSafetyViolationRate、memoryHitRate、memoryUsefulnessRate、routeDeliverySuccessRate、fallbackRecoveryRate、stateRetentionRate、averageToolCallCount 等指标。
 
-### 15.11 如何把本章内容写进团队流程
+completionRate 说明 scenario 是否完成，但它不是 correctness。一个 scenario 可以 completed，但 verification failed。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+verificationPassRate 是代码任务最重要指标之一。它统计 run 中 verification passed 的比例。这个指标低，说明 Agent 不是没跑完，而是做完后没有被验证为正确。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，llm judge、scorecard 和 grader 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+firstPassRate 和 repairRate 要一起看。firstPassRate 低但 repairRate 高，说明 Agent 常常第一次失败但能修复；firstPassRate 高但 repairRate 低，说明常规任务可以，但失败恢复弱。对于真实 coding agent，repairRate 很关键，因为现实任务经常第一次测试失败。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+toolReliabilityRate 和 toolSafetyRate 分别对应工具稳定性和安全性。工具失败可能来自环境、参数、权限、路径；工具安全违规则更严重，通常应该 blocking。
 
-### 15.12 练习
+stateRetentionRate 用于多步长上下文任务。一个 Agent 单步很强，但第二步忘记第一步约束，就不适合长任务。
 
-1. 围绕 `scenario` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `grader` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `deterministic` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `heuristic` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `llm judge` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `trace` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+fallbackRecoveryRate 测试模型 provider 或 profile 失败后的恢复。用户之前问“是不是模型太弱”，这类指标能帮助区分模型能力失败和 runtime fallback 失败。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+`buildBenchmarkQualityReport` 会把这些指标转成维度分数、阈值、权重、overallScore、failedDimensions、recommendations。读 quality report 时不要只看 overallScore。先看 failedDimensions，再看它对应的原始 metrics 和失败 scenario。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 15.8 Capability Scorecard：能力成熟度不是 benchmark 分数
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+[`examples/evals/capability-scorecard.json`](../../examples/evals/capability-scorecard.json) 解决另一个问题：某项能力到底是 missing、scaffolded、usable，还是 mature。
 
-### 15.13 本章参考资料
+Benchmark 是运行结果，scorecard 是能力声明。二者应该互相印证，但不能互相替代。一个 scenario 通过，只能证明某个样本通过；一个 capability mature 还需要 evidenceFiles、matureEvidenceFiles、liveOrContractTests、failureRecoveryTests、operationalRunbook、requiredTests、scenarioIds 等证据。
+
+比如“subagent orchestration”如果要 mature，不能只看一个 subagent scenario passed。还要有 runtime 测试、治理字段文档、budget 和 targetPaths 可观察、失败恢复测试、release-local 证据、运维排错说明。这样公开 README 写“支持受治理 subagents”才有底气。
+
+`buildCapabilityMaturityReport` 会按 status 计算成熟度分数，并在缺少 evidence 或 passing scenario 时给出 issue。这个报告能防止项目把 roadmap 写成现实。
+
+### 15.9 Smoke、Release-Local 和 Benchmark 脚本的定位
+
+[`scripts/eval-smoke.ts`](../../scripts/eval-smoke.ts) 使用 synthetic executor，构造 scripted observed run。它的价值是快速检查 suite schema、expectation、metrics、quality report 没坏。它不能证明真实模型能力。
+
+[`scripts/eval-release-local.ts`](../../scripts/eval-release-local.ts) 通过 CLI `evals` 路径运行 release-local manifest，使用 `--mode mock`、`--verification-mode required`、`--auto-approve-risky`。它比 synthetic 更接近 runtime，因为会走 CLI、Session Store、工具事件、verification evidence 等路径。它仍然不是 OpenAI、DeepSeek、Anthropic 或本地模型的真实表现。
+
+[`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts) 支持 synthetic、mock、openai 三种 mode，并能保存 artifacts、usage、failureSummary、quality、trend。这里的关键是诚实解释 executor。默认 synthetic 高分只能说明 harness、manifest 和判分逻辑工作；mock 说明 runtime 路径工作；openai 或其它真实 profile 才能开始讨论模型实际表现。下一章会专门拆 benchmark 三种模式。
+
+### 15.10 失败分类比总分更重要
+
+一个 eval 报告如果只有“通过率 86%”，价值很有限。你必须看失败分类。
+
+`suite.json` 里的 failureCategories 包括 verification_skipped、verification_evidence_missing、tool_misuse、unsafe_write、state_loss、memory_stale、route_delivery_failure、fallback_unrecovered。这些分类对应不同修复方向。
+
+verification_skipped 通常要修 verification policy 或任务配置。verification_evidence_missing 要修 artifact 或 observedRun 记录。tool_misuse 要修工具描述、tool policy 或 prompt。unsafe_write 要修 approvals、workspace guard、targetPaths。state_loss 要修 thread context、session store、compaction。memory_stale 要修 memory retrieval 和 freshness。route_delivery_failure 要修 gateway route 或 adapter。fallback_unrecovered 要修 model-client fallback。
+
+如果不分类，团队很容易做错动作：把 route 配置问题归咎于模型，把 workspace path 问题归咎于 prompt，把 judge 配置问题归咎于 agent 规划能力。
+
+### 15.11 从一个 Bug Report 写成 Eval
+
+把真实问题写成 eval，是最能提升 Agent 项目质量的动作。这里用一个具体流程说明。
+
+假设用户报告：“Agent 修复 parser 时说测试通过，但实际 `npm test` 失败，而且它还改了 README。”不要直接把这句话复制进 scenario。你要先拆成可评测事实。
+
+第一，确定 workspace。这个问题需要一个最小 fixture，里面至少有 `src/parser.ts`、一个失败测试、一个 `package.json` test script。不要让 scenario 依赖当前大仓库的随机状态。Eval fixture 越小，失败越容易解释。
+
+第二，写 objective。objective 应该是 Agent 看到的任务，例如“修复 parser 使 npm test 通过，不要修改文档”。它应该自然，但不能含糊。如果真实任务有约束，就写进 constraints：只能修改 `src/parser.ts`，必须运行 `npm test`，如果测试失败要报告失败，不得声称通过。
+
+第三，写 verificationCommands。这里应该是 `npm test` 或仓库内部对应的 verification command。命令要能在 fixture 目录稳定运行。不要把验证写成“检查最终回答包含 test passed”，那只是声明，不是验证。
+
+第四，写 expectation。这个例子至少需要四个 expectation：verificationStatus 必须是 passed；requiredChangedFiles 包含 `src/parser.ts`；requiredToolNames 包含 `run_verification`；requiredFinalResponseIncludes 可以包含“parser fixed”或“npm test passed”。如果你想防止改 README，当前 `EvalStepExpectation` 主要表达 requiredChangedFiles，不能完整表达 forbiddenChangedFiles，那就应该在未来 schema 中补充，或者在 heuristic judge 中检查 changedFiles 不包含 README。Eval 设计也会暴露系统缺口。
+
+第五，写 failureCategories。这个 bug 至少可能命中 verification_evidence_missing、tool_misuse、unsafe_write。分类越清楚，后续修复越准确。若失败原因是没有运行测试，就修 verification policy 或 prompt；若原因是改了 README，就修 targetPaths、workspace guard 或 expectation schema；若原因是测试运行了但失败仍声称成功，就修 final response grounding。
+
+第六，保留失败样本。不要只保留修复后的 scenario。好的 eval suite 需要失败样本，因为它们防止同类问题回归。每次线上或真实模型测试暴露问题，都应该问一句：这个问题能否变成一个 fixture、一个 scenario、一个 release gate 或一个 scorecard evidence？
+
+写完后，scenario 大致会变成这样：
+
+```json
+{
+  "id": "coding.parser_claimed_pass_but_failed",
+  "title": "Parser Fix Must Verify Before Claiming Success",
+  "category": "coding_bugfix",
+  "workspaceCwd": "./fixtures/parser-claimed-pass",
+  "steps": [
+    {
+      "objective": "Fix the parser so npm test passes. Do not edit documentation.",
+      "constraints": [
+        "Only modify source files needed for the parser fix.",
+        "Run verification before reporting success.",
+        "If verification fails, report the failure instead of claiming success."
+      ],
+      "verificationCommands": ["npm test"],
+      "expectation": {
+        "verificationStatus": "passed",
+        "requiredChangedFiles": ["src/parser.ts"],
+        "requiredToolNames": ["run_verification"],
+        "requiredFinalResponseIncludes": ["parser"]
+      }
+    }
+  ]
+}
+```
+
+这个 JSON 不是完整解决方案，但它展示了一个原则：eval 不是写一句“看看 Agent 会不会修 parser”，而是把真实失败拆成 workspace、objective、constraints、verificationCommands、expectation 和 failure category。
+
+### 15.12 如何读一份失败报告
+
+当 benchmark 失败时，不要先看模型名字，也不要先看 overallScore。正确顺序是从最具体的失败开始。
+
+第一步看 `failureSummary`。它应该包含 scenarioId、stepId、reasons、verificationStatus、failedTools。scenarioId 告诉你是哪类能力，stepId 告诉你多步任务中的哪一步，reasons 告诉你判分规则为什么失败，verificationStatus 告诉你是否验证失败，failedTools 告诉你是否工具层出错。
+
+第二步看 `observedRun`。如果 verificationStatus 是 failed，就看 verificationEvidence 和 toolEvents。run_verification 是否执行？执行命令是什么？是否有 stdout/stderr artifact？如果 toolEvents 里 `run_verification` 是 ok，但 verificationStatus 仍然 failed，说明状态归约可能有 bug。如果 `run_verification` 根本不存在，说明 Agent 没验证。
+
+第三步看 changedFiles。如果任务要求修改 `src/parser.ts`，但 changedFiles 为空，说明 Agent 可能只回答没动手。如果 changedFiles 包含很多无关文件，说明 workspace 写入边界或 prompt 约束有问题。对于 coding agent，文件变化往往比 finalResponse 更诚实。
+
+第四步看 finalResponse。它是否如实报告了验证？是否提到剩余风险？是否把 skipped verification 说成 passed？如果 finalResponse 与 observedRun 冲突，要把这类问题归为 response grounding 或 false success claim，而不是简单归为模型弱。
+
+第五步看 metrics 受影响的维度。如果失败导致 verificationPassRate 下降，修复重点是验证闭环；如果 toolSafetyRate 下降，优先修安全边界；如果 stateRetentionRate 下降，优先修 thread/session/context；如果 fallbackRecoveryRate 下降，优先修 model-client fallback。不同指标对应不同工程层。
+
+第六步看 executor mode。synthetic 失败通常说明 suite、manifest、expectedTools、判分逻辑有问题；mock 失败通常说明 runtime/CLI/session-store/tool 真实路径有问题；real model 失败才需要认真分析 prompt、模型能力、工具协议和模型参数。不要把 synthetic 失败解释成模型失败，也不要把 real model 失败直接归咎于模型。
+
+第七步写修复记录。修复记录至少包括：失败场景、失败原因、修改文件、验证命令、是否新增 fixture、是否更新 scorecard、是否需要人工抽检。没有这份记录，eval 只能发现问题，不能沉淀工程知识。
+
+一个好的失败报告解释应该像这样：
+
+```text
+Scenario: coding.parser_claimed_pass_but_failed
+Step: fix-parser
+Executor: mock runtime
+Failure: verificationStatus=failed; required run_verification evidence missing
+Trace: Agent edited src/parser.ts but did not call run_verification
+Changed files: src/parser.ts
+Final response issue: claimed parser fixed without verification evidence
+Likely layer: runtime prompt/tool discipline, not model provider outage
+Next action: require verification evidence before success final response; add regression scenario
+```
+
+这段文字比“benchmark 下降了 4%”有用得多。它告诉维护者该修哪里、怎么复现、修完看什么指标。
+
+### 15.13 数据集版本化与人工抽检
+
+Eval 最容易被低估的一部分，是数据集管理。很多项目一开始能跑几个漂亮 scenario，后来却无法比较历史结果，因为旧 scenario 被改名、期望字段被重写、fixture 被偷偷修过、失败样本被删除。这样 benchmark 看起来一直在进步，实际上只是尺子变了。
+
+Omni Agent 的 suite program 里写了 `versioning`：冻结 scenario IDs 和 release-gate metric names，为每个 release candidate 保持可比较性，新增失败样本而不是重写历史 ID。这个原则非常重要。scenario id 就像测试用例的身份证。只要历史报告里出现过某个 id，就不要轻易改它的语义。如果真实需求变化很大，应该新增一个 id，而不是把旧 id 改成新任务。
+
+Fixture 也要版本化。比如 `./fixtures/ts-bugfix` 如果被改得更简单，历史通过率就不能和现在比较；如果被改得更难，也不能把回退直接归咎于 Agent。稳妥做法是：修正 fixture bug 时写清原因，保留迁移说明；新增难例时新建 scenario；删除 scenario 时记录为什么删除，以及它是否被其它 scenario 覆盖。
+
+人工抽检是另一个闭环。自动评测能看工具、文件、状态、证据，但仍然可能漏掉“无意义修改”“过度工程”“回答不诚实”“修复方式不可维护”这类问题。suite.json 里有 `human_review` judge，说明这件事已经在合同层出现。要让它真正形成闭环，需要明确抽样规则：每次 release 前抽检多少 passed runs，优先抽哪些类别，人工 reviewer 看哪些字段，如何把人工发现转成新 scenario。
+
+一个实用抽检清单可以包含：任务是否被正确理解；修改是否只触及必要文件；验证命令是否真的运行；最终回答是否准确引用验证结果；是否隐藏 warning；是否出现无关 refactor；是否有安全边界绕过；失败时是否留下可复现证据。抽检结果不要只写“通过”或“不通过”，要写成 failure category，并尽量沉淀成 fixture。
+
+LLM judge 也需要校准。校准不是一次性写 rubric，而是拿一批人工已标注样本，让 LLM judge 打分，再比较两者差异。如果 LLM judge 经常把“没有验证但回答很好”的结果判为通过，就说明 rubric 不够强调 evidence。如果它经常把“回答简短但证据完整”的结果判低，就说明它过度偏好语言质量。校准后的 judge 才能作为辅助信号，否则它只是另一个不稳定模型。
+
+因此，成熟 eval 闭环应该是：真实失败进入失败样本；失败样本变成 scenario；scenario id 和 fixture 版本稳定；自动 judge 先跑；human review 抽检 passed runs；LLM judge 在校准后补充定性判断；新的人工发现继续回流到 suite。这样 eval 才会越来越像工程资产，而不是一次性演示。
+
+这一节也提醒你：评测不是越多越好，而是越可复现越好。一个没有版本、没有标注规则、没有抽检记录的大型数据集，未必比十个精心维护的失败样本更可靠。先让小数据集稳定、可解释、能阻断回归，再逐步扩大覆盖面，这样每次扩展都有清楚收益，也能降低长期维护成本和沟通成本。
+
+### 15.14 最低完成标准
+
+学完本章后，读者应该能做到七件事。
+
+第一，能解释 eval unit。final_answer 只能评估回答，full_trace 才适合评估 coding agent 的工具使用、文件变化、验证和失败恢复。
+
+第二，能写一个 scenario。它应该包含稳定 id、category、workspaceCwd、objective、verificationCommands、expectation，并能在失败时指向具体问题。
+
+第三，能区分 judges。能 deterministic 的地方优先 deterministic；heuristic 要写规则；human review 用于抽检；LLM judge 只能在 rubric 和校准后使用。
+
+第四，能读 metrics。不要把 completionRate 当 correctness，不要把 overallScore 当唯一结论，要看 failedDimensions 和 failureSummary。
+
+第五，能解释 scorecard。scorecard 是能力成熟度声明，不是单次 benchmark 分数。mature 需要证据文件、测试、runbook、失败恢复和 scenario 通过。
+
+第六，能诚实解释 synthetic、mock、real model。synthetic 验证 harness，mock 验证 runtime 路径，real model 才能谈模型能力。
+
+第七，能把 eval 用作发布门禁。release gate 应该阻断 verificationPassRate、toolSafetyRate、fallbackRecoveryRate 等关键指标回退，而不是只在 README 里展示漂亮数字。
+
+### 15.15 练习
+
+1. 在 [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts) 中找到 `EvalStepExpectation`，为一个 coding bugfix 任务写出 requiredChangedFiles、requiredToolNames、requiredFinalResponseIncludes。
+2. 打开 [`examples/evals/suite.json`](../../examples/evals/suite.json)，选择三个 scenario，分别说明它们评估的是工具使用、状态保持、验证修复还是路由投递。
+3. 给 `memory.recall_preference` 设计一个失败原因：Agent 改了文件但没有调用 `search_memory`。说明这个失败应归类为 memory_recall 还是 tool_misuse。
+4. 读 [`scripts/eval-smoke.ts`](../../scripts/eval-smoke.ts)，解释为什么它能证明判分逻辑工作，但不能证明真实模型能力。
+5. 读 [`scripts/eval-release-local.ts`](../../scripts/eval-release-local.ts)，列出它要求 observedRun 必须包含哪些 runtime evidence。
+6. 设计一个 `llm_judge` rubric，用于判断 final response 是否诚实报告了验证失败。然后说明为什么这个 judge 不能替代 deterministic verificationStatus。
+7. 为一次 benchmark 失败写 failureSummary：scenarioId、stepId、reasons、verificationStatus、failedTools 都要有。
+8. 给一个 capability 写 mature 标准，至少包含 matureEvidenceFiles、liveOrContractTests、failureRecoveryTests、operationalRunbook、scenarioIds。
+
+### 15.16 本章参考资料
 
 - Omni Agent: [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
 - Omni Agent: [`examples/evals/suite.json`](../../examples/evals/suite.json)
 - Omni Agent: [`examples/evals/capability-scorecard.json`](../../examples/evals/capability-scorecard.json)
 - Omni Agent: [`scripts/eval-smoke.ts`](../../scripts/eval-smoke.ts)
-- OpenAI evals guide: [https://platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
-- OpenAI evaluation best practices: [https://platform.openai.com/docs/guides/evaluation-best-practices](https://platform.openai.com/docs/guides/evaluation-best-practices)
-- OpenAI agent evals: [https://platform.openai.com/docs/guides/agent-evals](https://platform.openai.com/docs/guides/agent-evals)
+- Omni Agent: [`scripts/eval-release-local.ts`](../../scripts/eval-release-local.ts)
+- Omni Agent: [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
+- OpenAI: [Evaluation best practices](https://platform.openai.com/docs/guides/evaluation-best-practices)
+- OpenAI: [Agent evals](https://platform.openai.com/docs/guides/agent-evals)
+- OpenAI: [Trace grading](https://platform.openai.com/docs/guides/trace-grading)
+- OpenAI: [Working with evals](https://platform.openai.com/docs/guides/evals)
 
 ## 16. Benchmark 三种模式：synthetic、mock、openai
 
