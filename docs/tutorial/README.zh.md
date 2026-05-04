@@ -7345,141 +7345,176 @@ PR 描述也应该写证据链，而不是只写“updated docs”。更好的�
 
 ## 27. 新手最容易误解的十件事
 
+本章不是总结口号，而是专门纠正新手最容易带进 Agent 项目的十个误解。很多人第一次看 Omni Agent，会把它理解成“一个会聊天、能调工具、能跑测试的模型壳”。这个理解太浅。Omni Agent 的关键不是让模型多说几句，也不是把工具列表堆得很长，而是把任务、工具、验证、记忆、子 Agent、报告和能力声明放进同一套证据系统里。
 
-本章讨论的是：纠正常见误解：分数、记忆、工具、模型、benchmark、subagent、自动化和安全边界。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+读本章时可以对照 [`docs/omni-agent-paradigms.md`](../../docs/omni-agent-paradigms.md)。这个文件把项目的核心范式写成五件事：verification-native runtime、capability-backed claims、governed subagents、accountable memory、agent runs as artifacts。新手误解通常都来自这五件事没有真正理解。
 
+### 27.1 误解一：benchmark 高分等于真实模型能力强
 
-### 27.1 本章先建立的心智模型
+这是最危险的误解。Omni Agent 的默认 `eval:benchmark` 是 synthetic 模式，它主要检查 manifest、runner、判分逻辑、quality report 和 capability gates 是否正常。它不能证明真实模型真的完成了所有任务。第 16、25 章已经反复讲过：synthetic、mock、openai 是三种不同证据。
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，misunderstanding、tool 和 runtime 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+正确理解是：synthetic 高分说明 harness 自检好；mock 通过说明 runtime 路径大体能跑；openai 或兼容端点结果才开始接近真实模型评测。即便是真实模型结果，也必须写清 model profile、suite、run id、artifact、duration、cost 和 failure summary。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，benchmark、memory 和 agent loop 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果有人说“默认 benchmark 97%，所以这个 Agent 很强”，你应该追问：是哪种 mode？有没有真实模型？有没有保存 trace？失败样本是什么？是否重复运行？是否和 baseline 比较？这些问题不是抬杠，而是 benchmark 的基本解释条件。
 
-本章反复出现的关键词包括：`misunderstanding`、`benchmark`、`tool`、`memory`、`runtime`、`agent loop`、`verification`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+### 27.2 误解二：模型越强，runtime 就越不重要
 
-### 27.2 在仓库中找到入口
+强模型能提高完成率，但不能替代 runtime。模型负责推理和生成动作，runtime 负责上下文、工具、审批、执行、验证、记忆、artifact 和失败处理。没有 runtime，模型最多只是会给建议；有 runtime，它才可能在真实仓库里安全行动。
 
-阅读本章时，建议从下面这些文件开始：
+比如模型说“我已经修复并运行测试”，如果 runtime 没有执行验证命令，这句话没有工程证明。模型说“需要删除目录”，如果 approval policy 没有拦截危险命令，强模型也可能造成破坏。模型能读懂工具描述，但工具 schema、错误消息、工作目录和权限边界不清楚时，它仍然会失败。
 
-1. [`docs/omni-agent-paradigms.md`](../../docs/omni-agent-paradigms.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
+所以排查失败时，不要先下结论“模型太弱”。先看 task 是否清楚、workspace 是否正确、tool 是否可用、approval 是否阻断、verification command 是否能跑、artifact 是否写入、final response 是否诚实。模型只是链路中的一环。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，tool、runtime 和 verification 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 27.3 误解三：工具越多，Agent 越强
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+工具多不等于能力强。工具越多，误用风险也越高。一个本地 Agent 可以读文件、写文件、运行命令、扫描密钥、创建 checkpoint、调用 browser、启动 gateway、创建 automation。如果每个工具没有清楚的用途、输入边界、审批等级和失败返回，模型会更容易选错工具。
 
-### 27.3 它在一次 Agent 任务中怎样出现
+Omni Agent 中真正重要的是 tool contract。工具名要让模型知道它做什么；参数要结构化；错误要能诊断；风险要能被 approval policy 分类；结果要进入 run artifact。比如 `run_verification` 的意义不是“又一个命令工具”，而是把验证动作作为证据记录。`scan_secrets` 的意义不是“搜索字符串”，而是防止敏感信息进入提交、日志或最终回复。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，memory、agent loop 和 misunderstanding 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+设计工具时要问：这个工具解决什么实际动作？失败时返回什么？是否会修改 workspace？是否需要审批？是否要写 artifact？是否会泄露 secret？如果回答不清楚，不如先不加工具。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+### 27.4 误解四：记忆就是把所有历史都塞进上下文
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+记忆不是无限聊天记录。Accountable memory 的重点是 provenance、scope 和 usefulness。一个记忆要说明它从哪里来、适用于哪个 workspace、何时写入、为什么有用、何时应该被忽略。否则记忆会从帮助变成污染。
 
-### 27.4 设计时最容易忽略的边界
+举例说，“用户喜欢简洁回答”可能是跨会话偏好；“这个仓库用 npm run build 发布前检查”可能是 workspace 规则；“刚才测试失败因为依赖没装”可能只是当前运行状态。三者不能混在一起。当前运行状态不应该变成长期事实，长期规则也不应该只存在当前 context。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，runtime、verification 和 benchmark 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Omni Agent 的 README 已经提醒：过期记忆不能覆盖当前源码。正确做法是让 memory search 结果带来源，并让 runtime 判断它是否适合当前任务。如果当前文件和旧记忆冲突，当前文件优先。新手常犯的错误，是把“记住更多”当成“更聪明”。真正可靠的记忆系统，是能记，也能拒绝旧信息。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+### 27.5 误解五：verification 就是最后跑一下测试
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+Verification 不是收尾仪式，而是 completion 条件。Verification-native runtime 的意思是：任务不能因为 final response 说完成就算完成，必须有可检查证据。证据可以是 command、test、artifact 或 trace。最常见的是 `run_verification` 成功事件或 explicit verification evidence。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+如果 Agent 修改了代码但没有运行测试，它最多是“改了”，不是“验证通过”。如果测试失败但 final response 写“已完成”，这是严重问题。更好的 final response 应该写：改了什么、运行了什么、结果如何、还有什么风险。如果验证失败，应该承认失败，并留下失败原因和下一步建议。
 
-### 27.5 如何判断实现是否可靠
+这也是为什么 eval expectation 里会有 `verificationStatus`、`requiredToolNames`、`requiredSuccessfulToolNames` 和 `requiredVerificationEvidenceKinds`。它们不是形式主义，而是防止口头完成替代真实完成。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，agent loop、misunderstanding 和 tool 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 27.6 误解六：subagent 越多，任务越快
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+Subagent 不是并发聊天窗口。Governed subagents 的重点是 authority、budget、ownership 和 completion evidence。每个子 Agent 都应该知道自己负责什么文件、不能改什么、预算是多少、完成后交付什么证据。否则并行只会制造冲突。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+适合 subagent 的任务通常是可拆分、边界清楚、结果可合并的任务。比如一个子 Agent 检查 eval suite，一个子 Agent 修改文档，一个子 Agent 跑验证。它们的写入范围应该不同。相反，如果三个子 Agent 都去改同一个 runtime 文件，冲突和重复劳动会抵消并行收益。
 
-### 27.6 常见误区
+新手容易把 subagent 当成“多派几个模型，总会更聪明”。正确做法是先设计任务边界，再决定是否并行。并行不是目的，减少阻塞、收集独立证据、隔离风险才是目的。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，verification、benchmark 和 memory 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 27.7 误解七：自动化就是定时让 Agent 继续跑
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+自动化不是“过一会儿再问模型”。一个 automation 必须有触发条件、工作目录、任务描述、权限边界、失败重试、dead-letter 状态和输出预期。否则它会变成不可控后台任务。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+Omni Agent 的 automation 应该服务于明确运维目标，比如夜间跑 benchmark、定时检查 route delivery、周期性生成诊断摘要。每个自动化都要能回答：失败后谁看？结果写哪里？是否会修改文件？是否需要审批？是否可能消耗大量模型成本？
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+不要把高风险写操作交给无人值守 automation。对于会修改仓库、调用真实模型、访问外部服务或触发发布流程的任务，至少要有人工审批或只读预检。自动化应该减少重复劳动，不应该绕过责任。
 
-### 27.7 一个可操作的检查流程
+### 27.8 误解八：安全就是别提交 API key
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+不提交 API key 只是安全的第一步。Agent 系统的安全边界还包括 prompt injection、command injection、path traversal、credential exfiltration、unsafe file write、untrusted skill materialization、webhook secret、gateway token、artifact 泄露和日志脱敏。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，misunderstanding、tool 和 runtime 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+OWASP LLM Top 10 对 LLM 应用风险有系统分类。放到本地编码 Agent 里，最常见的风险是：模型被仓库中的恶意文本诱导执行危险命令；工具允许访问 workspace 外路径；最终回复回显 secret；artifact 保存了敏感 trace；gateway 没有 token；automation 在无人值守状态下执行写操作。
 
-### 27.8 与真实模型评测的关系
+因此安全不是一个单独章节，而是贯穿 tool、workspace、memory、gateway、automation 和 release 的约束。每个新能力都应该问：它新增了什么 trust boundary？需要什么测试？失败时是否 fail closed？是否能被 operator 复查？
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，benchmark、memory 和 agent loop 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 27.9 误解九：README 写了就等于项目具备
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+README 是入口，不是证据。项目可以在 README 里说“支持 capability-backed claims”，但真正证明来自 claims registry、scorecard、tests、scenario 和 maturity check。第 26 章已经讲过，公开能力声明必须能映射到证据链。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+新手维护项目时，常常先把 README 写得很强，然后再慢慢补代码。这样会制造信任债。更好的顺序是：先实现最小能力，补测试，补 scenario，跑验证，保存 artifact，再写 README 声明。README 中也要保留边界，比如 beta、synthetic benchmark 限制、真实模型评测条件。
 
-### 27.9 一个完整的小案例
+一个可信 README 不一定短，但它应该诚实。它可以说“当前最适合本地 coding-agent runtime 和 eval harness”，不要说“客观评测所有 Agent 能力”。技术读者更相信有边界的声明。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+### 27.10 误解十：artifact 只是调试文件
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+Artifact 不是垃圾文件，也不是只给开发者看的临时输出。Agent runs as artifacts 是 Omni Agent 的核心范式之一。一次有意义的运行应该留下 task contract、tool trace、approvals、changed files、verification evidence、usage、duration、failure reasons 和 final summary。
 
-这个案例强调的是工程诚实。 在本章语境中，tool、runtime 和 verification 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+没有 artifact，失败很难复盘。你只能回忆模型说了什么，却不知道它实际调用了哪些工具、修改了哪些文件、验证命令是否成功、为什么被审批拦截。有 artifact，维护者可以把失败转成 scenario，把风险写进 scorecard，把修复写进 release notes。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+当然 artifact 不应该无脑提交。`.artifacts`、provider trace、本地 runtime store、含敏感信息的日志都不应进入 git。正确做法是本地保存、报告引用、必要时脱敏。artifact 是证据，不是公开泄露材料。
 
-### 27.10 排错时的分层问题表
+### 27.11 一张纠偏表
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+| 误解 | 正确理解 | 应该查看的证据 |
+| --- | --- | --- |
+| synthetic 高分等于真实能力 | synthetic 只证明 harness 自检 | benchmark mode、artifact |
+| 模型强就够了 | runtime 决定安全执行和证据 | runtime trace、tool events |
+| 工具越多越好 | 工具必须有 contract 和边界 | tools、approval tests |
+| 记忆越多越好 | 记忆要有来源和适用范围 | memory tests、stale scenario |
+| verification 是收尾 | verification 是完成条件 | verification evidence |
+| subagent 越多越快 | 子 Agent 要有职责和预算 | governed subagent docs |
+| 自动化只是定时运行 | 自动化需要触发、权限和失败处理 | automation records |
+| 安全只是密钥 | 安全包括 prompt、路径、命令、日志 | security tests |
+| README 等于能力 | README 必须被 claim 证据支撑 | scorecard、maturity check |
+| artifact 是临时文件 | artifact 是复盘和报告证据 | run artifact、trend |
 
-分层排错能减少无效尝试。 在本章语境中，memory、agent loop 和 misunderstanding 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这张表可以作为读者自检。每当你想给项目加一句“支持某能力”，先用表里的第三列找证据。如果找不到，就不要把它写成强声明。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+### 27.12 如何把误解转成排错动作
 
-### 27.11 如何把本章内容写进团队流程
+学习这些误解不是为了背概念，而是为了在真实工作中少走弯路。遇到 benchmark 分数异常时，不要先调 prompt，而是先确认 executor mode、suite manifest 和 artifact 是否匹配。如果是 synthetic，就看 manifest 和 scoring；如果是 mock，就看 CLI runtime path；如果是 openai，就看模型 profile、工具支持、rate limit、usage 和失败 trace。三种 mode 的排错入口不同，混在一起会浪费大量时间。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+遇到模型输出不稳定时，不要只换更贵模型。先看任务是否给了足够上下文，workspace instruction 是否加载，tool description 是否让模型知道该做什么，verification command 是否明确，max iterations 是否过低。很多“模型不会做”的问题，本质是 runtime 没把正确任务合同交给模型。反过来，如果上下文、工具和验证都清楚，模型仍然反复失败，再考虑换模型或调整 model profile。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，runtime、verification 和 benchmark 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+遇到工具调用失败时，不要只看 final response。应该查看 tool event：工具有没有被调用，参数是什么，状态是 ok、failed、blocked 还是 skipped，失败消息是否可诊断。如果工具被 approval policy 阻断，这可能是正确行为；如果工具状态 failed 但 final response 说完成，就是 final reporting 问题；如果工具从未被调用，可能是 prompt、tool schema 或任务规划问题。工具失败的每一种状态，都指向不同修复方向。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+遇到记忆相关问题时，要把“找不到记忆”和“错误使用记忆”分开。找不到记忆可能是 memory backend、workspace scope、query 或文件路径问题；错误使用记忆可能是 stale memory、来源不明、优先级错误或当前源码被旧信息覆盖。正确排查方式是看 memory search 结果、source label、写入时间、适用范围，以及模型最终是否真正应用了它。记忆系统最重要的不是召回更多，而是让有用信息被正确使用，让过期信息被明确忽略。
 
-### 27.12 练习
+遇到安全问题时，要先确定是哪条边界被突破。是 prompt injection 让模型相信仓库里的恶意文字？是 path traversal 让工具访问了 workspace 外部？是 command policy 没识别危险命令？是 final response 回显 secret？还是 artifact 保存了敏感内容？不同安全问题不能只用“加一句系统提示”解决。系统提示能提醒模型，但真正的防线应该在工具、路径解析、审批策略、日志脱敏、secret scan 和 release gate 中。
 
-1. 围绕 `misunderstanding` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `benchmark` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `tool` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `memory` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `runtime` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `agent loop` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+### 27.13 三个具体纠偏案例
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+第一个案例：用户说“Flash 模型太弱，45 项 benchmark 失败很多”。不要直接回答“是模型弱”。先看 run mode。如果是 synthetic 失败，通常不是模型问题，而是 manifest 或判分逻辑坏了；如果是 mock 失败，可能是 runtime path、fixture 或 CLI 参数问题；如果是 openai 模式失败，再看 failureSummary。失败集中在复杂文件编辑，可能说明模型编辑能力弱；失败集中在 requiredVerificationEvidenceKinds，可能说明 runtime 没记录 evidence；失败集中在 final response snippets，可能是判分片段过窄。只有分层后，才能判断是否真是模型能力问题。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+第二个案例：用户说“我已经加了 memory，为什么 Agent 还不记得？”这时要检查 memory 是写到哪里、当前 workspace 是否相同、搜索 query 是否能命中、结果是否进入 prompt、模型是否有理由使用它。如果记忆内容是“昨天测试因为网络失败”，今天仓库已经改了，它就不应该覆盖当前验证结果。记忆系统的正确目标不是永远听旧信息，而是在旧信息和当前证据冲突时选择当前证据。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+第三个案例：用户说“README 已经写了支持安全执行，为什么还要补测试？”因为 README 不能阻止危险命令。安全执行要有 command policy、path boundary、approval policy、tool safety tests、secret scan 和 failure artifact。没有测试，安全声明只是愿望；没有 artifact，失败无法复盘；没有 runbook，用户不知道被阻断后怎么恢复。安全能力越强，越需要证据链，而不是越依赖信任。
 
-### 27.13 本章参考资料
+第四个案例：用户说“开更多 subagent 应该更快”。这句话只在任务可拆、边界清楚、写入范围不冲突时成立。如果一个任务是“重构 runtime 主循环”，并且三个 subagent 都去改 `packages/core-runtime/src/index.ts`，速度很可能更慢，因为结果要合并、冲突要解决、上下文要同步。更合理的拆法是：一个 subagent 只读分析 runtime loop，一个 subagent 修改 eval scenario，一个 subagent 更新文档或测试。每个子任务都要有独立产物。subagent 的价值不是制造更多输出，而是把可并行的证据收集和局部修改分出去。
 
-- Omni Agent: [`docs/omni-agent-paradigms.md`](../../docs/omni-agent-paradigms.md)
-- Omni Agent: [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)
-- Omni Agent: [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
-- Omni Agent: [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)
+第五个案例：用户说“自动化可以让 Agent 每天自己优化项目”。这听起来很诱人，但默认不是好主意。无人值守自动化如果能写文件、跑真实模型、推送代码或修改配置，就会引入成本、安全和质量风险。更合理的自动化是只读或低风险任务：每天跑一次 smoke benchmark，生成诊断摘要，检查 route delivery dead letter，或者列出失败测试。真正的修改应该进入人工审查流程。自动化不是为了让系统失去边界，而是让重复检查更稳定。
+
+第六个案例：用户说“artifact 太占空间，删掉就行”。可以清理旧 artifact，但不能把所有 artifact 都当垃圾。没有 artifact，你无法证明一次 benchmark 是什么 mode、什么 model、什么失败原因、什么成本，也无法把一次真实失败转成回归 scenario。正确做法是保留关键 release artifact、脱敏敏感内容、清理临时 provider trace、不要提交到 git。artifact 的生命周期也要管理：哪些只保留本地，哪些进入报告，哪些可以过期清理，哪些必须保留到下一次 baseline 更新。
+
+### 27.14 建议的学习顺序
+
+如果你是第一次接触这个项目，不要从“我要让它更聪明”开始。先从最小闭环开始：运行 `doctor`，确认 workspace、model profile 和本地存储没问题；再运行一次 mock task，观察 runtime 如何生成 run record；然后运行 synthetic benchmark，理解它为什么只是 harness 自检；最后再接真实模型。这个顺序能避免把环境问题、runtime 问题、模型问题混在一起。
+
+如果你想改代码，不要先找最大功能。先做一个小 eval scenario 或一个小工具修复。改之前写清成功条件，改之后跑 targeted test，再看 artifact。这样你会真正理解“verification-native”是什么意思。很多人一上来想做记忆系统、subagent 编排或自动化平台，结果连 verification evidence 都没搞清楚，最后只能堆功能。
+
+如果你想评价这个项目，不要只看 README，也不要只看 benchmark 分数。应该同时看 `docs/capability-backed-claims.md`、`examples/evals/capability-scorecard.json`、`tests/evals.test.ts`、`scripts/eval-benchmark.ts` 和最近的 benchmark artifact。看完这些，你才能判断一项能力是 missing、scaffolded、usable 还是 mature。
+
+如果你想把 Omni Agent 用到自己的仓库，先把边界设小。选择一个不涉及密钥、不需要外部发布、不需要大规模重构的任务，要求它改一个文件并运行验证。确认它能留下证据后，再逐步开放更复杂的工具、真实模型、automation 和 subagent。Agent 系统的使用原则是逐步扩大权限，而不是一次性放开所有能力。
+
+遇到问题时，可以按十个诊断问题自查：这次运行是什么 mode？模型 profile 是谁？任务是否有明确成功条件？工具是否真的执行成功？验证证据在哪里？有没有 artifact？是否用了旧记忆？是否触发审批或安全阻断？benchmark suite 是否变过？README 的声明有没有对应 scorecard？如果这十个问题答不上来，就不要急着得出“模型强”“模型弱”“项目成熟”“项目不行”这类结论。先补证据，再下判断。
+
+这也是本章想建立的基本习惯：把感觉变成问题，把问题变成证据，把证据变成行动。新手和熟手的区别不在于熟手永远不犯错，而在于熟手能更快知道错在模型、工具、runtime、任务、评测还是文档声明。
+
+如果你只记住一句话，就记住这一句：Agent 工程里的每一个结论都应该能回到运行证据。说模型弱，要能指向失败 trace；说工具危险，要能指向被绕过的边界；说 benchmark 可信，要能指向 mode、suite、artifact 和 baseline；说能力成熟，要能指向 scorecard、测试、scenario、runbook 和恢复证据。没有证据的结论，最多是猜测。真正的学习不是背会术语，而是在每一次失败后都能把猜测压缩成可验证的问题，再把验证结果写回测试、文档或报告，形成下一次不会重复犯错的约束。
+
+这样读 Omni Agent，你会更慢一点，但每一步都会更扎实：先分清模式，再检查证据；先看边界，再谈能力；先保留失败，再修复系统。等这些习惯建立起来，你再看任何 Agent 项目，都会自然地追问它的验证、风险和证据，而不是被表层演示牵着走，也能更快判断哪些地方值得投入时间，哪些说法还需要继续追证，哪些结论应该暂时保留，哪些问题必须马上修复并记录复盘，哪些证据需要长期保存，哪些改动需要再次验证。
+
+### 27.15 本章练习
+
+第一个练习：任选 README 中的一句能力描述，判断它是否可能被误解。把它改写成更准确的 capability-backed claim。
+
+第二个练习：运行一次 synthetic benchmark，写三句话说明它能证明什么、不能证明什么、下一步如何变成真实模型评测。
+
+第三个练习：设计一个工具误用失败样本。说明工具 contract 中哪个字段不清楚，会导致模型做错什么。
+
+第四个练习：找一条 memory 相关任务，说明哪些信息应该进入长期记忆，哪些只应该保留在当前 run artifact 中。
+
+第五个练习：写一个 subagent 任务拆分方案。必须写清每个子 Agent 的职责、写入范围、预算和返回证据。
+
+第六个练习：从 OWASP LLM Top 10 中挑一个风险，说明它在本地 coding Agent 中可能怎样出现，并写一个最小防护测试想法。
+
+### 27.16 本章参考资料
+
+- Omni Agent paradigms: [`docs/omni-agent-paradigms.md`](../../docs/omni-agent-paradigms.md)
+- Verification-native runtime: [`docs/verification-native-runtime.md`](../../docs/verification-native-runtime.md)
+- Capability-backed claims: [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)
+- Governed subagents: [`docs/governed-subagents.md`](../../docs/governed-subagents.md)
+- Agent run artifacts: [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)
 - Anthropic building effective agents: [https://www.anthropic.com/engineering/building-effective-agents](https://www.anthropic.com/engineering/building-effective-agents)
+- Anthropic demystifying evals for AI agents: [https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
 - OpenAI function calling guide: [https://platform.openai.com/docs/guides/function-calling](https://platform.openai.com/docs/guides/function-calling)
-- OWASP LLM Top 10: [https://genai.owasp.org/owasp-top-10-for-llm-applications/](https://genai.owasp.org/owasp-top-10-for-llm-applications/)
+- OWASP Top 10 for LLM Applications: [https://genai.owasp.org/owasp-top-10-for-llm-applications/](https://genai.owasp.org/owasp-top-10-for-llm-applications/)
 
 ## 28. 维护长期 Benchmark 历史
 
