@@ -7876,142 +7876,239 @@ release gate 失败时，先定位失败层级。
 - npm scripts documentation: [https://docs.npmjs.com/cli/v10/using-npm/scripts](https://docs.npmjs.com/cli/v10/using-npm/scripts)
 ## 30. 给贡献者的学习路径
 
+一个好的开源项目，不能只欢迎贡献者，还要告诉贡献者怎样安全地进入系统。Omni Agent 是一个 verification-native local coding-agent runtime，它的贡献门槛不是“会不会写 TypeScript”这么简单。贡献者还需要理解 runtime、tools、workspace、approvals、memory、gateway、evals、benchmark、release gate 和安全边界之间的关系。否则，哪怕提交的代码能跑，也可能让项目更难验证、更难发布，或者让 README 写出超过证据范围的能力声明。
 
-本章讨论的是：帮助新贡献者从文档、测试、局部修复、eval scenario 到安全敏感改动逐步上手。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章的目标，是把贡献者从“想帮忙，但不知道从哪里开始”带到“能选择合适任务，写出可 review 的补丁，并给出足够证据”。核心参考文件是 [`CONTRIBUTING.md`](../../CONTRIBUTING.md)。这份文档已经把项目偏好说得很清楚：贡献应该 practical、testable，并且 honest about what has actually been verified。翻成工程语言，就是改动要解决真实问题，要能用测试或 eval 证明，要诚实说明证据边界。
 
+### 30.1 先理解项目欢迎什么贡献
 
-### 30.1 本章先建立的心智模型
+`CONTRIBUTING.md` 把有价值的贡献分成几类：清晰复现的 bug report；让 CLI、tool execution、workspace、approvals、memory、gateway 或 model profiles 更可靠的小型 runtime 修复；提升覆盖率且区分 synthetic、mock runtime 和 real-model evidence 的 eval fixture；帮助新开发者理解系统但不隐藏限制的文档；模型 provider 兼容性修复；文件访问、命令执行、审批、密钥和 trace redaction 相关安全改进。
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，contributor、small issue 和 review 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这几类贡献有一个共同点：它们都能被证据验证。比如一个 workspace bugfix 可以用 `tests/workspace.test.ts` 或一个 release-local scenario 证明；一个 eval fixture 可以用 `npm run eval:smoke` 或 `npm run eval:benchmark` 证明；一个安全改动可以用 safety tests、diagnostics 和 security 文档证明；一个文档改动虽然不一定需要单元测试，但它应该让读者更准确地理解命令、边界和证据。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，onboarding、test 和 ownership 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+文档也明确说了什么不欢迎：不要把 synthetic benchmark 说成真实模型能力；不要在没有 executor mode、model profile、trace、cost、duration 和 failure reason 的情况下增加 benchmark claim；不要提交和具体失败无关的大重写；不要增加没有实现支撑的 speculative abstraction；不要提交 secrets、local logs、private traces、generated build output 或 machine-specific files。
 
-本章反复出现的关键词包括：`contributor`、`onboarding`、`small issue`、`test`、`review`、`ownership`、`style`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+这对新贡献者很重要。很多人刚进入 Agent 项目时，会想做“大功能”：更聪明的 planner、更复杂的 memory、更自动的工具、更漂亮的 dashboard。但 Omni Agent 当前更需要的是可验证能力。一个小修复如果带有清楚复现、针对性测试和失败解释，价值高于一个大而泛的重写。
 
-### 30.2 在仓库中找到入口
+### 30.2 第一周应该怎么读仓库
 
-阅读本章时，建议从下面这些文件开始：
+贡献者第一周不要从全量源码开始。更好的顺序是先读三类文件。
 
-1. [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`docs/operations.md`](../../docs/operations.md)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`tests`](../../tests)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`package.json`](../../package.json)：用来观察本章在仓库中的实现、测试或运维入口。
+第一类是项目定位文件：`README.md`、`README.zh.md`、`CONTRIBUTING.md`、`docs/security.md`、`docs/operations.md`、`docs/release-checklist.md`。这些文件告诉你项目对外怎么说自己，哪些能力已经声明，哪些风险需要控制，发布前需要跑哪些 gate。如果你不读这些文件，就很容易写出和项目方向相反的补丁。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，small issue、review 和 style 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二类是命令入口：`package.json`、`apps/cli/src/index.ts`、`scripts/run-tests.mjs`、`scripts/eval-benchmark.ts`、`scripts/eval-release-local.ts`、`scripts/release-check.ts`。这些文件告诉你维护者如何验证项目。贡献者不需要马上理解所有实现，但必须知道 `npm run typecheck`、`npm test`、`npm run eval:smoke`、`npm run eval:benchmark`、`npm run release:check` 分别意味着什么。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+第三类是测试和 examples：`tests`、`examples/evals/suite.json`、`examples/evals/release-local.json`、`examples/evals/capability-scorecard.json`。测试告诉你项目保护了哪些行为，examples 告诉你项目实际用什么任务证明能力。对 Agent runtime 来说，examples 不是装饰，它们是可执行合同的一部分。
 
-### 30.3 它在一次 Agent 任务中怎样出现
+第一周的目标不是“读完所有源码”，而是建立地图。你应该能回答：CLI 入口在哪里，runtime 主循环在哪里，workspace 逻辑在哪里，tools 在哪里，evals 在哪里，release gate 在哪里，安全文档在哪里。只要地图清楚，后面接 issue 时就不容易乱改。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，test、ownership 和 contributor 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 30.3 从哪类 issue 开始
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+新贡献者最适合从四类任务开始。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+第一类是文档澄清。比如某个命令缺少上下文、某个 benchmark 模式解释不清、某个错误信息没有指向排查路径。文档改动看似简单，但在 Omni Agent 里非常重要，因为项目强调 capability-backed claims。好的文档贡献不是写广告词，而是把“能证明什么、不能证明什么、怎么复现”写清楚。
 
-### 30.4 设计时最容易忽略的边界
+第二类是小测试补充。比如某个 helper 已经存在，但边界条件没有测试；某个 eval expectation 字段已经实现，但没有负例；某个 safety redaction 规则需要覆盖新的 secret 形态。这类任务能帮助贡献者熟悉代码风格，也不会一开始就触碰复杂 runtime。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，review、style 和 onboarding 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第三类是局部 bugfix。局部 bugfix 应该有清晰复现：输入是什么，预期是什么，实际是什么，错误日志或 artifact 在哪里。贡献者应该先写或找到能复现问题的测试，再改代码。没有复现的 bugfix，很容易变成“看起来修了”，但下次又坏。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+第四类是 eval fixture 改进。比如新增一个真实失败样本、补充一个 release-local scenario、把一个模糊 expectation 改成更具体的 tool evidence。Eval 贡献要特别注意 executor mode。Synthetic 证明 harness，mock 证明 runtime path，real-model 才能支持模型能力结论。贡献者必须在 PR 里写清自己提供的是哪种证据。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+新贡献者不应该一开始做三类任务：跨模块大重构、默认安全策略修改、公开能力声明升级。大重构需要深刻理解目录边界；安全策略修改可能影响文件访问、命令执行和密钥保护；能力声明升级必须有 scorecard、eval、trace 和 release evidence。没有这些基础，改动很难 review。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+### 30.4 如何写一个可 review 的补丁
 
-### 30.5 如何判断实现是否可靠
+可 review 的补丁有四个特征：范围小，动机清楚，证据明确，剩余风险诚实。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，ownership、contributor 和 small issue 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+范围小不是说改动行数必须少，而是每一处修改都能追到同一个目标。如果你修 eval expectation，就不要顺手重排 README；如果你改 model profile 诊断，就不要同时重构 workspace；如果你补文档，就不要顺手格式化整份教程。维护者 review 时需要判断行为变化，混入无关改动会增加成本。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+动机清楚是指 PR 应该说明为什么要改。最好的动机来自失败样本：某个测试没覆盖，某个命令报错，某个 eval 报告误导，某个文档让读者误解。不要只写“improve code quality”。如果真的只是清理，也要说明清理降低了什么风险。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+证据明确是指 PR 描述里要列出运行过的命令和结果。比如：`npm run typecheck` 通过；`node ./scripts/run-tests.mjs tests/evals.test.ts` 通过；`npm run eval:smoke` 通过；如果没有跑全量测试，要写原因。证据不是为了形式，而是让 reviewer 知道你验证到哪一层。
 
-### 30.6 常见误区
+剩余风险诚实是指不要把局部验证包装成全局结论。你只跑了 `tests/evals.test.ts`，就说“eval parser 相关测试通过”；不要说“系统稳定”。你只跑了 mock runtime，就说“runtime path 证据通过”；不要说“真实模型能力提升”。这种诚实会让维护者更容易合并你的贡献。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，style、onboarding 和 test 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 30.5 贡献者如何选择测试命令
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+`CONTRIBUTING.md` 推荐先跑：
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+```bash
+npm run typecheck
+npm test
+```
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+但实际开发时，不一定每次都先跑全量测试。更高效的做法是先跑最小相关测试，再在提交前扩展验证。
 
-### 30.7 一个可操作的检查流程
+如果你改 gateway，先跑：
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+```bash
+node ./scripts/run-tests.mjs tests/gateway.test.ts
+```
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，contributor、small issue 和 review 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果你改 evals，先跑：
 
-### 30.8 与真实模型评测的关系
+```bash
+node ./scripts/run-tests.mjs tests/evals.test.ts
+npm run eval:smoke
+```
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，onboarding、test 和 ownership 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果你改 model client 或 provider profile，先跑：
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+```bash
+node ./scripts/run-tests.mjs tests/model-client.test.ts
+```
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+如果你改 workspace、checkpoint、patch 或 rollback，先跑 workspace 相关测试，再根据影响范围跑 runtime 或 CLI 测试。如果你改 safety、redaction、credentials 或 approval，必须补安全相关测试，并检查 `docs/security.md` 是否需要更新。
 
-### 30.9 一个完整的小案例
+最后，按照改动风险决定是否跑更大 gate。文档拼写不需要 `release:check`；runtime 安全边界修改通常需要 targeted test、eval smoke、diagnostics 和 release checklist 更新；公开能力声明升级需要 scorecard、eval evidence、benchmark 或 release-local artifact。测试范围应该和风险匹配。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+### 30.6 Eval 贡献怎么写证据
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+Eval 贡献最容易犯的错误，是只新增 scenario，却不说明它证明什么。一个高质量 eval scenario 应该写清任务目标、输入 fixture、成功标准、约束、verification command、expected tool evidence 和失败解释。它不应该只依赖“最终回答包含某句话”。
 
-这个案例强调的是工程诚实。 在本章语境中，small issue、review 和 style 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果是 deterministic 或 heuristic eval，要说明判断规则为什么足够。比如要求 `run_verification` 成功，比要求最终回答说“测试通过”更强；要求 `requiredSuccessfulToolNames` 包含某个工具，比只要求 `requiredToolNames` 更强；要求 artifact 里出现 run id、thread id、duration 和 tool events，比只看 summary 更可复盘。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+如果是 mock 或 release-local eval，要说明它验证的是 runtime path，不是模型能力。比如 release-local 证明 CLI eval 能走 runtime、工具事件能记录、verification 能执行、checkpoint 或 subagent evidence 能留下。它不能证明某个真实模型在真实仓库 issue 上有多强。
 
-### 30.10 排错时的分层问题表
+如果是真实模型 eval，要保存 model provider、model name、model profile、executor mode、task suite version、trace 或 summary、cost、duration、pass/fail 和每个失败任务的原因。如果这些字段缺失，就不要把结果写成公开能力 claim。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+贡献者还要注意 dataset version。修改 `examples/evals/suite.json` 可能影响长期 benchmark 历史。如果 scenario 数量、难度或 judge 规则变化，PR 应该说明这会让旧分数和新分数不能直接比较。
 
-分层排错能减少无效尝试。 在本章语境中，test、ownership 和 contributor 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 30.7 安全敏感贡献的额外要求
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+安全相关贡献包括但不限于：文件访问、路径校验、命令执行、approval policy、secret handling、trace redaction、tool result redaction、credential pool、MCP allowlist、browser screenshot artifact、model routing diagnostics、memory provider 写入。这类改动不能只靠 happy path 测试。
 
-### 30.11 如何把本章内容写进团队流程
+安全 PR 至少要回答五个问题。第一，保护的资产是什么：用户文件、密钥、命令权限、私有 trace、模型 profile，还是 workspace 状态。第二，攻击或误用路径是什么：路径逃逸、命令注入、prompt injection、未授权工具调用、明文日志，还是错误审批。第三，防护发生在哪一层：tool schema、workspace guard、approval policy、safety redaction、diagnostics，还是 release gate。第四，如何测试失败路径。第五，文档是否告诉用户怎样配置和避免误用。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+如果涉及密钥或漏洞，不要在公开 issue 里贴 exploit 细节、真实 token、私有 trace 或可直接复现的攻击 payload。`CONTRIBUTING.md` 已经说明：涉及 secrets、command execution、workspace escape、prompt injection、unsafe approvals 或 private traces 的问题，应使用仓库安全报告流程或联系维护者。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，review、style 和 onboarding 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+安全贡献的目标不是让系统“看起来更安全”，而是让风险边界更明确。一个小的 redaction 测试、一个明确的 path escape negative case、一个 diagnostics marker，往往比大段安全愿景更有用。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+### 30.8 PR 描述模板
 
-### 30.12 练习
+贡献者可以用下面的结构写 PR 描述：
 
-1. 围绕 `contributor` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `onboarding` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `small issue` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `test` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `review` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `ownership` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+```markdown
+## What changed
+- 简短说明改了什么。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+## Why
+- 对应的 bug、issue、文档误解、eval 缺口或安全风险。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+## Evidence
+- `npm run typecheck`
+- `node ./scripts/run-tests.mjs ...`
+- `npm run eval:smoke` 或其他相关命令
+- artifact 路径或报告文件
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+## Scope limits
+- 这次没有证明什么。
+- 哪些场景仍需要后续工作。
 
-### 30.13 本章参考资料
+## Risk
+- 是否触碰 runtime、安全、模型、workspace、eval 或 release gate。
+```
 
-- Omni Agent: [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)
+这个模板的重点是 `Scope limits`。很多 PR 会写自己做了什么，但不写自己没有证明什么。对 Omni Agent 来说，边界说明非常重要。比如“本 PR 增加 mock eval evidence，但没有运行真实模型 benchmark”；“本 PR 更新文档，没有改 runtime 行为”；“本 PR 修复 OpenAI-compatible profile parsing，但没有验证 Anthropic client”。这些话能减少 review 中的误解。
+
+### 30.9 维护者如何 review 贡献
+
+维护者 review 时，不应该只看代码是否漂亮。应该按四层检查。
+
+第一层是目标。这个 PR 是否解决了一个真实问题？是否和 issue、失败样本、文档缺口或能力证据相关？如果目标不清，应该先要求作者收窄范围。
+
+第二层是边界。改动是否触碰了不该触碰的模块？有没有顺手改格式、重排文档、删除无关代码、引入大抽象？如果有，应该要求拆分。Omni Agent 这种 runtime 项目，边界清楚比一次性大改更重要。
+
+第三层是证据。测试是否覆盖了新行为？失败路径是否覆盖？eval mode 是否写清？如果作者只提供截图或自然语言描述，维护者应该要求命令输出、artifact 或测试。
+
+第四层是声明。PR 是否修改 README、tutorial、scorecard 或 release 文档？如果修改了公开声明，是否有足够证据支撑？如果没有，就要降级措辞。项目可信度来自声明和证据一致。
+
+### 30.10 一条推荐学习路线
+
+第一阶段，只做读者。读 README、CONTRIBUTING、security、operations、release checklist 和本教程前十章。目标是能解释 Omni Agent 为什么强调 verification、artifact 和 eval mode。
+
+第二阶段，做运行者。安装依赖，跑 `npm run typecheck`，跑一个 targeted test，跑 `npm run eval:smoke`，打开生成的 artifact。目标是知道命令和证据之间的关系。
+
+第三阶段，做小修复者。选择一个文档澄清、小测试或局部 bugfix。写清问题、改动、验证和剩余风险。目标是提交一个容易 review 的小 PR。
+
+第四阶段，做 eval contributor。新增或改进一个 scenario，写清 executor mode、expectation 和失败解释。目标是理解 benchmark 不是分数表，而是证据合同。
+
+第五阶段，做 runtime contributor。开始处理 tools、workspace、approvals、memory、gateway 或 model profile 的局部问题。目标是能在不破坏边界的情况下修改核心系统。
+
+第六阶段，做 release-aware contributor。改动能力声明、scorecard、security boundary 或 deployment 时，主动考虑 release gate、maturity check、diagnostics 和 release notes。目标是让贡献从代码层进入发布层。
+
+### 30.11 前三个实战任务
+
+如果你不知道从哪里开始，可以按下面三个任务进入项目。它们不要求你理解全部 runtime，但会逼你学习最重要的贡献习惯。
+
+第一个任务是“文档到命令的校准”。选择教程或 README 中的一条命令，亲自运行它，然后检查文档是否告诉读者运行前需要什么条件、运行后应该看到什么、失败时应该看哪里。比如 `npm run eval:benchmark` 默认是 synthetic，这一点必须写清；如果文档让读者误以为它证明真实模型能力，就应该修正文案。这个任务的产出可以是一段文档改动，但验证方式应该包括实际命令、输出摘要和你修正的误解。
+
+第二个任务是“给一个现有测试补负例”。很多功能都有成功路径测试，但缺少失败路径。你可以找一个 parser、normalizer、safety helper、eval expectation 或 workspace guard，增加一个失败样本。负例的价值在于它能防止未来维护者误删边界。比如 path escape、空 verification command、缺少 required successful tool、明文 secret 进入 trace，这些都比普通 happy path 更能体现 Agent runtime 的安全性。
+
+第三个任务是“把一个模糊 eval 变具体”。找一个 scenario，检查它的 expectation 是否只依赖最终回答。如果是，就尝试增加更具体的证据要求，例如 required tool、successful tool、verification status、artifact 字段或 final response includes。这个任务会让你理解 eval 不是写题目，而是写判定合同。完成后，PR 里必须说明新 expectation 比旧 expectation 强在哪里，是否会影响历史 benchmark 可比性。
+
+这三个任务都很小，但它们覆盖了文档、测试和 eval 三条主线。做完之后，你会知道 Omni Agent 为什么反复强调证据。你也会更容易判断后续任务需要哪种验证：文档任务需要复现命令，测试任务需要失败样本，eval 任务需要 executor mode 和判分解释。
+
+### 30.12 贡献升级标准
+
+贡献者可以按照证据能力升级，而不是按照改动大小升级。
+
+第一层是能提交清楚文档。你能发现读者会误解的地方，并用准确语言解释 mode、命令、artifact、限制和下一步。这个阶段不要求你改核心代码，但要求你不写夸大文案。
+
+第二层是能补测试。你能找到某个局部行为的边界，写出成功和失败样本，并说明测试保护什么风险。到了这一层，你已经开始帮助项目减少回归。
+
+第三层是能改局部 runtime。你能在一个模块内修复问题，保持改动范围小，运行 targeted test，并在 PR 里列出剩余风险。这个阶段要特别注意不要顺手重构邻近代码。
+
+第四层是能设计 eval。你能把真实失败转成 scenario，区分 synthetic、mock 和 real-model 证据，写出清楚 expectation，并解释判分结果。这一层贡献会直接影响项目对外声明能力，所以必须谨慎。
+
+第五层是能处理发布和安全边界。你能修改 scorecard、release checklist、diagnostics、security docs 或 deployment，并知道什么时候需要 full gate。到了这一层，你不只是写代码，而是在维护项目可信度。
+
+如果你是维护者，也可以用这五层给 issue 打标签：`docs-first`、`test-boundary`、`runtime-local`、`eval-evidence`、`release-security`。这样新贡献者不会一上来就拿到高风险任务，老贡献者也能看到下一步成长方向。
+
+### 30.13 贡献者常见误判
+
+第一个误判，是把“我能复现”当成“别人能复现”。你在自己的机器上跑通一次，不代表维护者能在 CI、Windows、Linux 或干净安装环境里复现。PR 里应该写命令、环境、输入文件和输出摘要。涉及模型时，还要写 provider、model profile 和 mode。没有这些信息，reviewer 只能猜。
+
+第二个误判，是把“代码更抽象”当成“代码更好”。Omni Agent 不欢迎为了未来可能性而增加的大抽象。一个 helper 如果只被调用一次，不一定需要抽象；一个 interface 如果没有第二个实现，不一定需要存在。贡献者应该先解决具体问题，等重复和复杂度真的出现，再考虑抽象。
+
+第三个误判，是把“最终回答更好看”当成“Agent 更可靠”。对 coding agent 来说，最终回答只是证据的摘要，不是证据本身。你应该关注工具是否正确执行、验证是否通过、artifact 是否保存、失败是否可解释。一个回答写得漂亮但没有 tool evidence 的改动，不应该被当成 runtime 能力提升。
+
+第四个误判，是把“测试通过”当成“公开声明可以升级”。测试通过只能证明测试覆盖的范围。要把能力从 experimental 改成 mature，还需要 scorecard、mature criteria、blockedBy、liveOrContractTests、eval evidence、release gate 和文档说明。贡献者如果想升级公开声明，应该先补证据，而不是先改 README。
+
+第五个误判，是把“安全改动没有报错”当成“安全”。安全贡献必须包含负例：路径逃逸应该被拒绝，危险命令应该被审批阻断，secret 应该被脱敏，private trace 不应该进入公开 artifact。没有负例的安全改动，很难证明它真的挡住了风险。
+
+第六个误判，是把“我改得多”当成“贡献大”。在这个项目里，最有价值的贡献往往很小：一个准确的 failure reason，一个可复现的 bug report，一个缺失的 negative test，一个清楚的 eval expectation，一个修正夸大 claim 的文档段落。这些改动看起来不炫，但会持续提高项目可信度。
+
+判断一项贡献是否完成，可以问四个问题。第一，问题是否被清楚描述，读者能否知道为什么要改。第二，改动是否集中，reviewer 能否在短时间内看出影响范围。第三，验证是否匹配风险，测试、eval、artifact 或文档是否覆盖了新行为。第四，公开表述是否克制，是否避免把局部证据扩展成全局能力。四个问题都能回答，贡献才算真正进入项目质量体系。
+
+贡献者还应该学会主动降低维护成本。比如在 PR 中标出“只改文档”“只影响 eval parser”“触碰 safety boundary”“需要 release diagnostics”，维护者就能更快安排 review。清楚标注风险，是对维护者时间的尊重，也是成熟贡献者的重要能力。
+
+如果 reviewer 要求补证据，不要把它理解成不信任贡献者。Agent runtime 的改动经常跨越模型、工具、文件系统和评测报告，口头确认很难长期保存。补一条测试、补一个 artifact 路径、补一句 scope limit，都是在把当前判断变成项目未来还能使用的事实，也能让后续贡献者沿着同一条证据路径继续工作，减少重复解释和反复返工，形成稳定协作习惯，提高项目可信度和长期可维护性，并帮助新人学习项目判断方法。
+
+### 30.14 练习
+
+1. 阅读 `CONTRIBUTING.md`，列出三类项目欢迎的贡献和三类项目不欢迎的贡献。
+2. 找一个你认为适合新手的文档问题，写出它的改动范围和验证方式。
+3. 找一个测试文件，说明它保护了哪类 runtime 风险。
+4. 选择一个 eval scenario，解释它是 synthetic、mock 还是 real-model 证据。
+5. 写一个 PR 描述草稿，必须包含 What changed、Why、Evidence、Scope limits 和 Risk。
+6. 假设你修复了一个 workspace bug，列出最小测试、扩展测试和发布前可能需要的 gate。
+7. 假设你新增了一个 benchmark claim，列出必须保存的 model profile、trace、cost、duration 和 failure reason 字段。
+8. 假设你发现一个 secret redaction 问题，写出应该公开说什么、不应该公开说什么。
+
+完成这些练习后，你应该能判断自己适合从哪类贡献开始。贡献者不需要一开始理解所有源码，但必须学会用证据说话。对 Omni Agent 来说，一个小而可验证的贡献，比一个大而无法复盘的改动更有价值。
+
+### 30.15 本章参考资料
+
+- Omni Agent: [`CONTRIBUTING.md`](../../CONTRIBUTING.md)
+- Omni Agent: [`docs/security.md`](../../docs/security.md)
 - Omni Agent: [`docs/operations.md`](../../docs/operations.md)
+- Omni Agent: [`docs/release-checklist.md`](../../docs/release-checklist.md)
 - Omni Agent: [`tests`](../../tests)
-- Omni Agent: [`package.json`](../../package.json)
-- GitHub contributing guide: [https://docs.github.com/en/get-started/exploring-projects-on-github/contributing-to-a-project](https://docs.github.com/en/get-started/exploring-projects-on-github/contributing-to-a-project)
-- Anthropic building effective agents: [https://www.anthropic.com/engineering/building-effective-agents](https://www.anthropic.com/engineering/building-effective-agents)
-- OpenAI evals guide: [https://platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
-
+- Omni Agent: [`examples/evals/suite.json`](../../examples/evals/suite.json)
+- GitHub Docs: [Contributing to a project](https://docs.github.com/en/get-started/exploring-projects-on-github/contributing-to-a-project)
+- OpenAI evaluation best practices: [https://platform.openai.com/docs/guides/evaluation-best-practices](https://platform.openai.com/docs/guides/evaluation-best-practices)
+- Anthropic: Building effective agents: [https://www.anthropic.com/engineering/building-effective-agents](https://www.anthropic.com/engineering/building-effective-agents)
 ## 31. 源码阅读路线：第一次读代码应该从哪里开始
 
 
