@@ -5800,140 +5800,208 @@ Regression:
 ## 21. 学习路线与练习题
 
 
-本章讨论的是：把读者从运行命令带到源码阅读、评测设计、安全治理和真实模型报告。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+前二十章已经把 Omni Agent 的核心概念、源码入口、真实模型评测和失败复盘讲完。本章不再增加新的系统概念，而是把这些内容整理成学习路线。读者不应该只“读完教程”，而应该通过一组可验证练习，逐步获得三种能力：能运行项目，能解释源码，能用证据判断一个 Agent 能力声明是否可信。
 
+学习 Agent runtime 最容易走偏的地方，是把所有时间花在概念上。你可以背出 tool、memory、benchmark、subagent、trace 的定义，但真正遇到一个失败 run 时仍然不知道看哪里。本章的路线避免这种问题：每一阶段都给出阅读材料、操作任务、交付物和检查标准。只有交付物合格，才进入下一阶段。
 
-### 21.1 本章先建立的心智模型
+### 21.1 学习路线的总体结构
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，learning path、review 和 project practice 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这套路线分三层。第一层是 7 天入门路线，目标是能在本地运行项目、读懂目录、知道 CLI 和 eval 的基本入口。第二层是 4 周工程路线，目标是能独立分析一个功能、写一个小测试、跑一次 benchmark、写一份失败复盘。第三层是贡献者路线，目标是能提交一个小功能、补充 eval scenario、维护报告和文档。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，exercise、rubric 和 checkpoint 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这三层不是按阅读速度划分，而是按证据能力划分。7 天路线结束时，你应该能证明自己“会用”。4 周路线结束时，你应该能证明自己“会查”。贡献者路线结束时，你应该能证明自己“会改、会测、会解释”。如果一个读者只看完 README，却没有跑过任何命令、没有打开过 `packages`、没有读过测试，就还没有真正进入这个项目。
 
-本章反复出现的关键词包括：`learning path`、`exercise`、`review`、`rubric`、`project practice`、`checkpoint`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+学习材料的入口主要有四类。第一类是项目说明，例如 [`README.zh.md`](../../README.zh.md) 和本教程。第二类是源码，例如 runtime、eval、tools、workspace、approvals、model-client。第三类是测试，例如 [`tests`](../../tests) 目录下的 runtime、eval、tools、gateway、model-client 测试。第四类是真实评测材料，例如 [`examples/evals/complex-suite.json`](../../examples/evals/complex-suite.json)、benchmark artifact、DeepSeek system test 报告。
 
-### 21.2 在仓库中找到入口
+### 21.2 第 1 天：把项目跑起来
 
-阅读本章时，建议从下面这些文件开始：
+第一天只做一件事：确认本地环境能运行项目。不要急着理解所有源码。先安装依赖，查看 package scripts，运行最小命令。你要知道项目使用哪些脚本，例如 `npm run typecheck`、`node ./scripts/run-tests.mjs tests/evals.test.ts`、`pnpm eval:smoke`、`pnpm eval:benchmark`、`pnpm dev -- models`。这些命令是之后所有学习的地基。
 
-1. [`README.zh.md`](../../README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`examples/evals/complex-suite.json`](../../examples/evals/complex-suite.json)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`tests`](../../tests)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
+第一天的交付物是一份本地运行记录，至少包含：Node 和包管理器版本、依赖安装是否成功、运行了哪些命令、哪些命令通过、哪些命令失败、失败原因是否和环境有关。不要只写“跑通了”。好的记录应该能让另一个人照着复现。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，review、project practice 和 learning path 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一天的检查标准很简单：你能解释 `typecheck`、单测、smoke eval、benchmark 的区别。`typecheck` 检查 TypeScript 项目引用和类型关系；单测检查某个模块的具体行为；smoke eval 检查 eval 入口是否基本可用；benchmark 检查 suite、executor、artifact、报告路径是否连通。你不需要当天掌握所有实现，但必须知道每条命令证明什么。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+### 21.3 第 2 天：读目录，不读细节
 
-### 21.3 它在一次 Agent 任务中怎样出现
+第二天目标是建立项目地图。打开 [`README.zh.md`](../../README.zh.md) 和第 5 章的目录地图，对照仓库根目录看：`apps` 是用户入口，`packages` 是核心模块，`tests` 是行为合同，`examples` 是 fixture 和 eval suite，`docs` 是解释和运维材料，`scripts` 是构建、评测和发布辅助入口。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，rubric、checkpoint 和 exercise 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这一天不要逐行读实现。你只要为每个目录写一句职责说明。例如：`packages/core-runtime` 负责 agent run 主循环；`packages/evals` 负责 suite、observed run、scoring 和 benchmark 报告；`packages/tools` 负责工具注册、执行边界和输出呈现；`packages/approvals` 负责风险分类和审批策略；`packages/session-store` 负责 run、message、artifact 的持久化。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+第二天的交付物是一张“模块到问题”的表。表里至少要有三列：我想查什么问题、应该先看哪个模块、应该用什么测试验证。比如“为什么工具被拒绝”先看 approvals 和 tools，验证命令是 `tests/approvals.test.ts` 与 `tests/tools.test.ts`；“为什么 benchmark 通过但不能说明真实模型能力”先看 eval scripts 和 suite，验证命令是 `pnpm eval:benchmark` 的 mode 差异。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+### 21.4 第 3 天：沿着一条 CLI 命令读调用链
 
-### 21.4 设计时最容易忽略的边界
+第三天选择一条命令做深读，不要同时读所有命令。推荐从 `pnpm dev -- models` 或 eval 命令开始，因为它们比完整交互式 agent run 更容易追踪。你的目标是知道命令从 `apps/cli/src/index.ts` 进入后，如何读取配置、如何找到 model profile、如何调用 package 层能力、如何输出结果。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，project practice、learning path 和 review 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+读调用链时要做三件事。第一，画入口图：CLI 参数进入哪里，哪个函数解析，哪个模块执行。第二，标出数据结构：profile、suite、observedRun、artifact、diagnostics 等对象在哪里产生。第三，写下验证命令：读懂调用链后，运行对应测试或脚本，确认你的理解和实际行为一致。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+第三天的交付物是一张调用链图，可以是文字版：
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+```text
+CLI command
+-> apps/cli/src/index.ts parses command
+-> loads config and model profiles
+-> calls package API
+-> formats diagnostics
+-> prints output
+```
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+这张图不要求完整覆盖所有边界，但必须能解释一个具体命令。工程学习最怕“泛泛知道项目很复杂”。只要你能完整解释一条命令，就已经有了继续读源码的支点。
 
-### 21.5 如何判断实现是否可靠
+### 21.5 第 4 天：读一个测试，理解一个合同
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，checkpoint、exercise 和 rubric 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第四天选择一个测试文件。推荐从 [`tests/evals.test.ts`](../../tests/evals.test.ts) 开始，因为 eval 测试非常适合理解“声明、运行、判分、失败原因”之间的关系。你可以选择第 19 章讲过的 `requiredSuccessfulToolNames` 测试，也可以选择 verification-native policy 测试。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+读测试时不要只看断言。先看测试名字，它通常告诉你行为合同。再看输入对象，它告诉你系统期望的最小结构。再看 fake executor 或 observed run，它告诉你测试如何制造条件。最后看 assert，它告诉你外部行为应该是什么。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+第四天的交付物是一份测试解读，结构如下：
 
-### 21.6 常见误区
+```text
+Test name:
+Protected behavior:
+Input:
+Failure condition:
+Expected result:
+Why this matters:
+Command to run:
+```
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，learning path、review 和 project practice 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果你能把一个测试解释清楚，就已经开始理解项目的工程边界。测试不是附属品，而是项目最可靠的教程之一。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+### 21.6 第 5 天：设计一个 Eval Scenario
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+第五天开始接触 benchmark。先读 [`examples/evals/complex-suite.json`](../../examples/evals/complex-suite.json)，不要一开始就改。你要观察一个 scenario 包含哪些字段：id、category、steps、objective、expectation、requiredToolNames、requiredChangedFiles、requiredFinalResponseIncludes、verificationStatus 等。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+设计 scenario 时，先写自然语言任务，再写成功标准，再写 expectation。不要反过来。一个好的 eval scenario 应该让人看懂“为什么这项能力值得评测”。例如，如果你要评测 agent 是否能修复测试，不要只写“fix bug”。要写清 fixture 中哪个文件有 bug，必须运行什么验证，最终回答必须包含什么证据，哪些文件应该被修改，哪些工具应该被调用。
 
-### 21.7 一个可操作的检查流程
+第五天的交付物是一个 draft scenario，不一定马上放进 suite。它必须包含：任务背景、目标、成功标准、失败样本、expectation 字段、验证命令、为什么不是 synthetic 自证。检查标准是：另一个人只看你的 draft，就能判断这个 scenario 想测什么能力。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+### 21.7 第 6 天：写一次失败复盘
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，exercise、rubric 和 checkpoint 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第六天读 [`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)，选择其中一个 run 写复盘。你要用第 20 章的结构：runId、model profile、status、changed files、verification、first failure、root cause、recommended fix、regression plan。
 
-### 21.8 与真实模型评测的关系
+这一天的重点是避免偷懒归因。不要写“模型太弱”。要写它是模型理解失败、工具使用失败、环境失败、审批失败、验证失败，还是评测解释失败。如果是多层失败，要说明 primary layer 和 secondary layer。比如 Flash run 的 primary layer 是危险编辑和缺少结构 guard，secondary layer 才是模型在代码保持能力上的风险。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，review、project practice 和 learning path 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第六天的交付物是一页 root cause report。检查标准是：报告能导向一个具体工程动作。比如“增加 syntax check after broad replacement”是动作；“换模型”不够具体；“优化 prompt”也不够具体，除非你说明优化哪条工具使用规则。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+### 21.8 第 7 天：做一次小贡献演练
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+第七天不要求真正提交 PR，但要模拟完整贡献流程。选择一个极小改动，例如补一段文档、给 eval 文档加一个字段解释、给测试增加一个更清楚的 assertion message、给 runbook 增加一个排查步骤。不要选择大功能。学习阶段的目标是掌握流程，不是炫耀改动规模。
 
-### 21.9 一个完整的小案例
+贡献演练的流程是：先写问题陈述，再定位文件，再写最小改动，再运行最小验证，再写提交说明。交付物包括 diff、验证命令、提交说明草稿。提交说明要包含问题、改动、验证、边界。边界非常重要，你要说明自己没有改变 runtime 行为、没有改变 benchmark 语义、没有引入新的外部依赖，除非这些确实是本次改动。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+第七天结束后，你应该能回答五个问题：项目如何启动，主要目录负责什么，一条 CLI 命令如何进入系统，一个测试如何保护行为，一个失败 run 如何复盘。如果这五个问题回答不出来，不要进入四周工程路线，先补前面的练习。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+### 21.9 四周工程路线
 
-这个案例强调的是工程诚实。 在本章语境中，rubric、checkpoint 和 exercise 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一周主题是运行和阅读。目标是把项目跑起来，读完 README、前 12 章、目录地图和一个测试文件。交付物是项目地图、命令记录、测试解读。检查标准是你能定位常见问题的第一入口。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+第二周主题是 runtime 和工具。目标是读懂一次 agent run 如何从任务进入 context、model、tool、approval、verification。交付物是一张 runtime 主循环图和一个工具失败复盘。检查标准是你能解释工具调用为什么需要审批、为什么需要 workspace 边界、为什么 final response 不能替代 verification。
 
-### 21.10 排错时的分层问题表
+第三周主题是 eval 和 benchmark。目标是读懂 suite、executor mode、observedRun、scoring、artifact 和 report。交付物是一个 eval scenario draft 和一份 synthetic/mock/openai 模式对比说明。检查标准是你不会把 synthetic benchmark 分数当成真实模型能力。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+第四周主题是真实模型和发布边界。目标是读懂 model profile、secret handling、DeepSeek/OpenAI-compatible 接入、失败复盘和 GitHub 发布材料。交付物是一份真实模型运行计划和一份 root cause report。检查标准是你能说明一次真实模型失败应该保存哪些 trace、cost、duration、failure reason 和 artifact。
 
-分层排错能减少无效尝试。 在本章语境中，project practice、learning path 和 review 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 21.10 贡献者路线
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+贡献者不应该从大重构开始。第一类适合新贡献者的任务是文档修正：把某个字段解释清楚，补上复现命令，补充失败样本。第二类是测试补强：为已有行为增加失败路径测试。第三类是 eval scenario：把一个真实失败转成可重复评测。第四类才是小功能实现，例如新增一个 expectation 字段、增加一个 report 字段、补一个 CLI diagnostics 输出。
 
-### 21.11 如何把本章内容写进团队流程
+每个贡献都要有 review rubric。文档改动的 rubric 是：是否准确、是否可复现、是否有链接、是否没有夸大能力。测试改动的 rubric 是：是否保护具体行为、是否能在失败时给出清楚错误、是否不会依赖外部模型。eval 改动的 rubric 是：是否有明确能力目标、是否有 expectation、是否记录 executor mode。代码改动的 rubric 是：是否最小、是否有测试、是否不破坏现有合同。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+贡献者路线的核心不是“多写代码”，而是“让项目更可证明”。一个没有证据的小功能会增加维护负担；一个带测试、文档、失败解释和验证命令的小功能，即使很小，也会提升项目可信度。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，checkpoint、exercise 和 rubric 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 21.11 教学者如何使用本章
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+如果你用这套教程带别人学习，不要让学生一口气读完整本。更好的方式是每次只讲一个主题，然后要求交付一个小证据。比如讲 workspace，就让他解释 path boundary；讲 tools，就让他读一个工具测试；讲 eval，就让他设计一个 scenario；讲真实模型，就让他写一份失败复盘。
 
-### 21.12 练习
+教学时要避免“概念问答”。问“什么是 trace”不如问“这个 run 的 first failure 在哪里”。问“什么是 eval”不如问“这个 scenario 的 expectation 能不能证明能力”。问“模型为什么失败”不如问“失败属于哪一层，证据是什么，下一步修哪里”。这样的提问会把学习者拉回工程现场。
 
-1. 围绕 `learning path` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `exercise` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `review` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `rubric` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `project practice` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `checkpoint` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+可以使用三种评分等级。入门合格：能运行命令、能找到文件、能解释一个测试。工程合格：能设计 scenario、能写 root cause report、能区分 synthetic/mock/openai。贡献合格：能做一个最小改动、能补测试、能写清楚 PR 边界。评分不要看读了多少页，要看是否留下可复查交付物。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+### 21.12 练习题组
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+第一组是运行练习。运行 `npm run typecheck`，记录结果；运行 `node ./scripts/run-tests.mjs tests/evals.test.ts`，解释至少一个测试；运行 `pnpm eval:smoke`，说明它证明什么、不证明什么。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+第二组是源码练习。选择 `packages/evals/src/index.ts`、`packages/core-runtime/src/index.ts` 或 `packages/tools/src/index.ts` 中一个文件，写出入口函数、核心类型、失败路径和对应测试。不要试图总结整个文件，只总结一个行为。
 
-### 21.13 本章参考资料
+第三组是评测练习。设计一个 scenario，要求 agent 修改一个文件、调用一个验证工具、最终回答包含证据。写出 expectation 字段，并说明为什么 `requiredToolNames` 和 `requiredSuccessfulToolNames` 是否需要同时使用。
 
-- Omni Agent: [`README.zh.md`](../../README.zh.md)
-- Omni Agent: [`examples/evals/complex-suite.json`](../../examples/evals/complex-suite.json)
-- Omni Agent: [`tests`](../../tests)
-- Omni Agent: [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)
-- Promptfoo eval guides: [https://www.promptfoo.dev/docs/guides/evaluate-prompts/](https://www.promptfoo.dev/docs/guides/evaluate-prompts/)
-- OpenAI evals guide: [https://platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
-- Anthropic building effective agents: [https://www.anthropic.com/engineering/building-effective-agents](https://www.anthropic.com/engineering/building-effective-agents)
+第四组是真实模型练习。选择 DeepSeek system test 中一个 run，写 root cause report。必须包含 runId、status、usage、turns、tool calls、failed tool calls、changed files、verification、root cause、recommended fix。
+
+第五组是贡献练习。找一处文档中描述不够清楚的字段，补一个解释和一个本地引用。运行链接检查和 `git diff --check`。写一段提交说明，明确本次只改文档，不改变 runtime 行为。
+
+### 21.13 学习日志模板
+
+每次学习都应该留下日志。日志不需要长，但要能复盘。推荐格式如下：
+
+```text
+Date:
+Chapter or file:
+Goal:
+Command:
+Result:
+Evidence:
+Question:
+Next action:
+```
+
+`Goal` 写今天想证明什么，例如“理解 eval scoring 中 requiredToolNames 的作用”。`Command` 写实际运行的命令。`Result` 写通过或失败。`Evidence` 写源码入口、测试名称、artifact 路径或报告链接。`Question` 写还没弄懂的地方。`Next action` 写下一次要做什么。这样的日志能把学习从“看过”变成“推进过”。
+
+不要写空泛日志，例如“今天学习了 eval，很有收获”。这种记录一周后就没有价值。应该写“阅读 `tests/evals.test.ts` 中 successful tool events 测试，确认 `requiredToolNames` 只检查出现，`requiredSuccessfulToolNames` 检查 `status === ok`，运行 `node ./scripts/run-tests.mjs tests/evals.test.ts` 通过”。这条记录短，但能复查。
+
+### 21.14 评分标准：怎样算真的学会
+
+入门阶段的评分看三件事。第一，你能否在本地运行至少一个检查命令。第二，你能否用自己的话解释一个目录的职责。第三，你能否指出一个测试保护的行为。如果三件事都做不到，就说明还停留在阅读表层。
+
+工程阶段的评分看五件事。第一，你能否画出一条命令的调用链。第二，你能否找到一个失败的 first failure。第三，你能否区分模型失败、工具失败、环境失败和评测解释失败。第四，你能否设计一个 eval scenario，并说明 expectation 字段。第五，你能否写一个最小验证命令，而不是一上来跑所有 CI。
+
+贡献阶段的评分看六件事。第一，改动是否小。第二，是否有测试或文档证据。第三，是否说明不改变哪些合同。第四，是否运行了对应验证。第五，提交说明是否能让 reviewer 快速理解风险。第六，是否避免把 synthetic 或 mock 的结果夸大成真实模型能力。
+
+这套评分标准看起来严格，但它能过滤很多假学习。Agent 项目很容易让人产生“我懂了”的错觉，因为概念听起来都合理。真正的判断标准只有一个：你能不能拿着一个具体失败、一个具体测试、一个具体 diff，说清楚它发生了什么、证明了什么、还没证明什么。
+
+### 21.15 常见卡点与处理办法
+
+第一个卡点是依赖或命令跑不起来。处理办法不是跳过，而是记录环境、命令、错误和当前目录。很多 Windows 问题来自路径、权限、shell 差异或包管理器缓存。先确认自己在仓库根目录，再确认 package scripts，再跑最小命令。
+
+第二个卡点是源码太大。处理办法是只选一条调用链。不要试图一次读懂 `core-runtime` 全部内容。先找一个输入，例如 CLI 命令、eval suite、tool call、model profile，再跟到一个输出，例如 diagnostics、step result、artifact、verification summary。
+
+第三个卡点是 benchmark 结果看不懂。处理办法是先看 executor mode。synthetic 证明 harness，mock 证明 runtime path，openai 或 compatible 才接近真实模型表现。然后看 run artifact、summary、quality report 和 failure reasons。不要只看总分。
+
+第四个卡点是真实模型失败后不知道怎么办。处理办法是按第 20 章复盘：先看 task contract，再看 tool trace，再看 diff，再看 verification，再分类失败。只有分类清楚，才能决定是 retry、rollback、continuation、prompt 修正、工具 guard，还是 eval expectation 修正。
+
+第五个卡点是想做贡献但不知道改哪里。处理办法是从文档、测试、eval scenario 入手。一个清楚的字段解释、一个失败路径测试、一个真实失败 scenario，往往比一个大而不稳的新功能更有价值。
+
+### 21.16 进阶阅读顺序
+
+如果你已经完成 7 天路线，可以按这个顺序继续读：先读 runtime 主循环，再读 tools 和 approvals，再读 session store 和 artifact，再读 eval package，再读 model client，再读 gateway 和 workbench，最后读 release、security、operations。这个顺序从单机任务执行开始，逐步扩展到评测、外部接入和运维。
+
+每读一个模块，都要问同样五个问题：它的输入是什么，它的输出是什么，它失败时留下什么证据，它由哪些测试保护，它和真实模型能力声明有什么关系。比如读 model client 时，输入是 model profile 和 messages，输出是 model response、usage、tool-call envelope 或错误；失败证据包括 provider error、cooldown、fallback attempt、diagnostics；测试在 model-client 和 runtime 相关文件中。
+
+进阶阅读不要脱离真实问题。读 gateway 时，可以问“如果 outbound delivery failed，trace 里应该保存什么”；读 memory 时，可以问“如果旧记忆误导任务，系统如何降低可信度”；读 security 时，可以问“如果 artifact 里有 secret，哪个红线路径会脱敏”。问题越具体，阅读越有效。
+
+### 21.17 第一个月的交付物示例
+
+第一周交付三样东西：一份命令运行记录、一张项目目录地图、一份测试解读。命令运行记录要写明每条命令的目的，不要只贴输出。目录地图要能解释模块职责，不要复制文件夹名称。测试解读要选择一个具体测试，说明它保护的失败路径。
+
+第二周交付两样东西：一张 runtime 主循环图和一份工具失败分析。主循环图要从用户任务开始，经过 context、model、tool、approval、verification，最后到 artifact 和 summary。工具失败分析要选择一个实际失败或构造失败，说明工具名、输入、输出、失败类别和修复动作。
+
+第三周交付两样东西：一个 eval scenario draft 和一份 benchmark mode 解释。scenario draft 要包含 objective、success criteria、expectation、验证命令和失败样本。benchmark mode 解释要能清楚区分 synthetic、mock、openai 或 compatible，不能把它们混成一个分数。
+
+第四周交付三样东西：一份真实模型运行计划、一份 root cause report、一份小贡献草稿。真实模型计划要写 profile、密钥来源、预算、run id 命名、artifact 保存位置。root cause report 要按第 20 章结构写。小贡献草稿要有 diff、验证命令和提交说明。
+
+如果这十个交付物都能完成，读者已经不只是“看过 Omni Agent”，而是掌握了一套可复用的 Agent 工程学习方法。之后再读更复杂的章节，例如 gateway、security、release、长期 benchmark，就不会迷失在概念里。
+
+最后提醒一点：学习路线不是线性考试。真实项目会反复回到旧章节。你设计 eval 时会重新读 tools，你接真实模型时会重新读 security，你写失败复盘时会重新读 session store。每次回读都应该带着一个具体问题，而不是从头泛读。这样，教程才会变成长期手册，而不是一次性阅读材料。真正的掌握不是记住章节顺序，而是在遇到新失败时知道该回到哪一章、打开哪个文件、运行哪条命令、保存哪份证据，并且能把这个判断写给下一位维护者看。能做到这一点，读者才算从使用者进入维护者视角，也才有资格继续设计更难的功能和评测。这也是本章最终目标和最低要求，不应降低标准，也不能只停留在口头理解，必须真正执行。
+
+### 21.18 本章参考资料
+
+- Omni Agent README：[`README.zh.md`](../../README.zh.md)
+- Omni Agent complex eval suite：[`examples/evals/complex-suite.json`](../../examples/evals/complex-suite.json)
+- Omni Agent tests：[`tests`](../../tests)
+- Omni Agent tutorial：[`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)
+- Omni Agent DeepSeek system test：[`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)
+- Promptfoo Docs：[Evaluate prompts](https://www.promptfoo.dev/docs/guides/evaluate-prompts/)
+- OpenAI Docs：[Evals](https://platform.openai.com/docs/guides/evals)
+- Anthropic Engineering：[Building effective agents](https://www.anthropic.com/engineering/building-effective-agents)
 
 ## 22. 实战篇导读：从阅读教程到真正上手
 
