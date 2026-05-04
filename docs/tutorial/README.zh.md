@@ -5291,140 +5291,276 @@ Agent 系统需要可观测性，否则失败无法复盘；但可观测性越�
 ## 19. 从源码实现一个小功能
 
 
-本章讨论的是：演示从需求、定位、最小修改、测试到文档同步的完整工程路径。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章不是让读者真的去改一个随机功能，而是用一个小功能演示 Omni Agent 仓库里的标准开发路径。这个小功能可以是假想的，也可以对照当前源码中已经存在的实现来读。我们选择 eval 模块里的一个典型能力：让 scenario expectation 不只要求“某个工具被调用过”，还要求“某个工具必须成功调用过”。在源码里，这对应 `EvalStepExpectation.requiredSuccessfulToolNames` 和测试 `eval expectations can require successful tool events`。这个例子小、清晰、风险低，适合教学，因为它会经过类型、测试、评分逻辑、manifest 语义和文档解释。
 
+实现小功能最容易犯的错，是一上来就改代码。正确顺序应该是：把需求写成一句可验证目标，找到最小代码面，先写失败测试，再实现，跑目标测试，再决定是否补文档和 fixture。这个顺序不是形式主义，它能防止功能范围膨胀，也能防止你改完以后不知道自己证明了什么。
 
-### 19.1 本章先建立的心智模型
+### 19.1 需求要先变成验收标准
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，small patch、schema 和 regression 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+原始需求可能是：“eval 里能不能判断工具是不是成功执行了？”这句话太松。它可能表示至少调用过工具，也可能表示所有工具都成功，也可能表示某些工具必须成功、其他工具可以失败。教程里的目标要写得更精确：
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，test first、fixture 和 documentation 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+```text
+当 step.expectation.requiredSuccessfulToolNames 包含某个工具名时，
+runEvalSuite 必须检查 observedRun.toolEvents 中存在同名工具事件，
+并且该事件状态属于成功状态；如果只存在 failed 事件，step 必须失败，
+reasons 里要能看出缺少成功工具事件。
+```
 
-本章反复出现的关键词包括：`small patch`、`test first`、`schema`、`fixture`、`regression`、`documentation`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+这个验收标准已经包含输入、判断规则、失败条件和输出证据。读者可以据此写测试，也可以据此 review 实现。相比“支持成功工具检查”，它更不容易被误解。
 
-### 19.2 在仓库中找到入口
+### 19.2 先定位最小代码面
 
-阅读本章时，建议从下面这些文件开始：
+这个功能的入口主要在三个地方。
 
-1. [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`examples/evals/suite.json`](../../examples/evals/suite.json)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`tests/evals.test.ts`](../../tests/evals.test.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
+第一是 [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)。这里定义 `EvalStepExpectation`、`EvalObservedToolEvent`、`EvalObservedRun`、`EvalStepResult`、`runEvalSuite`、normalization 和评分逻辑。任何 expectation 字段都应该先看这个文件。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，schema、regression 和 small patch 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二是 [`tests/evals.test.ts`](../../tests/evals.test.ts)。这里用 Node test runner 写了 eval 的行为测试。这个文件比完整 benchmark 更适合开发小功能，因为运行快、失败定位清楚、不会牵涉真实模型或 fixture workspace。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+第三是 [`examples/evals/suite.json`](../../examples/evals/suite.json)。如果新字段要被默认 benchmark 使用，manifest 里要能表达它。并不是所有小功能都必须立刻改默认 suite；如果只是底层能力，可以先用单元测试覆盖，等有真实 scenario 需要时再写入 suite。
 
-### 19.3 它在一次 Agent 任务中怎样出现
+不要一开始就打开全仓库所有文件。一个小功能如果从三个入口就能解释清楚，就不应该扩大到 CLI、model-client、gateway 和 README。小改动最重要的是控制影响面。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，fixture、documentation 和 test first 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 19.3 先写失败测试
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+测试应该只覆盖这一个行为。当前测试中的示例大致是：构造一个 suite，expectation 要求 `workspace_info` 和 `run_verification` 都必须成功；executor 返回的 observed run 里 `workspace_info` 是 failed，`run_verification` 是 ok；最后断言 completedCount 为 0，并且失败原因提到 `workspace_info`。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+测试的核心不是行数，而是对比关系：同一个工具名出现了，但状态失败，所以不能通过。这能防止实现者偷懒，只检查 “toolEvents.some(event.toolName === name)” 而不看 status。
 
-### 19.4 设计时最容易忽略的边界
+写测试时要注意四点。第一，scenario 越小越好，只保留一个 step。第二，observedRun 字段要满足最小结构，例如 runId、threadId、verificationStatus、finalResponse、changedFiles、toolEvents、toolCallCount、turnCount、durationMs。第三，断言要检查结果而不是实现细节。第四，失败原因要可读，方便未来 benchmark 报告解释。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，regression、small patch 和 schema 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 19.4 再改类型和评分逻辑
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+如果从零实现，第一步是在 `EvalStepExpectation` 中加入字段：
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+```ts
+readonly requiredSuccessfulToolNames?: string[];
+```
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+这里用可选数组，是因为旧 manifest 不一定有这个字段。这样不会破坏已有 scenario。新增字段以后，normalization 逻辑要把它规整成数组，过滤空值，保持顺序或去重方式与现有 `requiredToolNames` 一致。不要在评分函数里直接读取未清洗的 raw definition，否则每个判断点都要重复处理 undefined、空字符串和错误类型。
 
-### 19.5 如何判断实现是否可靠
+评分逻辑应该区分“调用过”和“成功过”。当前源码中的判断很直接：它在 `observedRun.toolEvents` 中寻找同名工具，并要求 `event.status.toLowerCase() === "ok"`。这说明本仓库现在把 `ok` 当作 eval 层的成功状态。这个选择足够简单，也便于测试；如果未来要接入更多 runtime 或外部 trace 格式，再考虑把成功状态抽成 helper，例如统一处理 `ok`、`passed`、`success`、`succeeded`。不要在没有真实需求时提前扩展状态集合，否则会把本来清楚的判分规则变得含糊。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，documentation、test first 和 fixture 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+评分时先从 observedRun.toolEvents 中筛选同名工具，再看是否有成功状态；如果没有，就把 readable reason 加进 step reasons。这个 reason 不是给机器看的装饰文本，而是给 benchmark 报告、PR reviewer、后续维护者看的证据。一个好的失败原因应该能让读者不打开源码也知道哪里不满足 expectation，例如 `Missing successful required tool event: workspace_info.`。它比 “step failed” 更有价值，因为它把失败范围缩小到了一个字段和一个工具名。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+实现时要避免两个过度设计。第一，不要为了一个字段引入复杂 judge 抽象。这个规则是 deterministic expectation，直接在 step scoring 中判断即可。第二，不要顺手重构所有 metrics。只要这次需求不改变 completionRate、verificationPassRate、toolFailureRate 的定义，就不要碰它们。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+### 19.5 把测试当成需求文档来读
 
-### 19.6 常见误区
+很多初学者读测试时只看最后一行 assert。这样会错过测试真正表达的合同。本章的测试可以拆成四层。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，small patch、schema 和 regression 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一层是 suite definition。测试先调用 `normalizeEvalSuiteDefinition`，传入一个只有一个 scenario、一个 step 的最小 suite。这样做的好处是清楚：如果测试失败，原因不会来自复杂 fixture，也不会来自多 step 聚合，而只会来自 expectation 解释。这个 suite 的 `id` 是 `tool-success`，`category` 是 `single_agent_bugfix`，step objective 是 `Run a required tool successfully.`。这些字段不是测试重点，但它们让 suite 满足真实结构，避免测试写成一个脱离系统的假对象。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+第二层是 expectation。这里同时写了：
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+```ts
+requiredToolNames: ["workspace_info", "run_verification"],
+requiredSuccessfulToolNames: ["workspace_info", "run_verification"],
+```
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+这不是重复，而是故意制造对比。`requiredToolNames` 检查工具事件是否出现；`requiredSuccessfulToolNames` 检查工具事件是否成功。测试里让两个字段都包含同样的工具名，目的是证明“出现”和“成功”是两件事。如果实现只看 `requiredToolNames`，这个测试会错误通过；如果实现正确检查成功状态，它就会因为 `workspace_info` 失败而拒绝完成。
 
-### 19.7 一个可操作的检查流程
+第三层是 observed run。executor 返回的 `observedRun` 里，`verificationStatus` 是 `passed`，`finalResponse` 是 `done`，`toolEvents` 里有两个事件：`workspace_info` 的状态是 `failed`，`run_verification` 的状态是 `ok`。这里最关键的是，整体 verificationStatus 已经是 passed，但 step 仍然不能通过。为什么？因为 expectation 有更细的工具成功要求。这个设计体现了 eval 的一个重要原则：总体验证状态不能覆盖所有细节证据。一个 agent 可能最终说“我完成了”，甚至某个高层状态是 passed，但如果关键工具没有成功，eval 仍然应该判失败。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+第四层是断言。测试检查 `completedCount` 等于 0，并且 reasons 中包含 `workspace_info`。它没有去断言内部循环执行了几次，也没有断言 Set 如何构造，这很好。测试应该绑定外部行为，不应该绑定实现细节。未来如果评分逻辑从 `find` 改成按工具名建索引，只要输出行为一致，测试就不需要改。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，test first、fixture 和 documentation 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+把这四层读懂以后，你会发现测试本身已经是一份微型需求文档。它告诉你：输入是什么，关键差异是什么，系统应该拒绝什么，失败信息应该指向哪里。这样的测试比长篇注释更可靠，因为它会在 CI 中运行。
 
-### 19.8 与真实模型评测的关系
+### 19.6 阅读实现时要抓住三条线
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，schema、regression 和 small patch 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一条线是类型线。`EvalStepExpectation` 是 scenario author 能写什么的合同。它不是 runtime 实际执行工具的地方，也不是模型推理的地方，而是 eval suite 对一个 step 的期望表达。把字段放在这里，意味着这个能力属于“判分合同”，不是“工具执行能力”。这点要分清：`requiredSuccessfulToolNames` 不会让 agent 自动执行工具，它只会在 agent 运行结束后检查工具事件是否满足要求。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+第二条线是 normalization 线。JSON manifest、测试对象和未来外部程序生成的 suite，都可能传入不整齐的数据。`normalizeStepExpectation` 把 expectation 中的字符串数组字段统一交给 `normalizeStringArray`。这一步的价值是把脏输入挡在边界处。评分函数不应该承担清洗责任；评分函数应该面对已经归一化的结构。这个分层很小，但很重要。否则每增加一个字段，评分逻辑就会混入一堆 `undefined`、空字符串、重复值和类型判断，最后变得难以 review。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+第三条线是评分线。`evaluateStepExpectation` 收到 expectation 和 observedRun 后，逐项添加 reasons：状态不匹配、缺少 changed file、缺少工具事件、缺少成功工具事件、最终回答缺少片段、缺少 verification evidence。注意它不是遇到第一个失败就停止，而是尽量收集多个 reason。这对 benchmark 很有用。一次失败可能同时缺少工具、缺少文件、缺少 response snippet；如果只报第一个原因，修复者会不断经历“修一个、跑一次、再发现下一个”的低效循环。
 
-### 19.9 一个完整的小案例
+这三条线对应三种问题。如果字段没法写进 suite，看类型线。如果字段写了但读取后消失，看 normalization 线。如果字段保留下来却没有影响结果，看评分线。读源码时按这三条线查，比全文件搜索更快，也更不容易误判。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+### 19.7 从零实现时的实际改法
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+假设这个字段还不存在，你可以按下面的顺序做。第一步，在 `EvalStepExpectation` 增加可选字段。这里要用 `string[]` 而不是 `readonly string[]` 还是 `readonly string[]`，需要跟仓库现有风格保持一致；当前文件里相近字段 `requiredChangedFiles`、`requiredToolNames`、`requiredFinalResponseIncludes` 都是 `string[]`，所以新增字段也应该保持同一写法。不要为了“更严格”单独改成另一种风格，否则 diff 会显得无关。
 
-这个案例强调的是工程诚实。 在本章语境中，fixture、documentation 和 test first 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二步，在 `normalizeStepExpectation` 中增加同名字段，并调用 `normalizeStringArray`。这一步经常被漏掉。漏掉以后，TypeScript 测试里直接构造对象可能仍然能通过，但真实 JSON suite 经过 normalization 后字段可能不稳定，或者未来维护者看到 normalization 中没有这个字段，会怀疑它不是正式合同的一部分。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+第三步，在 `evaluateStepExpectation` 中增加一个循环。伪代码可以写成：
 
-### 19.10 排错时的分层问题表
+```ts
+for (const toolName of expectation?.requiredSuccessfulToolNames ?? []) {
+  const successfulEvent = observedRun.toolEvents.find(
+    (event) => event.toolName === toolName && event.status.toLowerCase() === "ok",
+  );
+  if (!successfulEvent) {
+    reasons.push(`Missing successful required tool event: ${toolName}.`);
+  }
+}
+```
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+这段实现的特点是“窄”。它不改变已有 `requiredToolNames` 的含义，不改变 metrics 公式，不改变 executor，不改变 observed run 结构。它只在已有 observed run 的基础上增加一个判定规则。一个好小功能通常就是这种形状：输入字段明确，输出影响明确，周围系统不用跟着大动。
 
-分层排错能减少无效尝试。 在本章语境中，regression、small patch 和 schema 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第四步，补测试。测试要覆盖“工具出现但失败”的路径，因为这是新字段和旧字段的关键区别。如果只写“工具成功所以通过”的测试，价值很低，因为旧的 `requiredToolNames` 也可能让它通过。新测试必须让旧逻辑失败，才能证明新增逻辑真的提供了新能力。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+第五步，考虑是否补 suite fixture。这里要谨慎。如果默认 suite 中某个任务确实要求工具成功，例如必须成功运行 `run_verification` 才能算完成，那么可以把该 step 的 expectation 加上 `requiredSuccessfulToolNames`。如果只是为了展示新字段，不要乱改默认 suite。默认 benchmark 是对外可见的合同，不能把教学样例随便塞进去。
 
-### 19.11 如何把本章内容写进团队流程
+### 19.8 命名为什么重要
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+`requiredSuccessfulToolNames` 这个名字比较长，但它表达了三个层次：`required` 表示这是硬性要求，缺失会导致 step 失败；`Successful` 表示不是只看出现，而是看成功；`ToolNames` 表示字段内容是工具名列表，不是工具事件对象，也不是工具类型。这样的名字比 `successfulTools` 更清楚，因为 `successfulTools` 容易让人误以为它描述 observed run 中的事实，而不是 expectation 中的要求。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，documentation、test first 和 fixture 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+命名还会影响文档和报告。benchmark 报告里出现 “Missing successful required tool event” 时，读者能直接对应到字段含义。如果字段名叫 `toolsOk`，报告就很难解释。Agent eval 的字段通常会被很多人读：写 scenario 的人、跑 benchmark 的人、看 release gate 的人、调模型的人、排查失败的人。字段名越具体，跨角色沟通成本越低。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+不要害怕名字稍长。类型字段不是命令行短参数，也不是 UI 按钮。它更像合同条款，重点是准确。尤其在 eval、security、approval、memory 这类模块里，短而含糊的名字会制造长期维护成本。
 
-### 19.12 练习
+### 19.9 失败 reason 要怎样写
 
-1. 围绕 `small patch` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `test first` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `schema` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `fixture` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `regression` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `documentation` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+失败 reason 有三个标准：具体、稳定、可搜索。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+具体，是指它要包含失败对象。`Missing successful required tool event: workspace_info.` 比 `Tool failed.` 好，因为前者告诉你缺的是哪个工具的成功事件。稳定，是指它不要包含无关随机信息，例如时间戳、临时目录、完整绝对路径、模型长输出。稳定 reason 更适合测试断言，也适合历史报告对比。可搜索，是指它应该保留关键字段或概念，比如 `successful required tool event`，这样维护者可以在源码中搜索到对应逻辑。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+reason 不是越长越好。太长的 reason 会污染 benchmark 报告，让读者抓不到重点。合理做法是：reason 只说明直接失败原因；详细上下文交给 trace、artifact 或 step result。比如本例中，reason 不需要列出所有 toolEvents，只需要说缺少某个成功事件。如果维护者要继续排查，可以打开 observed run 看 `workspace_info` 为什么 failed。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+本章这个小功能的 reason 也体现了一个边界：eval 层只负责判断成功事件不存在，不负责解释工具为什么失败。工具失败原因可能来自 workspace、权限、参数、模型调用或执行环境。eval 如果把这些都写进 reason，会越界。它应该保留清晰的第一层判断，让下一层 trace 去解释原因。
 
-### 19.13 本章参考资料
+### 19.10 用这个案例理解“最小修改”
 
-- Omni Agent: [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
-- Omni Agent: [`examples/evals/suite.json`](../../examples/evals/suite.json)
-- Omni Agent: [`tests/evals.test.ts`](../../tests/evals.test.ts)
-- Omni Agent: [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)
-- OpenAI agent evals: [https://platform.openai.com/docs/guides/agent-evals](https://platform.openai.com/docs/guides/agent-evals)
-- OpenAI tracing guide: [https://openai.github.io/openai-agents-python/tracing/](https://openai.github.io/openai-agents-python/tracing/)
-- GitHub Actions workflow syntax: [https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions)
+最小修改不是少写代码，而是少改合同。这个功能真正需要改变的合同只有一个：step expectation 可以要求某些工具成功。围绕这个合同，必要修改包括类型字段、normalization、评分逻辑、测试、文档。除此以外的改动都要谨慎。
+
+例如，有人可能会顺手把所有 `requiredToolNames` 都改成 `requiredSuccessfulToolNames`。这看起来更严格，但可能破坏原本语义。有些 scenario 只想确认 agent 使用过某个工具，即使工具失败也说明 agent 走到了正确路径。比如 repair 类任务中，第一次 `run_verification` 失败可能是必要证据，agent 随后修复再跑通过。如果你把“出现”一律改成“成功”，就会误伤这种任务。
+
+又比如，有人可能想把 `toolEvents` 的 status 类型收窄成枚举。这也许是未来可以做的事，但不一定属于本次小功能。因为 observed run 可能来自真实 runtime、mock executor、synthetic executor 或导入的历史 trace，不同来源的 status 可能还没有完全统一。贸然收窄类型，会把一个 eval 字段变成跨系统状态迁移，风险和 review 面都会扩大。
+
+所以本章的小功能虽然小，但它教的是维护大型 Agent 项目的基本纪律：每次只改变一个合同；如果发现相邻问题，记录下来，不要塞进同一个 diff。
+
+### 19.11 验证结果应该怎么解释
+
+假设你运行：
+
+```powershell
+node ./scripts/run-tests.mjs tests/evals.test.ts
+```
+
+这个命令通过，只能说明 eval 单元测试通过，不能说明真实模型会更会用工具。它证明的是：当 observed run 中工具失败时，`requiredSuccessfulToolNames` 能把 step 判失败。它不证明 DeepSeek、OpenAI 或 Anthropic 会生成更好的工具调用，也不证明 benchmark 里的所有任务都更真实。
+
+假设你继续运行：
+
+```powershell
+npm run typecheck
+```
+
+这个命令通过，说明 TypeScript 项目引用关系没有因为新字段损坏。它仍然不证明 benchmark 质量。typecheck 关注的是静态类型，不关注 scenario 是否合理。
+
+假设你又运行：
+
+```powershell
+pnpm eval:benchmark -- --mode synthetic --run-id feature-check-synthetic
+```
+
+这个命令通过，说明 suite、scoring、report artifact 的 synthetic 路径没有坏。它还是不能被写成“真实模型通过 benchmark”。前面章节已经反复强调：synthetic 是 harness 自检，mock 是 runtime 路径验证，openai/compatible 才接近真实模型评测。第 19 章的小功能属于 eval 判分能力，它提升的是证据规则，不直接提升模型能力。
+
+这种解释边界很重要。一个成熟维护者不会把每个绿色测试都包装成产品能力，而会说清楚它证明到哪一层。读者学习本章时，也应该养成这个习惯。
+
+### 19.12 文档应该写给谁看
+
+给源码贡献者看的文档，要讲文件入口和验证命令；给 scenario 作者看的文档，要讲字段语义和使用时机；给项目使用者看的文档，要讲报告如何解释；给维护者看的文档，要讲边界和风险。本章把这些放在一起，是因为一个小功能从来不只是几行代码。它会进入教程、测试、benchmark 和 release 判断。
+
+如果只给源码贡献者写，文档可能变成“在某函数加一行”。这种文档对新人不友好，因为他不知道为什么要加。如果只给用户写，文档可能变成“支持成功工具检查”。这种文档对维护者不够，因为他不知道测试和实现在哪里。好的工程教程要把两端连起来：先讲为什么，再讲在哪里，再讲怎么改，最后讲怎么证明。
+
+本章的写法也可以作为后续章节模板，但不是句子模板，而是思考模板。每一章都应该找到自己的真实对象。讲 trace，就要具体讲 trace 里有哪些字段、如何定位失败；讲 release，就要具体讲 release gate、artifact、CI 命令；讲长期趋势，就要具体讲 run id、baseline、trend report。不能只换几个名词重复同一段话。
+
+### 19.13 一个完整的提交说明示例
+
+如果这个功能是一个真实 PR，提交说明可以写成：
+
+```text
+Add successful tool expectations to eval scoring
+
+- add requiredSuccessfulToolNames to EvalStepExpectation normalization
+- fail a step when the required tool only appears with a non-ok status
+- cover the failed-tool case in tests/evals.test.ts
+- document the distinction from requiredToolNames
+
+Verification:
+- node ./scripts/run-tests.mjs tests/evals.test.ts
+- npm run typecheck
+```
+
+这个说明没有夸大。它没有说“improve agent intelligence”，因为 agent 的智能没有被这个 diff 直接改变。它也没有说“fix benchmark”，因为 benchmark 是否成熟还取决于 suite、executor、真实模型运行和报告流程。它只说自己做了什么、怎样验证。越是基础设施项目，越需要这种克制的提交说明。
+
+PR 描述还可以补一个 reviewer note：`requiredToolNames` 仍然保留原语义，允许检查工具是否出现；`requiredSuccessfulToolNames` 只用于必须成功的工具。这个 note 可以减少 reviewer 的误解，防止别人以为旧字段已经废弃。
+
+### 19.14 跑最小验证命令
+
+小功能的首选验证命令不是全量 benchmark，而是目标测试：
+
+```powershell
+node ./scripts/run-tests.mjs tests/evals.test.ts
+```
+
+如果只改了 eval 类型和评分逻辑，还应该跑 typecheck：
+
+```powershell
+npm run typecheck
+```
+
+如果改了默认 suite 或 benchmark 报告，再跑：
+
+```powershell
+pnpm eval:smoke
+pnpm eval:benchmark -- --mode synthetic --run-id feature-check-synthetic
+```
+
+验证顺序要从快到慢。单测失败时不要跑 benchmark；typecheck 失败时不要跑真实模型；synthetic 失败时不要怀疑 DeepSeek 或 OpenAI。每个验证命令只证明一层东西：测试证明规则行为，typecheck 证明类型关系，synthetic 证明 manifest 和 scoring 通路，mock 证明 runtime eval path，openai 证明真实模型表现。
+
+### 19.15 是否需要改文档和 manifest
+
+不是每个代码改动都要改 README，但新字段如果会被 scenario 作者使用，就应该在教程或 eval 文档里说明。文档要回答：字段写在哪里，字段含义是什么，和相近字段有什么区别，失败时会怎样显示。
+
+比如 `requiredToolNames` 表示“必须出现同名工具事件”，不保证成功；`requiredSuccessfulToolNames` 表示“必须出现同名且成功的工具事件”。这个区别非常重要。某些任务需要证明 agent 至少尝试过工具，失败也可作为 repair evidence；另一些任务需要证明关键工具真的成功，例如 `run_verification`、`spawn_subagent`、`deliver_route`。如果文档不讲清楚，scenario 作者会乱用字段，benchmark 分数也会失真。
+
+默认 suite 是否要更新，要看这个字段是否服务当前 release gate。为了展示能力而随便改 suite 是不好的；为了防止真实回归而增加 expectation 是合理的。比如 release-local subagent scenario 要求 `spawn_subagent` 和 `list_subagents` 成功，就适合使用成功工具检查。普通探索任务只要求模型读过 workspace，则不一定需要成功工具字段。
+
+### 19.16 小功能 PR 应该怎么写
+
+一个高质量 PR 描述可以按四段写。
+
+第一段写问题：之前 eval expectation 可以要求工具出现，但不能区分成功和失败。第二段写改动：新增或使用 `requiredSuccessfulToolNames`，在 step scoring 中检查成功工具事件，失败时输出 reason。第三段写验证：运行 `tests/evals.test.ts` 和 `typecheck`，如果改 suite 再附 synthetic benchmark。第四段写边界：不改变 existing metrics，不改变 runtime tool execution，不改变 real model behavior，只改变 eval expectation 的判定能力。
+
+这种 PR 描述比“improve evals”更好，因为 reviewer 一眼知道该看哪里、风险多大、怎么验证。小功能的重点是让改动和证据对齐，而不是让描述显得很大。
+
+### 19.17 常见错误
+
+第一个错误是没有测试就改实现。这样很容易只覆盖自己脑中的 happy path，漏掉工具失败但名字出现的情况。
+
+第二个错误是改动过大。比如为了成功工具字段，顺手重写整个 eval metrics 或 suite schema。这样会让 review 变困难，也会让失败原因变多。
+
+第三个错误是只改 TypeScript 类型，不改 runtime normalization。类型只约束源码调用，不能保证 JSON manifest 进来以后被正确处理。
+
+第四个错误是只看 completedCount，不看 reasons。Eval 框架的价值之一是失败可解释。如果新规则让 scenario 失败，却没有清楚 reason，后续 benchmark 报告就很难用。
+
+第五个错误是把小功能直接放进真实模型 benchmark 验证。真实模型变量太多，不适合证明一个 deterministic scoring 规则。先用单元测试和 synthetic，把评分规则钉住，再谈真实模型。
+
+### 19.18 把本章方法迁移到其他功能
+
+这个流程不只适用于 eval。你给工具增加一个参数，也应该先写验收标准、定位最小代码面、写失败测试、实现、运行目标测试、补文档。你给 gateway 增加一个 endpoint，也应该先定义响应合同、认证边界、事件字段、测试和文档。你给 model-client 增加 provider 兼容，也应该先写 profile 形状、最小 live test、错误分类和 usage normalization。
+
+本质上，本章教的是一种工作节奏：需求先变成可验证目标，代码只改必要位置，测试保护失败路径，文档解释新合同，报告说明剩余边界。这种节奏比一次大改慢一点，但它能让项目长期可维护。
+
+### 19.19 本章练习
+
+1. 找到 `EvalStepExpectation`，写出 `requiredToolNames` 和 `requiredSuccessfulToolNames` 的区别。
+2. 阅读 `tests/evals.test.ts` 中成功工具事件测试，解释为什么 `workspace_info` 出现了但 scenario 仍然失败。
+3. 设计一个新测试：要求 `run_verification` 成功，但 observedRun 里只有 `run_verification: failed`。写出你期望的 completedCount 和 reason。
+4. 选择一个不属于 eval 的小功能，例如给 `models` 输出增加一个脱敏字段，按本章流程写出需求、测试、实现文件和验证命令。
+5. 写一段 PR 描述，必须包含问题、改动、验证和边界四部分。
+
+### 19.20 本章参考资料
+
+- Omni Agent eval package：[`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
+- Omni Agent eval tests：[`tests/evals.test.ts`](../../tests/evals.test.ts)
+- Omni Agent eval suite：[`examples/evals/suite.json`](../../examples/evals/suite.json)
+- Omni Agent CLI evals command：[`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)
+- Omni Agent package scripts：[`package.json`](../../package.json)
+- TypeScript Handbook：[Everyday Types](https://www.typescriptlang.org/docs/handbook/2/everyday-types.html)
+- Node.js Docs：[Test runner](https://nodejs.org/api/test.html)
+- GitHub Docs：[Workflow syntax for GitHub Actions](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions)
+- GitHub Docs：[About pull request reviews](https://docs.github.com/en/pull-requests/collaborating-with-pull-requests/reviewing-changes-in-pull-requests/about-pull-request-reviews)
 
 ## 20. 失败案例复盘：如何从 trace 找根因
 
