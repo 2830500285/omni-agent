@@ -3841,140 +3841,273 @@ Session Store 最容易被误用的地方，是把不同生命周期的信息混
 ## 13. Subagents：多 Agent 不是更多聊天窗口
 
 
-本章讨论的是：用受治理的子任务、角色、预算、写入边界和验证结果组织并行工作。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章只解决一个问题：Omni Agent 为什么需要 `Subagents`，以及怎样让多个 Agent 协作时仍然可控、可审计、可验证。
 
+很多人第一次听到多 Agent，会自然把它理解成“多开几个聊天窗口”。这个理解太浅。真正困难的地方不在于让模型多回答几段话，而在于让每个子任务都有明确目标、明确权限、明确边界、明确交付物，并且在任务结束后能被父 Agent 检查。否则，多 Agent 只会把一个模型的不确定性放大成一组模型的不确定性：有人重复搜索，有人修改了不该修改的文件，有人把失败包装成成功，有人把中间猜测当成最终结论，父 Agent 最后拿到一堆难以判断的聊天片段。
 
-### 13.1 本章先建立的心智模型
+Omni Agent 的子 Agent 设计不是“角色扮演系统”，而是 runtime 的控制面能力。它把一次委派变成一条 `SubagentJobRecord`：里面有 objective、role、status、authority、ownerAgentId、auditLabel、budget、targetPaths、verificationCommands、artifacts、completion report 等字段。读者学习这一章时，要把重点放在工程契约上：父 Agent 什么时候应该委派，子 Agent 拿到什么范围，子 Agent 能用什么工具，子 Agent 产出的东西以什么形式回到父 Agent，失败时系统如何留下证据。
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，parent agent、orchestrator 和 target paths 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 13.1 什么时候该使用 Subagent
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，leaf authority、budget 和 handoff 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+不是所有任务都适合拆成子 Agent。代码修改尤其如此。Anthropic 在多 Agent research 系统复盘中提到，多 Agent 更适合高度并行、信息量超过单个上下文窗口、需要探索多个方向的任务；但许多 coding task 并没有那么多真正可并行的部分，实时协调也会带来额外复杂度。这个判断对 Omni Agent 很重要：子 Agent 是工程工具，不是默认动作。
 
-本章反复出现的关键词包括：`parent agent`、`leaf authority`、`orchestrator`、`budget`、`target paths`、`handoff`、`completion report`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+适合委派的第一类任务，是彼此相对独立的阅读或验证工作。例如父 Agent 正在修改 parser，另一个子 Agent 可以只阅读 tests，找出现有断言覆盖了哪些边界。这个子 Agent 不需要改文件，也不需要理解整个重构计划，它只需要返回一个 findings artifact 或 summary。这样做的价值是隔离上下文：父 Agent 不必把所有测试细节塞进自己的上下文，也不必在主线程里同时追踪两个不同问题。
 
-### 13.2 在仓库中找到入口
+适合委派的第二类任务，是多个文件或多个模块的并行检查。例如一个 issue 可能同时涉及 CLI 参数、runtime prompt、session-store artifact 和 README 文档。父 Agent 可以把“检查 CLI 行为”和“检查 session-store 证据字段”拆成两个只读子任务，让它们分别返回结论。前提是写入边界清楚。如果两个子 Agent 都可能改同一个文件，就很容易出现冲突、覆盖和责任不清。
 
-阅读本章时，建议从下面这些文件开始：
+适合委派的第三类任务，是验证或审查。父 Agent 完成实现后，可以派一个 `verifier` 子 Agent 用只读工具检查 diff、运行指定命令、确认 artifact 是否存在。这个模式比让同一个 Agent 自己宣布“我觉得没问题”更可靠，因为验证任务有不同的目标和输出格式：它不是继续实现，而是挑错、复现、记录。
 
-1. [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`docs/governed-subagents.md`](../../docs/governed-subagents.md)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`tests/runtime.test.ts`](../../tests/runtime.test.ts)：用来观察本章在仓库中的实现、测试或运维入口。
+不适合委派的任务也要明确。第一，下一步强依赖当前判断的关键路径任务，不应马上丢给后台子 Agent。如果父 Agent 需要先知道某个函数在哪里才能继续实现，自己读源码通常更快。第二，涉及用户隐私、密钥、生产发布或大范围写入的任务，不应只靠一句自然语言交给子 Agent。第三，小到几行代码的修改，如果拆出去需要写一堆 handoff instructions，委派成本可能超过收益。第四，要求整体设计一致性的重构，不宜让多个子 Agent 自由发挥，除非 targetPaths 和接口边界已经非常稳定。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，orchestrator、target paths 和 completion report 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 13.2 Omni Agent 里的子 Agent 不是“人设”，而是 Job
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+在 Omni Agent 里，子 Agent 的核心对象是 `SubagentJobRecord`，定义在 [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)。它记录的不是一个“聊天人格”，而是一次被 runtime 管理的工作单元。
 
-### 13.3 它在一次 Agent 任务中怎样出现
+一个子任务至少需要 `objective`。这是子 Agent 要完成的具体目标，不应该写成“帮我看看”这种模糊表达。好的 objective 会包含对象、范围、完成标准。例如“检查 `packages/tools/src/index.ts` 中 subagent governance 字段是否会进入 observation，并返回缺失字段列表”，就比“检查 subagent”更可执行。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，budget、handoff 和 parent agent 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`role` 是角色提示，但它不是权限。把 role 写成 `verifier` 并不会自动禁止写文件；真正的边界来自 `allowedTools`、`targetPaths`、`executionDomain`、`authority` 等治理字段。很多多 Agent demo 的问题正在这里：它们把“你是审查员”当成安全机制，但模型仍然可能调用高风险工具。Omni Agent 的设计要把角色描述和 runtime 控制分开，角色告诉模型“你应该怎样思考”，治理字段告诉系统“你被允许做什么”。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+`status` 描述子任务当前状态，可能是 `queued`、`running`、`completed`、`failed`、`timed_out`、`cancelled`、`paused`、`interrupted` 等。状态不是 UI 装饰，而是父 Agent 做下一步决策的依据。父 Agent 不能只看子 Agent 的最后一句话，还要看状态是否真的完成、是否超时、是否被取消、是否产生了 completion report。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+`threadId` 和 `runId` 把子 Agent 的工作接回 Session Store。一个子任务不是临时聊天泡泡，它会拥有自己的运行记录、工具事件和 artifact。这样做的意义是可追溯：当用户问“这个结论从哪里来”时，系统能找到对应 run，而不是只能说“某个子 Agent 当时这么说”。
 
-### 13.4 设计时最容易忽略的边界
+`completion` 是子任务结束后给父 Agent 的结构化结果。它包括 `status`、`verificationStatus`、`changedFiles`、`finalResponse`、`error`，还可以包括 `structuredResult`。这里最关键的是：finalResponse 只是其中一个字段，不是全部证据。一个子 Agent 可以写出漂亮总结，但 `verificationStatus` 仍然是 `failed`；也可以没有长篇解释，但留下了明确 artifact 和通过的验证命令。工程系统要优先相信结构化证据。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，target paths、completion report 和 leaf authority 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 13.3 委派入口：spawn、delegate、swarm 和 wait
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+Omni Agent 暴露了几类子 Agent 工具。读源码时可以从 [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts) 里的注册逻辑开始，看 `spawn_subagent`、`delegate_task`、`run_swarm`、`wait_subagent`、`wait_any_subagent`、`collect_subagent_artifacts`、`list_subagents` 和统一 facade `subagents` 怎样组合。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+`spawn_subagent` 是最基础的入口。它创建一个子任务，并把 objective、role、mode、sessionMode、outcomeVisibility、governance 等字段整理成 `SubagentExecutionRequest`。如果你只理解一个函数，就先理解它：父 Agent 通过它把一段自然语言任务变成 runtime 能管理的 job。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+`delegate_task` 更接近“把一个明确子任务交给某个 worker”。它和 `spawn_subagent` 的具体差别要看当前实现，但从教程视角可以把它理解成委派语义更强的入口：它强调父 Agent 把一部分任务所有权交出去，并期待子 Agent 返回结果。使用它时，handoff instructions 要写清楚输入、范围、输出格式和禁止事项。
 
-### 13.5 如何判断实现是否可靠
+`run_swarm` 用于一次创建多个子任务。它适合两个场景：第一，多个互不冲突的文件或模块可以并行处理；第二，父 Agent 需要 breadth-first 探索，比如分别检查 CLI、runtime、docs、tests 四个方向。`run_swarm` 的危险在于它很容易制造过多工作。没有预算和并发限制时，一个看似聪明的 swarm 可能只是在浪费 token、增加日志噪音、制造更难调试的失败路径。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，handoff、parent agent 和 orchestrator 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`wait_subagent` 是等待一个指定 job 完成。父 Agent 如果需要某个子任务的结果才能继续，就应该显式 wait，而不是假设后台任务已经完成。`wait_any_subagent` 则适合“谁先完成就先处理谁”的 supervisor 模式。例如两个研究子任务同时运行，父 Agent 可以等第一个完成的结果，再决定是否追加 follow-up 子任务。测试里的 `SupervisorFollowUpModelClient` 就覆盖了这类“先等一个，再派后续”的控制流。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+`collect_subagent_artifacts` 是很重要但容易被忽略的入口。它表示父 Agent 不一定要把子 Agent 的完整输出塞回上下文，而是可以只收集 artifact metadata。这样可以减少上下文污染，也能避免大型输出在父子之间反复复制。Anthropic 的工程复盘也提到，让子 Agent 把直接输出写入文件系统或 artifact 系统，可以减少信息在多级转述中损失。Omni Agent 的 artifact 通道正是为这种场景准备的。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+`list_subagents` 和 `subagents action=topology` 面向观察和运维。多 Agent 系统一旦出现卡住、超时、取消未传播、重复派发，单看最终回答没有用。你需要看到 job 树：总共有多少任务，哪些是 root，哪些是 child，哪些 running，哪些 queued，父子关系是什么。没有 topology，就很难判断系统是“正在工作”还是“已经失控”。
 
-### 13.6 常见误区
+### 13.4 Governance：把委派写成可执行边界
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，completion report、leaf authority 和 budget 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+[`docs/governed-subagents.md`](../../docs/governed-subagents.md) 是本章最重要的配套文档。它说明 Omni Agent 的子 Agent 治理不是另起一套系统，而是在普通子 Agent 工具调用上增加 authority、ownership、budget、scope、verification metadata。换句话说，治理字段不是文档承诺，而应该进入 tool surface、job record、observation 和测试。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+`authority` 表示子 Agent 的组织权限。`leaf` 是叶子 worker，适合执行或验证一个明确子任务，不应该再广泛创建子 Agent。`orchestrator` 是协调者，允许组织下级工作，但也更危险，必须配合 `maxDepth`、`maxConcurrentChildren` 和预算。源码里的 `normalizeSubagentAuthority` 还把 `worker` 归一成 `leaf`，把 `planner` 归一成 `orchestrator`，这说明系统接受一些自然别名，但最终会落到两个明确权限等级。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+`ownerAgentId` 记录责任归属。如果省略，工具层会尽量使用当前 context 的 `agentId`。这个字段的价值在事故排查时最明显：当某个子任务修改了文件、启动了命令、产出了错误 artifact，维护者需要知道它属于哪个父 Agent 或 worker，而不是只看到一个匿名 job。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+`auditLabel` 是人类可读的审计标签。它不替代 job id，而是让 release gate、incident review、benchmark trace 更容易读。比如 `parser-release-check`、`docs-chapter-13-review`、`real-model-benchmark-deepseek-run-2026-05-04` 这类标签，可以把一串系统字段变成团队能讨论的对象。
 
-### 13.7 一个可操作的检查流程
+`budget` 包括 `maxIterations`、`timeoutMs`、`maxRetries`。预算不是为了省钱这么简单，它还防止任务无限循环。多 Agent 系统常见失败包括：子 Agent 不断搜索不存在的信息，父 Agent 不断等待永远不结束的子任务，某个 worker 失败后被反复重试但没有新信息。预算字段把“做到合理程度就停下来”变成 runtime 可执行的限制。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+`maxDepth` 控制递归深度，`maxConcurrentChildren` 控制并发子任务数量。它们解决的是 topology 风险。没有深度限制，一个 orchestrator 可以再派 orchestrator，最后生成难以审计的树。没有并发限制，一个父任务可以瞬间启动很多 child，导致工具调用、token、文件锁和测试资源都失控。测试里的 queue-governed orchestrator 就是在验证 `maxConcurrentChildren` 能让超出的 child 进入 queued 状态，而不是全部同时运行。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，parent agent、orchestrator 和 target paths 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`allowedTools` 是工具白名单。一个 verifier 也许只需要 `read_file` 和 `run_verification`，不应该有 `write_file`。一个 docs researcher 也许只需要读文件和打开文档，不应该能改源码。工具白名单把“角色应该做什么”变成“工具层允许做什么”。
 
-### 13.8 与真实模型评测的关系
+`targetPaths` 是写入边界。源码里的 `assertWriteTargetAccess` 会在 active subagent job 尝试 `write_file`、`edit_file`、`append_file` 时检查目标路径。它先把目标路径解析到 workspace root 下，再判断是否命中 allowlist；如果路径逃出 workspace 或不在允许范围内，就抛错。这个设计比提示词可靠得多。提示词只能建议模型不要写错地方，targetPaths 能让写错地方的工具调用失败。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，leaf authority、budget 和 handoff 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`returnedArtifactKinds` 规定父 Agent 可以收集哪些 artifact。它不是权限边界的全部，但能减少信息噪音。比如一个 background 子 Agent 可能产生 `run_command`、`verification`、`findings` 等多种 artifact，父 Agent 只收集其中与当前决策有关的种类。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+`verificationCommands` 是子任务应该运行或报告的检查命令。它不等于自动通过，但它把“完成标准”写进 job。父 Agent 看到 completion 时，应该检查这些命令是否执行、结果是什么、artifact 是否记录了输出。如果 verification 仍是 `not-run`，就不能把子任务当成已验证完成。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+### 13.5 Handoff 应该写什么
 
-### 13.9 一个完整的小案例
+Handoff 是父 Agent 给子 Agent 的任务交接。OpenAI Agents SDK 文档把 handoffs 描述为一种让 agent 委派给另一个 agent 的机制，且 handoff 可以带输入 schema、过滤输入历史、控制接收方看到什么上下文。Omni Agent 的子 Agent handoff 虽然实现方式不同，但工程原则一致：不要把整个父上下文粗暴塞给子 Agent，也不要只给一句模糊命令。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+一份好的 handoff 至少包含六块内容。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+第一，任务目标。写清楚“要完成什么”，不要写“帮我处理一下”。例如：“阅读 `tests/runtime.test.ts` 中 subagent 相关测试，列出已经覆盖的控制面能力和未覆盖风险。”
 
-这个案例强调的是工程诚实。 在本章语境中，orchestrator、target paths 和 completion report 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二，输入材料。告诉子 Agent 应该优先看哪些文件、哪些测试、哪些文档。如果任务来自 issue 或 benchmark，也要写清 issue 摘要和复现命令。不要让子 Agent 自己在全仓库漫游，除非任务本身就是探索。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+第三，工作边界。说明能改哪些文件，不能改哪些文件，是否只读，是否允许运行命令。这里要和 `targetPaths`、`allowedTools` 对齐。自然语言说“只读”但工具层仍允许写文件，是不完整的治理。
 
-### 13.10 排错时的分层问题表
+第四，输出格式。父 Agent 需要的是 plan、findings、review、verdict、patch summary，还是 verification artifact？如果输出是 findings，应该包含证据路径和剩余风险；如果输出是 verdict，应该包含 pass/fail 和理由；如果输出是 patch summary，应该包含 changedFiles 和验证命令。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
+第五，停止条件。告诉子 Agent 什么时候应该停。比如“读完这四个文件并给出结论即可，不要扩展到 benchmark 系统”；或者“如果发现 targetPaths 缺失，直接报告，不要自行修复”。停止条件能减少子 Agent 越权。
+
+第六，失败报告。子 Agent 如果做不到，应该说明是文件不存在、命令失败、权限不足、上下文不够，还是模型判断不确定。失败本身不是问题，无法分类的失败才是问题。
+
+一个较好的 handoff 可以写成这样：
+
+```json
+{
+  "objective": "Review subagent governance coverage in runtime tests.",
+  "role": "verifier",
+  "mode": "background",
+  "outcomeVisibility": "summary_only",
+  "governance": {
+    "authority": "leaf",
+    "auditLabel": "subagent-governance-test-review",
+    "budget": {
+      "maxIterations": 3,
+      "timeoutMs": 120000,
+      "maxRetries": 0
+    },
+    "allowedTools": ["read_file", "run_command"],
+    "targetPaths": [],
+    "returnedArtifactKinds": ["findings", "verification"],
+    "verificationCommands": ["npm test -- tests/runtime.test.ts"]
+  },
+  "handoffInstructions": [
+    "Read only docs/governed-subagents.md, packages/tools/src/index.ts, and tests/runtime.test.ts.",
+    "List which governance fields are covered by tests and which fields still lack explicit assertions.",
+    "Do not modify files. Return findings with file references and a short verdict."
+  ]
+}
+```
+
+这个例子里，role、authority、allowedTools、targetPaths、returnedArtifactKinds 和 verificationCommands 各自负责不同事情。role 负责思考方式，authority 限制组织权限，allowedTools 限制工具，targetPaths 限制写入范围，returnedArtifactKinds 限制父 Agent 收集内容，verificationCommands 定义检查标准。把这些字段分清楚，才不会把多 Agent 设计写成一段漂亮但不可执行的提示词。
+
+### 13.6 Outcome Visibility：结果怎样回到父 Agent
+
+子 Agent 产出的内容不应该总是完整进入父 Agent 上下文。Omni Agent 提供 `outcomeVisibility`，常见取值包括 `context`、`summary_only`、`artifacts_only`。
+
+`context` 表示子 Agent 的结果可以进入父 Agent 的上下文。这适合很短、很关键、需要父 Agent 继续推理的信息。例如 verifier 返回“测试 A 失败，错误是 missing field X”，父 Agent 下一步需要直接修复 X。风险是上下文膨胀。如果每个子 Agent 都把完整日志、完整搜索过程、完整 diff 塞回来，父 Agent 很快会被噪音淹没。
+
+`summary_only` 表示父 Agent 只接收受限摘要。测试 `summary-only subagents inject bounded summaries without returning raw child output` 验证了这个行为：等待结果时不会把 raw child messages 暴露给父 Agent，并且 finalResponse 会被截断到安全长度。这适合信息有用但细节很多的任务，例如调研、review、日志归纳。它的关键价值是降低上下文污染，同时保留足够决策信息。
+
+`artifacts_only` 表示父 Agent 主要通过 artifact 引用拿结果，而不是通过上下文拿结果。测试 `background subagents keep their outcomes out of parent context and expose artifacts through an explicit channel` 说明了这个模式：background 子 Agent 产出 artifact，父 Agent 用 `collect_subagent_artifacts` 收集 metadata，而不是让“Recent subagent outcomes”直接进入 prompt。它适合大型输出、命令结果、报告、diff summary、benchmark trace。
+
+选择 visibility 的简单规则是：需要立即推理的小结果用 `context`；需要读但不需要全量细节的结果用 `summary_only`；可能很长、需要留证据、需要复现的结果用 `artifacts_only`。不要因为实现方便就全部塞进 context。多 Agent 的价值之一正是让不同子任务拥有独立上下文，再通过受控通道把必要证据交回父 Agent。
+
+### 13.7 并发、队列和取消：多 Agent 的运行控制
+
+当子任务从一个变成多个，runtime 必须回答三个问题：谁在运行，谁在排队，谁应该被停止。
+
+`mode` 控制 foreground 和 background。foreground 更像父 Agent 明确等待的一段工作，background 更适合并行收集信息或生产 artifact。background 并不代表无人管理；它仍然应该有 job id、status、budget、artifact 和 completion。把 background 理解成“可以不管”，是错误的。
+
+`maxConcurrentChildren` 控制同时运行的 child 数量。假设一个 orchestrator 被允许创建三个 child，但并发上限是 1，那么 runtime 应该让一个运行，其余排队，并暴露 `queuePosition`。这能防止过度并发，也让父 Agent 知道系统不是死锁，而是在按队列推进。
+
+`wait_any_subagent` 支持“先处理最快结果”的 supervisor 模式。比如两个 child 同时检查不同模块，先完成的那个发现了关键错误，父 Agent 可以立刻派 follow-up 子任务，而不是等所有 child 都完成。这个模式很强，但也要小心：先完成不等于最重要，快结果可能只是浅结果。父 Agent 应该把 wait_any 的结果当作中间信号，而不是自动当作最终答案。
+
+`message_subagent` 允许父 Agent 给运行中的子 Agent 补充指令。测试 `runtime can deliver follow-up parent instructions to a running subagent` 覆盖了这个能力。它解决的是动态协调问题：子 Agent 运行后，父 Agent 可能获得了新信息，需要把一句补充边界或目标传进去。这里仍然要克制。如果父 Agent 不断 steer 子 Agent，说明原始 handoff 可能写得不清楚。
+
+`pause_subagent`、`resume_subagent`、`interrupt_subagent`、`cancel_subagent` 是控制面工具。它们不直接产生业务结果，但决定系统是否能在错误方向上停下来。`cancel_subagent` 尤其重要，因为嵌套子任务需要取消传播。测试里的 cancellation tree 场景会先创建 parent subagent，再由 parent 创建 grandchild，然后从 root 取消 parent，并检查取消是否能传到子树。没有这种能力，多 Agent 系统遇到错误时只能等所有后台任务自然结束，成本和风险都不可控。
+
+### 13.8 写入边界：targetPaths 为什么必须存在
+
+代码型 Agent 最危险的能力是写文件。单 Agent 写错文件已经麻烦，多 Agent 写错文件更难排查，因为父 Agent 可能只是看到最后结果，不知道哪个 child 在什么时候改了什么。
+
+`targetPaths` 的作用是把子 Agent 的写入范围变成机器可检查的 allowlist。源码里的 `assertWriteTargetAccess` 做了几件事。它只在当前 context 有 `subagentJobId` 时生效，因为这个限制是针对 active subagent job 的。它读取 `allowedWriteTargets`，把目标路径解析到 workspace root 下，防止 `../` 这类路径逃逸。然后它把目标路径与 allowlist 逐项比较，不命中就抛出错误，错误信息会包含 job id、目标路径和声明的 targets。
+
+这个设计有两个实际收益。第一，它减少误伤。假设 worker-a 只负责 `message-a.txt`，worker-b 只负责 `message-b.txt`，即使模型错误调用 edit_file 去改对方文件，工具层也会拒绝。第二，它让审计更清楚。维护者看到某个 job 的 targetPaths，就知道这个子任务被允许影响的范围；看到错误信息，也能判断是 handoff 写错、模型越界，还是 runtime policy 配置不完整。
+
+targetPaths 不能替代测试。一个子 Agent 可以只修改允许路径，但仍然改错内容。所以 targetPaths 解决的是“能不能写这里”，verificationCommands 解决的是“写完是否正确”。两者要一起用。
+
+### 13.9 测试如何证明 Subagents 真的接入 Runtime
+
+读 [`tests/runtime.test.ts`](../../tests/runtime.test.ts) 时，不要只看测试名，要看每个测试保护的风险。
+
+`runtime can delegate a scoped task to a subagent and wait for its result` 证明 runtime 能创建子任务、等待结果，并把子任务记录持久化到 Session Store。这个测试还检查 child prompt 里包含 `Parent task handoff:` 和 `Assigned subagent scope:`，父 prompt 后续包含 `Recent subagent outcomes:`。这说明委派不是孤立工具调用，而是进入了父子上下文构建路径。
+
+`runtime can deliver follow-up parent instructions to a running subagent` 证明控制面不是一次性 fire-and-forget。父 Agent 可以在子任务运行中发补充消息，子 Agent 能收到，并且最终回答能体现补充信息。
+
+`background subagents keep their outcomes out of parent context and expose artifacts through an explicit channel` 证明 background + artifacts_only 的隔离效果。它检查父 prompt 中没有 `Recent subagent outcomes:`，同时最终回答能看到 artifact 数量。这是上下文治理测试，而不仅是功能测试。
+
+`summary-only subagents inject bounded summaries without returning raw child output` 证明 summary_only 不会把 raw messages 暴露给父 Agent，并且摘要长度被限制。这能防止子 Agent 的噪音、敏感细节或长日志直接污染父上下文。
+
+swarm 相关测试证明多个 child 可以并行处理不同文件，并各自携带 verificationCommands。supervisor follow-up 测试证明父 Agent 可以先 `wait_any_subagent`，再基于第一个结果派出后续 child。queue 和 cancellation tree 测试则覆盖 topology 控制、并发限制和取消传播。这些测试共同说明：Omni Agent 的 Subagents 不是 README 里的概念，而是 runtime、tools、session-store、prompt 构建和 artifact 观察共同参与的能力。
+
+### 13.10 一个完整例子：把文档修复拆给子 Agent
+
+假设父 Agent 要修复教程后半部分的模板化句子。这个任务看起来可以拆，但不能乱拆。
+
+错误拆法是：启动十个子 Agent，让它们分别“优化文档”。这样会产生三个问题。第一，它们可能改同一个 Markdown 文件，互相覆盖。第二，它们对写作风格理解不一致，最后章节口径更乱。第三，父 Agent 很难判断谁的改动可信，因为每个 child 都只说“已优化”。
+
+较好的拆法是：父 Agent 自己先确定章节标准，然后一次只委派一个只读 verifier，检查某一章是否还有模板句、是否解释了关键术语、是否引用了仓库文件和公开资料。verifier 不写文件，只返回 findings。父 Agent 根据 findings 自己修改该章，运行检查，再提交。这个流程更慢，但责任清楚。
+
+如果确实要让子 Agent 写文档，也应该给它独占 targetPaths。例如只允许它改 `docs/tutorial/README.zh.md` 中第 13 章并返回 patch summary。但 Markdown 文件无法在 runtime 层天然限制“只改某个章节”，targetPaths 只能限制文件级范围。因此父 Agent 仍然要做 diff review，确认没有误改其它章节。这里体现了一个重要原则：工具边界能减少风险，但不能替代人工或父 Agent 的最终审查。
+
+一个更合理的治理契约可以这样写：
+
+```json
+{
+  "objective": "Rewrite chapter 13 only, replacing template prose with concrete subagent runtime guidance.",
+  "role": "docs-writer",
+  "mode": "foreground",
+  "outcomeVisibility": "context",
+  "governance": {
+    "authority": "leaf",
+    "auditLabel": "tutorial-chapter-13-rewrite",
+    "budget": {
+      "maxIterations": 4,
+      "timeoutMs": 300000,
+      "maxRetries": 0
+    },
+    "allowedTools": ["read_file", "edit_file", "run_command"],
+    "targetPaths": ["docs/tutorial/README.zh.md"],
+    "returnedArtifactKinds": ["patch-summary", "verification"],
+    "verificationCommands": [
+      "git diff --check -- docs/tutorial/README.zh.md"
+    ]
+  },
+  "handoffInstructions": [
+    "Only edit chapter 13 between its heading and chapter 14.",
+    "Explain concrete Omni Agent concepts: job record, governance, targetPaths, outcomeVisibility, artifacts, wait, cancellation, tests.",
+    "Do not change other chapters. Report verification output and remaining risk."
+  ]
+}
+```
+
+注意这里仍然要求父 Agent review diff。因为 targetPaths 只能保证文件范围，不能保证章节范围。真正成熟的系统可以进一步支持 section-level patch guard，但在当前仓库里，父 Agent 必须承担这层检查。
+
+### 13.11 排错表：子 Agent 出问题时先查哪里
+
+| 现象 | 先查字段或入口 | 可能原因 | 更可靠的处理 |
 | --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+| 子任务没有开始 | `list_subagents`、`status`、`queuePosition` | 被并发上限排队、controller 不存在、spawn 参数错误 | 先看 topology，再看 tool event 错误 |
+| 子任务一直不结束 | `budget.timeoutMs`、`maxIterations`、progressEvents | 工具卡住、模型循环、等待未满足条件 | 设置超时，必要时 `interrupt` 或 `cancel` |
+| 父 Agent 看不到结果 | `outcomeVisibility`、`collect_subagent_artifacts` | 结果被设置为 artifacts_only 或 summary_only | 按 visibility 选择 wait 或 collect |
+| 子 Agent 改错文件 | `targetPaths`、`allowedWriteTargets`、tool error | handoff 范围不清，或 allowlist 太宽 | 缩小 targetPaths，检查 diff |
+| 子任务重复做同一件事 | objective、role、handoffInstructions | 分工不具体，swarm 任务重叠 | 给每个 child 明确文件、问题和输出格式 |
+| completion 看似成功但验证没跑 | `verificationCommands`、`verificationStatus` | 子 Agent 只总结，没有执行检查 | 把 not-run 当作未验证，不要当作通过 |
+| 取消父任务后 child 还在跑 | topology、parentJobId、rootJobId | 取消传播缺陷或 child 已脱离树 | 用 cancellation tree 测试复现 |
+| 成本突然升高 | job 数量、tool calls、budget | swarm 过大，retry 过多，子任务重复 | 限制 maxConcurrentChildren 和 maxRetries |
 
-分层排错能减少无效尝试。 在本章语境中，budget、handoff 和 parent agent 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+排错时不要先改 prompt。先确认控制面事实：job 是否存在，状态是什么，父子关系是什么，工具事件有没有失败，artifact 有没有产生，verification 是否执行。prompt 只是一层，runtime 记录才是调试入口。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+### 13.12 本章最低完成标准
 
-### 13.11 如何把本章内容写进团队流程
+学完本章后，读者应该能做到六件事。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+第一，能判断一个任务是否值得拆给子 Agent，而不是看到复杂任务就自动开 swarm。判断标准包括并行性、上下文隔离收益、写入冲突风险、验证需求和协调成本。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，target paths、completion report 和 leaf authority 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二，能写出一份可执行 handoff。它应该包含 objective、输入材料、工作边界、输出格式、停止条件和失败报告方式，而不是一句“你负责检查一下”。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+第三，能解释 governance 字段。`authority` 管组织权限，`ownerAgentId` 管责任归属，`auditLabel` 管审计可读性，`budget` 管循环和超时，`maxDepth` 与 `maxConcurrentChildren` 管拓扑，`allowedTools` 管工具，`targetPaths` 管写入范围，`returnedArtifactKinds` 管回收通道，`verificationCommands` 管完成标准。
 
-### 13.12 练习
+第四，能根据输出类型选择 visibility。短而关键的信息进入 context，长而有用的信息用 summary_only，大型证据和命令结果走 artifacts_only。
 
-1. 围绕 `parent agent` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `leaf authority` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `orchestrator` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `budget` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `target paths` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `handoff` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+第五，能读懂相关测试。看到 `spawn_subagent`、`wait_subagent`、`collect_subagent_artifacts`、`wait_any_subagent`、`cancel_subagent` 时，知道它们分别证明了委派、等待、artifact 通道、supervisor flow 和取消传播。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+第六，能诚实描述能力边界。Omni Agent 支持受治理的子 Agent 控制面，但这不等于所有任务都应该多 Agent 化，也不等于真实模型一定能稳定做复杂委派。公开写 README 或 benchmark 报告时，应该说明运行模式、模型 profile、工具支持、trace、cost、失败原因和验证命令。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 13.13 练习
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+1. 在 [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts) 中找到 `SubagentExecutionRequest` 和 `SubagentJobRecord`，写下每个字段属于目标、权限、运行状态、证据还是审计。
+2. 阅读 [`docs/governed-subagents.md`](../../docs/governed-subagents.md)，把示例 governance JSON 改成一个“只读 verifier”版本，要求不能写文件，只能读取源码并运行一个测试命令。
+3. 在 [`tests/runtime.test.ts`](../../tests/runtime.test.ts) 中找到 background artifact 测试，解释为什么父 prompt 不应该出现 `Recent subagent outcomes:`。
+4. 设计两个 `run_swarm` 任务，一个负责 `message-a.txt`，一个负责 `message-b.txt`。为它们分别写 targetPaths 和 verificationCommands。
+5. 写一个失败样本：子 Agent 试图修改 targetPaths 之外的文件。说明你期待工具层抛出什么类型的错误，以及父 Agent 应如何报告。
+6. 设计一个 summary_only 场景，要求子 Agent 的原始输出很长，但父 Agent 只需要 5 行摘要。说明 artifact 和 summary 分别保存什么。
+7. 画出一个三层 topology：root parent、orchestrator child、leaf grandchild。标出 rootJobId、parentJobId、depth 和 maxDepth。
+8. 写一段 benchmark 报告说明：某次真实模型运行失败不是模型完全不会做任务，而是子 Agent handoff 过于模糊，导致两个 child 重复检查同一文件。
 
-### 13.13 本章参考资料
+这些练习的目标不是背 API，而是训练你把“多 Agent 能力声明”落到 runtime 可检查的字段、命令、artifact 和测试上。
+
+### 13.14 本章参考资料
 
 - Omni Agent: [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
 - Omni Agent: [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)
 - Omni Agent: [`docs/governed-subagents.md`](../../docs/governed-subagents.md)
 - Omni Agent: [`tests/runtime.test.ts`](../../tests/runtime.test.ts)
-- OpenAI Agents SDK handoffs: [https://openai.github.io/openai-agents-python/handoffs/](https://openai.github.io/openai-agents-python/handoffs/)
-- OpenAI Agents SDK tracing: [https://openai.github.io/openai-agents-python/tracing/](https://openai.github.io/openai-agents-python/tracing/)
-- NIST AI Risk Management Framework: [https://www.nist.gov/itl/ai-risk-management-framework](https://www.nist.gov/itl/ai-risk-management-framework)
+- Anthropic Engineering: [How we built our multi-agent research system](https://www.anthropic.com/engineering/built-multi-agent-research-system)
+- OpenAI Agents SDK: [Handoffs](https://openai.github.io/openai-agents-python/handoffs/)
+- OpenAI Agents SDK: [Tracing](https://openai.github.io/openai-agents-python/tracing/)
+- LangChain Docs: [Multi-agent systems](https://docs.langchain.com/oss/python/langchain/multi-agent)
+- Microsoft Research: [AutoGen: Enabling Next-Gen LLM Applications via Multi-Agent Conversation](https://arxiv.org/abs/2308.08155)
 
 ## 14. Gateway 与 Workbench：把 Agent 变成可检查的本地服务
 
