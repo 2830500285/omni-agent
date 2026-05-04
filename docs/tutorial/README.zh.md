@@ -6818,141 +6818,303 @@ npm run eval:benchmark -- --mode synthetic
 
 ## 25. 如何写真实模型 Benchmark 报告
 
+真实模型 benchmark 报告不是一张炫耀分数的截图，而是一份可复盘的工程记录。它要让读者知道：你跑的是什么任务集，用的是什么模型和 runtime 模式，验证依据是什么，成本和耗时是多少，失败样本是什么，分数相对哪个 baseline 变化，哪些结论可以公开声明，哪些结论只能说明“这次运行如此”。如果报告缺少这些信息，即使分数很高，也很难说服维护者和外部开发者。
 
-本章讨论的是：把模型、模式、任务集、成本、耗时、失败原因和可复现命令写进公开报告。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章围绕 [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts) 来讲。这个脚本已经做了真实报告需要的几件关键事情：识别 `synthetic`、`mock`、`openai` 三种模式；生成 `quality` 报告；统计 usage、token、duration 和 estimated cost；汇总失败 step；保存 `history.json`、`trend.json`、`latest.json` 和 Markdown report；在默认 suite 下把 capability maturity 一起纳入输出。你写公开报告时，不应该绕开这些 artifact 自己手填结论，而应该让报告和机器产物一一对应。
 
+### 25.1 先区分三种“分数”
 
-### 25.1 本章先建立的心智模型
+第一种分数是 synthetic 分数。`scripts/eval-benchmark.ts` 中的 `syntheticExecutor` 使用 scripted observed run，它会按照 scenario expectation 构造通过的 tool event、changed files 和 final response。这个分数主要证明 manifest、runner、判分器、质量报告和 maturity gate 没有坏。它不证明真实模型会做这些任务。
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，benchmark report、cost 和 failure reason 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二种分数是 mock runtime 分数。`eval-release-local` 或 benchmark 的 mock 模式会走 CLI runtime 路径，但模型行为仍然不是外部真实模型。它的价值是验证 runtime wiring、artifact 写入、CLI 参数、release gate 和本地执行环境。它比 synthetic 更接近系统真实路径，但仍然不能被写成“OpenAI/DeepSeek/Claude 在 45 项任务上通过率多少”。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，model profile、duration 和 baseline 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第三种分数是真实模型分数。只有当 executor mode 是 `openai` 或兼容真实端点，并且报告写清 model profile、API endpoint、工具能力、审批策略、运行参数和 artifact 路径时，它才是模型能力报告。即使如此，也要谨慎表述：它评测的是“某个模型 + 某套 runtime + 某个任务集 + 某组参数 + 某个日期”的组合表现，而不是模型的抽象能力上限。
 
-本章反复出现的关键词包括：`benchmark report`、`model profile`、`cost`、`duration`、`failure reason`、`baseline`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+报告中最重要的一句话，往往不是“score = 97%”，而是“这个 score 是在哪种 executor mode 下得到的”。如果你把 synthetic 分数放到 README 顶部，却没有注明它是 harness 自检，读者会以为项目已经证明真实 agent 能完成全部任务。这会损害项目可信度。
 
-### 25.2 在仓库中找到入口
+### 25.2 报告首页必须写清的字段
 
-阅读本章时，建议从下面这些文件开始：
+一个可公开的真实模型 benchmark 报告，首页至少应该包含这些字段：
 
-1. [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`README.zh.md`](../../README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`examples/evals/suite.json`](../../examples/evals/suite.json)：用来观察本章在仓库中的实现、测试或运维入口。
+| 字段 | 为什么必须写 | Omni Agent 中的来源 |
+| --- | --- | --- |
+| run id 和时间 | 用来定位 artifact 和历史趋势 | `options.runId`、`completedAt` |
+| commit 或版本 | 用来复现当时源码 | Git commit、release tag |
+| executor mode | 区分 synthetic、mock、openai | `executor.mode` |
+| model profile | 确认真实模型和路由配置 | `modelProfileId`、`observedRun.modelProfiles` |
+| suite manifest | 确认任务集版本 | `manifestPath` |
+| scenario 数量 | 确认样本规模 | `result.metrics.scenarioCount` |
+| completion rate | 总体完成率 | `result.metrics.completionRate` |
+| verification pass rate | 是否真的跑过验证 | `result.metrics.verificationPassRate` |
+| tool safety rate | 是否触发工具安全风险 | `quality.dimensions`、metrics |
+| duration | 评估效率和可用性 | `usage.durationMs` |
+| tokens 和 cost | 评估运行成本 | `usage.inputTokens`、`usage.outputTokens`、`estimatedCostUsd` |
+| failed steps | 让读者看到失败样本 | `failureSummary` |
+| artifact 路径 | 让维护者复查原始证据 | `artifactPaths` |
+| baseline | 说明是否进步或回退 | `trend.baselineRunId`、delta |
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，cost、failure reason 和 benchmark report 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这些字段看起来很多，但它们解决的是不同问题。model profile 防止模型身份不清；suite manifest 防止任务集被悄悄替换；duration 和 cost 防止“能跑但贵到不可用”；failure summary 防止只报平均分；artifact 路径防止报告变成不可验证的宣传页。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+写首页时还要避免把指标堆成没有解释的数字。`completionRate` 表示多少 scenario 或 step 达到了当前判分器的完成条件，它回答“有多少任务被系统认为完成”。`verificationPassRate` 更关心完成是否有验证支撑，它回答“完成是否经过测试或证据确认”。`toolSafetyRate` 关注工具层有没有危险动作，它回答“这次运行有没有越权或不安全行为”。`fallbackRecoveryRate` 关注主模型或主路径失败后是否恢复，它回答“系统是否具备失败后继续工作的能力”。这些指标之间不能互相替代。一个运行可能 completion 很高，但 verification 很低，说明 Agent 会给出完成答复却没有足够验证；也可能 verification 很高，但 cost 和 duration 过大，说明它适合离线 release gate，不适合默认交互体验。报告必须把这种解释写出来，读者才知道数字意味着什么。
 
-### 25.3 它在一次 Agent 任务中怎样出现
+首页还应该写清报告口径。比如“scenario count”到底是 45 个 scenario，还是 45 个 step；“passed”到底是 step passed、scenario completed，还是 quality gate passed；“cost”到底是供应商账单、模型 usage 估算，还是项目内部 snapshot 估算。口径不清会让同一份报告被不同读者理解成不同结论。技术报告最怕的不是分数低，而是分数含义模糊。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，duration、baseline 和 model profile 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 25.3 一条命令应该留下哪些 artifact
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+真实报告必须能追溯到命令。Omni Agent 的 benchmark runner 在 `--save-artifacts` 打开时，会在 artifacts 根目录下写入 run 目录和汇总文件。一次理想运行会留下这些文件：
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+```text
+artifacts/
+  benchmark/
+    runs/
+      2026-05-04T...
+        eval-result.json
+        quality.json
+        summary.json
+        report.md
+        cli-command.json
+    history.json
+    trend.json
+    latest.json
+```
 
-### 25.4 设计时最容易忽略的边界
+`eval-result.json` 是原始结果，包含 scenarioResults、stepResults、observedRun 和 metrics。分析失败时先看它。`quality.json` 是质量维度报告，适合给 release gate 使用。`summary.json` 是单次运行摘要，包含 mode、implementation、manifest、usage、failureSummary 和 artifact 相对路径。`history.json` 用来保存多次运行，`trend.json` 用来比较 latest 和 baseline，`latest.json` 给 dashboard 或 README badge 使用。`report.md` 是面向人的摘要，但它不应该替代 JSON artifact。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，failure reason、benchmark report 和 cost 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果你只保留控制台输出，下一次就很难复查失败原因。控制台输出适合快速看结果，artifact 才适合审计、发布和长期趋势。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+### 25.4 可复现命令要完整，而不是只写 npm script
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+报告中不要只写“运行了 benchmark”。应该写完整命令，包括 mode、model profile、manifest、run id、artifact 目录、验证命令、审批策略和 max iterations。比如：
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+```powershell
+npm run eval:benchmark -- `
+  --mode openai `
+  --model-profile deepseek-flash `
+  --manifest examples/evals/suite.json `
+  --artifacts-dir artifacts/benchmark `
+  --run-id deepseek-flash-2026-05-04 `
+  --approval-policy on-request `
+  --execution-domain workspace `
+  --verification-mode required `
+  --max-iterations 8 `
+  --save-artifacts
+```
 
-### 25.5 如何判断实现是否可靠
+如果你跑的是 mock，应明确写：
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，baseline、model profile 和 duration 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+```powershell
+npm run eval:benchmark -- --mode mock --save-artifacts
+```
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+如果你跑的是 synthetic，应明确写：
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+```powershell
+npm run eval:benchmark -- --mode synthetic --save-artifacts
+```
 
-### 25.6 常见误区
+这三条命令在报告中的意义完全不同。synthetic 命令适合放在“harness self-check”部分；mock 命令适合放在“runtime path validation”部分；openai 或兼容端点命令才适合放在“real model benchmark”部分。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，benchmark report、cost 和 failure reason 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 25.5 Cost 不是装饰字段
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+Agent benchmark 的成本有两层含义。第一层是 API 费用，通常由输入 token、输出 token、缓存 token、模型单价和批处理策略决定。第二层是工程成本，包括耗时、失败重试、人工抽检和环境准备。公开报告至少要写第一层，成熟报告还应说明第二层。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+Omni Agent 在 [`packages/model-client/src/index.ts`](../../packages/model-client/src/index.ts) 中有 `estimateModelUsageCost`。它会根据 model pricing snapshot、input tokens、output tokens、cached input tokens 和 cache creation tokens 估算美元成本。如果没有匹配的 pricing snapshot，cost status 会是 `unknown`，报告应该如实写“unknown”，不能自己猜一个漂亮数字。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+价格会随供应商更新而变化，所以报告中还应写清 pricing snapshot 的来源和日期。OpenAI 和 Anthropic 都有官方 pricing 页面。若你在 2026 年 5 月 4 日写报告，应标明“价格按报告生成时的官方页面或项目内 snapshot 估算，后续可能变化”。这样做不是啰嗦，而是避免未来读者用新价格反推旧运行成本时产生误解。
 
-### 25.7 一个可操作的检查流程
+成本字段还可以帮助比较模型。一个模型通过率高但每次运行极慢、费用极高，适合复杂 release gate，不一定适合作为默认本地 Agent；一个模型便宜但 verification repair 大量失败，适合 smoke，不适合公开宣称成熟能力。报告应该把这类取舍写出来。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+写成本时要特别说明“估算”和“账单”的区别。Omni Agent 能从 observed run 中聚合 input tokens、output tokens 和 total tokens，再结合 pricing snapshot 给出 estimated cost。这个数字适合比较同一套报告中的相对成本，但不一定等于供应商最终账单。供应商可能有缓存计费、批处理折扣、区域价格、免费额度、失败请求计费、工具调用额外费用或最低计费单位。报告里可以写“estimated from usage and pricing snapshot”，不要写成“actual bill”。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，model profile、duration 和 baseline 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果 run 中出现多个 model profile，成本解释要更谨慎。比如路由先尝试一个便宜模型，失败后 fallback 到更强模型，最终 `modelProfiles` 会包含多个 profile。此时简单用第一个 profile 的价格估算可能低估真实成本。成熟报告应该把模型使用分布写出来：哪个模型承担了多少 step，fallback 出现几次，失败重试消耗了多少 token。当前脚本已经把 `modelProfiles` 聚合进 usage summary，后续如果要做更精细报告，可以按 observed run 逐步统计。
 
-### 25.8 与真实模型评测的关系
+### 25.6 Failure summary 要写成诊断材料
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，cost、failure reason 和 benchmark report 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+失败摘要不是把失败 scenario id 列出来就结束。至少应包含 `scenarioId`、`stepId`、`reasons`、`verificationStatus` 和 failed tools。`scripts/eval-benchmark.ts` 的 `summarizeBenchmarkFailures` 已经按这个结构汇总失败 step。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+写失败原因时要避免两种偷懒表达。第一种是“模型太弱”。这可能是真的，但必须先排除其他原因：工具 schema 是否清楚，workspace 路径是否正确，审批是否阻断，verification command 是否能本地运行，rate limit 是否影响输出，是否缺少 required evidence。第二种是“任务太难”。任务难也要拆清楚：是长上下文丢失、业务规则太多、工具调用失败、文件编辑破坏语法，还是最终回复没有说明证据。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+更好的 failure summary 可以这样写：
 
-### 25.9 一个完整的小案例
+| scenario | status | direct reason | likely layer | next action |
+| --- | --- | --- | --- | --- |
+| `coding.ts_bugfix` | failed | Missing changed file: `src/parser.ts` | model/tool planning | 检查 trace 中是否读取目标文件 |
+| `verification.native_completion_evidence` | failed | Missing passed verification evidence kind: `command` | runtime/evidence | 检查 `run_verification` 事件是否写入 observedRun |
+| `compat.secret_scan_warning` | risk | final response included raw secret preview | safety/final response | 增加 redaction assertion 和安全负例 |
+| `model_fallback` | failed | fallbackRecovered is false | model router | 检查 provider error 和 cooldown 记录 |
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+这种写法能让维护者知道下一步该改哪里，而不是陷入“调 prompt 试试”的循环。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+真实失败复盘可以按五层来分。第一层是 dataset 和 fixture：任务是否写错、fixture 是否缺文件、验证命令是否本地不可运行。第二层是 runtime：CLI 参数、workspace、session store、artifact 写入、审批策略是否正确。第三层是工具：工具 schema 是否让模型理解，工具执行是否返回清楚错误，失败状态是否进入 observed run。第四层是模型：模型是否读懂任务，是否能规划步骤，是否在失败后修复。第五层是报告和判分：expectation 是否过松或过严，LLM judge 是否没有校准，failure category 是否写错。
 
-这个案例强调的是工程诚实。 在本章语境中，duration、baseline 和 model profile 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+报告中最好不要直接跳到第四层。很多“模型失败”其实是第一层或第二层的问题。例如 verification command 在 fixture 中本来就跑不起来，真实模型再强也会失败；workspaceCwd 指向错误目录，Agent 会读不到目标文件；requiredFinalResponseIncludes 写了过于具体的英文短语，中文模型完成任务后仍然会被判失败。先分层，后归因，是写 benchmark 报告的基本纪律。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+失败样本还要保留“未解决风险”。如果你只写“失败原因：缺少验证证据；下一步：补充 evidence”，读者不知道这个问题影响多大。更好的写法是：“该失败会让 README 中 verification-native claim 变弱；在修复前，不应把该 capability 标为 mature；release 可以继续，但必须在 release notes 中标为 known issue。”这样的失败分析才会进入项目决策。
 
-### 25.10 排错时的分层问题表
+### 25.7 Baseline 比单次分数更重要
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
+单次分数只能说明这次运行。趋势报告才能说明项目在进步还是退步。Omni Agent 的 `persistBenchmarkRun` 会把本次运行写入 `history.json`，再调用 `buildLongitudinalBenchmarkReport` 生成 `trend.json`。趋势报告中会出现 latest、baseline、overallScoreDelta 和 regressions。
+
+选择 baseline 时要稳定。常见做法有三种：上一版 release 作为 baseline；某个固定模型和固定 manifest 作为 baseline；某个已经公开的报告 run id 作为 baseline。不要每次都把最差的一次当 baseline，也不要在模型、任务集、审批策略同时变化时只比较分数。否则 delta 没有解释价值。
+
+报告中应该写明变化来自哪里。例如：
+
+```text
+Compared with baseline run 2026-04-30-openai-gpt-4.1:
+- completionRate: 0.82 -> 0.88 (+0.06)
+- verificationPassRate: 0.76 -> 0.84 (+0.08)
+- toolSafetyRate: 1.00 -> 1.00 (no regression)
+- averageToolCallCount: 5.4 -> 6.2 (slower, but repair rate improved)
+```
+
+如果 suite manifest 改了，要写“不可直接比较”或拆开比较旧任务子集。公开 benchmark 最怕的是任务集变化后仍然只展示一个更高分数。
+
+读 trend 时要把“总体变化”和“结构变化”分开。总体变化是 overallScore、completionRate、verificationPassRate 这些聚合指标的升降；结构变化是某些 category 突然变好或变坏。例如整体分数上升，可能只是新增了几个简单 scenario，也可能是复杂修复能力真的提高。整体分数不变，也可能掩盖了安全能力下降和普通 coding 能力上升相互抵消。报告中应列出 regressions，而不只是列出 improvement。
+
+如果要做 dashboard，建议 dashboard 展示四层信息。第一层展示 latest run 的 mode、model、suite、overallScore 和 gate 状态。第二层展示相对 baseline 的 delta。第三层展示失败 scenario 列表和 failure category 分布。第四层链接到原始 artifact。不要只做一张漂亮分数卡，因为没有失败入口的 dashboard 很难用于工程行动。真正的 dashboard 应该让维护者从“哪个指标坏了”一路点到“哪个 scenario、哪个 step、哪个 reason、哪个 trace”。
+
+还要记住，baseline 不是永远不变。项目进入 beta、公开 release、真实模型接入、任务集升级时，都可以建立新的长期 baseline。但每次更换 baseline 都要在报告中说明原因。否则外部读者会怀疑你在选择性比较。严肃的做法是同时保留旧 baseline、当前 release baseline 和 latest run，让读者自己看到迁移过程。
+
+### 25.8 报告正文应按证据强度排序
+
+推荐的报告结构如下：
+
+1. Summary：一句话结论，明确 mode、model、suite、run id、是否通过 release gate。
+2. Environment：commit、OS、Node、package manager、model profile、API provider、approval policy。
+3. Dataset：manifest、scenario 数量、category 分布、是否包含负例、是否包含真实失败样本。
+4. Metrics：completion、verification、repair、tool safety、state retention、fallback recovery、cost、duration。
+5. Failure Analysis：列出失败 step、原因、可能层级、下一步动作。
+6. Artifacts：链接 eval result、quality、summary、history、trend、cli command。
+7. Claims：说明这次运行能支持哪些公开声明，不能支持哪些声明。
+8. Appendix：完整命令、pricing snapshot、人工抽检说明、LLM judge rubric。
+
+把 claims 放在 metrics 后面很重要。先给证据，再给声明，读者会更容易信任。不要在开头写“已经达到成熟公开 benchmark”，然后在后面才承认实际是 synthetic 模式。
+
+写环境部分时，不要只写操作系统和 Node 版本。对 Agent benchmark 来说，环境还包括审批策略、execution domain、默认验证模式、最大迭代次数、是否允许危险动作自动批准、是否启用 memory、是否启用 subagent、是否连接 MCP server。这些配置会显著影响结果。一个模型在 `autoApproveRisky=false` 时失败，可能是正确地被安全策略拦住；同一模型在放宽审批后通过，也不代表它更安全。报告必须让读者看到这些条件。
+
+写 dataset 部分时，要说明样本构成。比如默认 suite 包含 coding bugfix、verification repair、memory recall、skill creation、subagent delegation、MCP tool use、gateway route delivery、model fallback 和 long context modification。这样读者知道总分来自哪些能力。如果 45 项里 40 项都是简单文档修改，97% 的分数意义有限；如果样本包含危险命令阻断、路径逃逸、fallback 恢复和验证证据要求，即使分数低一点，也更有诊断价值。
+
+写 metrics 部分时，要把质量维度和原始失败结合起来。只看 overallScore 会隐藏结构性问题。比如 tool safety 只失败一次也可能是 blocking，因为安全风险不能用其他高分抵消；route delivery 通过率低可能只影响 gateway 场景，不应该被误解成全部 coding 能力差；state retention 低说明多轮任务不稳定，即使单步修复能力很好，也不能宣传“长期任务可靠”。
+
+### 25.9 如何写“能支持什么声明”
+
+报告最终要服务于 capability-backed claims。可以把结论分成三档。
+
+第一档是强声明：真实模型、固定 suite、多次运行、artifact 完整、失败原因可复查、release gate 通过。比如“在 run id X 中，DeepSeek compatible profile 在默认 45 项 suite 上达到 completionRate Y，verificationPassRate Z，失败样本和 artifact 已保存”。这类声明可以放到 README 或 release notes，但仍要带上运行条件。
+
+第二档是中声明：mock runtime 或单次真实模型运行通过，说明系统路径可用或该模型在当前样本上表现可用，但还不够说明长期稳定。适合写在开发日志或 beta 说明中。
+
+第三档是弱声明：synthetic 或少量 smoke 通过，只能说明 harness、manifest、判分逻辑、CLI 输出和报告生成工作正常。它适合写成“self-check passed”，不适合写成“agent capability solved”。
+
+如果报告发现失败，也可以支持有价值的声明。例如“Flash 模型在复杂编辑任务中容易出现大范围替换风险，建议只用于低风险 smoke 或作为便宜预筛选模型”。这样的结论比单纯说“模型太弱”更有工程价值。
+
+写 claim 时可以使用三段式：证据、范围、限制。证据是 artifact 和指标，例如 `eval-result.json`、`quality.json`、run id、completionRate。范围是这条声明适用于什么模型、什么 suite、什么 mode。限制是它不覆盖什么，例如没有跨模型重复、没有真实外部 issue、没有人工抽检、成本估算不等于账单。三段式能防止 README 变成营销语言。
+
+不推荐的写法是：“Omni Agent benchmark 通过率 97%，说明能力强。”推荐的写法是：“在 run id X 中，默认 suite 使用 synthetic executor 达到 97% quality score，说明 eval manifest、runner 和判分逻辑可用；该结果不代表真实模型完成率。真实模型结果见 run id Y。”再比如，不推荐写“DeepSeek 不行”；推荐写“DeepSeek Flash 在 run id X 的 45 项 suite 中 verificationPassRate 为 Y，主要失败集中在复杂代码编辑和验证修复，建议作为 smoke profile，而不是 release gate profile。”这两种写法的技术含量完全不同。
+
+### 25.10 一份可直接使用的报告模板
+
+下面是一个可以放进 release notes 或 `docs/reports/` 的模板：
+
+```markdown
+# Omni Agent Real Model Benchmark Report
+
+- Run id:
+- Date:
+- Commit:
+- Executor mode:
+- Model profile:
+- Provider endpoint:
+- Suite manifest:
+- Scenario count:
+- Artifact directory:
+
+## Summary
+
+Write one paragraph explaining whether the run passed, what it proves, and what it does not prove.
+
+## Metrics
+
+| Metric | Value | Gate | Result |
 | --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+| completionRate |  |  |  |
+| verificationPassRate |  |  |  |
+| toolSafetyRate |  |  |  |
+| fallbackRecoveryRate |  |  |  |
+| durationMs |  | n/a |  |
+| estimatedCostUsd |  | n/a |  |
 
-分层排错能减少无效尝试。 在本章语境中，failure reason、benchmark report 和 cost 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+## Failed Steps
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+| Scenario | Step | Reason | Likely layer | Next action |
+| --- | --- | --- | --- | --- |
 
-### 25.11 如何把本章内容写进团队流程
+## Artifacts
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+- eval-result:
+- quality:
+- summary:
+- trend:
+- cli-command:
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，baseline、model profile 和 duration 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+## Claims Supported
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+- 待填写。
 
-### 25.12 练习
+## Claims Not Supported
 
-1. 围绕 `benchmark report` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `model profile` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `cost` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `duration` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `failure reason` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `baseline` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+- 待填写。
+```
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+模板里最容易被忽略的是 `Claims Not Supported`。这一栏会强迫你承认边界：是否只跑了一次，是否没有人工抽检，是否使用 synthetic，是否没有跨模型重复运行，是否没有真实外部仓库任务。公开项目越诚实，越容易赢得技术读者信任。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 25.11 与 release checklist 的关系
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+[`docs/release-checklist.md`](../../docs/release-checklist.md) 已经要求发布前运行 `npm run release:check`，并在最后记录 benchmark JSON 输出和 maturity issues。也就是说，benchmark 报告不是额外装饰，而是发布流程的一部分。
+
+一次严肃发布可以按这个顺序走：
+
+1. 运行 `npm run release:check`，确认类型检查、构建、release-local、diagnostics、reference parity、测试、smoke、benchmark 和 maturity check。
+2. 对默认 suite 运行 synthetic benchmark，确认 harness 自检。
+3. 对同一 suite 运行 mock benchmark，确认 runtime path。
+4. 对真实模型 profile 运行 openai benchmark，保存 artifacts。
+5. 阅读 failure summary，补充人工判断。
+6. 更新 release notes 中的 benchmark report。
+7. 只把 artifact 支持的内容写成公开 claim。
+
+如果真实模型 benchmark 没有通过，不代表不能发布所有改动。但 release notes 必须写清楚：哪些 gate 通过，哪些 gate 失败，失败是否 blocking，是否回退默认模型，是否降低公开能力声明。
+
+发布报告还应该有人工抽检环节。不是所有通过都可信，尤其是 final response 质量、无关修改、隐藏环境依赖和安全边界解释，机器判分可能漏掉。人工抽检不需要每次看完全部 45 项，可以按风险抽样：抽所有失败项、抽所有安全相关通过项、抽高成本或高耗时项、抽跨 step 场景、抽新增 scenario。抽检结论应写进报告，例如“人工抽检 8 项，其中 6 项通过机器判断且人工确认，2 项存在 final response 证据不足，已降级为 advisory issue”。这样报告不会只依赖自动分数。
+
+如果项目要面向外部开发者，建议把报告保存到稳定目录，例如 `docs/reports/benchmark-YYYY-MM-DD-model.md`，并在 README 中只引用摘要和链接。README 负责展示当前可信状态，报告负责保存完整证据。不要把长 JSON 粘进 README，也不要只在 README 写一行分数而不链接 artifact。
+
+最后再给一组发布红线：没有 executor mode 的报告不要公开引用；没有 model profile 的真实模型报告不要公开引用；没有 artifact 的分数不要公开引用；没有 failure summary 的高分报告不要公开引用；没有 baseline 说明的趋势图不要公开引用；把 synthetic 写成真实模型能力的报告必须改写。红线看起来严格，但它保护的是项目长期信誉。一旦外部读者发现报告口径含糊，后续即使你补上真实评测，也会很难重新建立信任。一个可信的 Agent 项目，宁愿慢一点公开高分，也不要过早发布无法复盘的胜利叙事；前者会积累证据，后者会消耗信任。报告越诚实，后续优化方向越清楚，外部贡献者也越容易判断自己能补哪一块，并据此提交更有价值的失败样本、修复补丁和评测改进，项目路线也会更稳。
+
+### 25.12 本章练习
+
+第一个练习：打开一次 `eval:benchmark -- --mode synthetic --save-artifacts` 的输出，找出 `executor`、`metrics`、`quality`、`usage` 和 `failureSummary`。用一段话说明这次运行能证明什么，不能证明什么。
+
+第二个练习：设计一份真实模型报告首页。字段必须包括 run id、commit、model profile、suite manifest、scenario count、completionRate、verificationPassRate、duration、cost、artifact path 和 baseline。
+
+第三个练习：任选一个失败 step，把它改写成诊断表。至少写出 direct reason、likely layer 和 next action。不要使用“模型太弱”作为唯一解释。
+
+第四个练习：比较两次运行的 trend。说明哪些指标可以直接比较，哪些指标因为 manifest、model、审批策略或 runtime 变化而不能直接比较。
+
+第五个练习：写三条 claims：一条强声明、一条中声明、一条弱声明。每条都要说明它依赖哪些 artifact。
 
 ### 25.13 本章参考资料
 
-- Omni Agent: [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
-- Omni Agent: [`README.zh.md`](../../README.zh.md)
-- Omni Agent: [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)
-- Omni Agent: [`examples/evals/suite.json`](../../examples/evals/suite.json)
-- SWE-bench Verified: [https://www.swebench.com/](https://www.swebench.com/)
-- OpenAI evaluation best practices: [https://platform.openai.com/docs/guides/evaluation-best-practices](https://platform.openai.com/docs/guides/evaluation-best-practices)
-- OpenAI evals guide: [https://platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
+- Omni Agent benchmark runner: [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
+- Omni Agent release checklist: [`docs/release-checklist.md`](../../docs/release-checklist.md)
+- Omni Agent operations runbook: [`docs/operations.md`](../../docs/operations.md)
+- Omni Agent capability-backed claims: [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)
+- Omni Agent model cost estimator: [`packages/model-client/src/index.ts`](../../packages/model-client/src/index.ts)
+- OpenAI evaluation best practices: [https://developers.openai.com/api/docs/guides/evaluation-best-practices](https://developers.openai.com/api/docs/guides/evaluation-best-practices)
+- OpenAI graders guide: [https://developers.openai.com/api/docs/guides/graders](https://developers.openai.com/api/docs/guides/graders)
+- OpenAI API pricing: [https://openai.com/api/pricing/](https://openai.com/api/pricing/)
+- Anthropic Claude pricing: [https://platform.claude.com/docs/en/about-claude/pricing](https://platform.claude.com/docs/en/about-claude/pricing)
+- Anthropic demystifying evals for AI agents: [https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents](https://www.anthropic.com/engineering/demystifying-evals-for-ai-agents)
+- SWE-bench leaderboards: [https://www.swebench.com/](https://www.swebench.com/)
 
 ## 26. 如何把能力声明变成证据链
 
