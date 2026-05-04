@@ -2667,30 +2667,234 @@ Failover 也不应该掩盖配置错误。如果主 profile 因为 key 写错一
 
 ## 8. Workspace：Agent 如何理解一个本地仓库
 
-Workspace 是 Agent 的工作现场。一个没有 workspace 概念的模型，只能根据你粘贴的片段猜测。一个有 workspace service 的 Agent，可以检查目录、读取文件、理解 git 状态、运行命令、保存 artifacts。
+如果说 model profile 解决的是“谁来思考”，那么 workspace 解决的就是“思考发生在什么地方”。一个没有 workspace 概念的模型，只能根据你复制给它的片段猜测项目状态；一个有 workspace service 的 Agent，可以检查目录、读取文件、运行命令、生成 artifact、观察 git diff，并在必要时创建 checkpoint 或回滚修改。两者看起来都在回答同一个问题，但工程意义完全不同。
 
-Workspace 的第一职责是确定边界。Agent 应该知道自己在哪个目录工作，也应该防止路径逃逸。比如用户让 Agent 编辑当前仓库文件，工具不应该随意读取用户主目录里的敏感文件。路径边界是本地 Agent 安全的基础。
+本章要建立一个非常重要的观念：workspace 不是“当前文件夹”这么简单。对本地编码 Agent 来说，workspace 是一个受边界约束的工作现场。它定义了 Agent 可以看到什么、可以改什么、可以在哪里执行命令、如何保存证据、如何避免覆盖用户工作，以及如何在失败时恢复到可解释状态。
 
-第二职责是提供项目视图。Runtime 不应该把整个仓库一次塞给模型，而是应该提供摘要：有哪些顶层目录，package scripts 是什么，当前 git 状态如何，是否存在 `AGENTS.md`、`README.md`、`MEMORY.md`、`docs/`、`tests/`。模型根据摘要决定下一步读哪些文件。
+在 Omni Agent 中，workspace 的主要实现位于 [`packages/workspace/src/index.ts`](../../packages/workspace/src/index.ts)。相关测试位于 [`tests/workspace.test.ts`](../../tests/workspace.test.ts)，运行与恢复流程也会在 [`docs/operations.md`](../operations.md) 中被引用。你阅读这些文件时，不要只把它们看成工具函数集合，而要把它们看成 runtime 与真实仓库之间的安全边界。
 
-第三职责是执行命令。很多任务必须靠命令验证，比如：
+### 8.1 为什么模型不能直接理解仓库
 
-```bash
-npm run typecheck
-npm test
-node ./scripts/run-tests.mjs tests/safety.test.ts
-npm run eval:smoke
-```
+很多新手会误以为：只要模型上下文足够大，就可以把整个仓库丢给模型，让它一次理解全部内容。这个想法在小 demo 里似乎可行，但在真实仓库中很快会失败。
 
-命令执行不能完全交给模型自由决定。Runtime 应该知道命令在哪里执行，超时时间是多少，输出如何截断，失败如何记录，哪些命令属于高风险。
+第一，真实仓库通常很大。它可能包含源码、测试、构建产物、依赖目录、日志、缓存、文档、图片、锁文件、生成文件和历史 artifact。把这些内容全部塞进模型上下文，会浪费 token，也会把重要信息淹没在噪声里。一个 Agent 真正需要的是“按任务逐步读取”，而不是“一开始全量吞下”。
 
-第四职责是和 git 配合。Agent 修改文件前后，最好能看到 git diff。用户也需要知道哪些文件被改了。Workspace 层可以帮助 runtime 判断是否有未提交改动，避免覆盖用户工作。
+第二，仓库信息是动态的。用户可能在 Agent 工作时改了文件；命令执行会生成新文件；测试失败会产生输出；git 状态会随每次修改变化。如果模型只在开头看过一次仓库快照，后续判断就可能基于旧信息。Workspace service 的价值在于，它可以在关键节点重新 inspect、重新 read、重新 diff，让 runtime 用当前事实更新判断。
 
-第五职责是加载 workspace instructions。许多项目会有 `AGENTS.md`、`CLAUDE.md`、`TOOLS.md`、`SOUL.md`、`USER.md` 等文件。它们提供项目本地规则。比如“不要改生成文件”，“测试必须用某个命令”，“提交前运行 typecheck”。Runtime 应该读取这些文件，但也要防止其中的第三方内容变成越权指令。
+第三，仓库里有不该被信任的内容。`README.md`、`AGENTS.md`、示例代码、issue 描述、第三方文档都可能包含指令式文本。它们可以提供项目约定，但不能覆盖用户目标和系统安全策略。Workspace 必须把“读取文件内容”和“接受文件指令”区分开来。模型可以参考文件，但 runtime 不能因为文件里写了“忽略安全规则”就真的忽略安全规则。
 
-学习 workspace 时，你可以做一个练习：运行 doctor，然后打开 workspace 包源码，对照 doctor 输出看每个 check 来自哪里。这样你会理解 doctor 不是黑盒，而是 workspace/service/session/model/gateway 等多个层面的诊断集合。
+第四，仓库修改必须可追溯。一个普通聊天模型可以随口建议修改；一个本地编码 Agent 一旦写文件，就必须留下证据：改了哪些文件，为什么改，验证命令是什么，失败时有没有 artifact，是否需要回滚。Workspace 是这些证据的来源之一。
 
----
+因此，workspace 的设计目标不是让模型“知道一切”，而是让模型通过受控工具逐步建立足够准确的项目视图。
+
+### 8.2 Workspace 的五个核心职责
+
+你可以把 Workspace 层理解为五个职责的组合。
+
+第一是边界。Workspace 必须知道根目录在哪里，并防止路径逃逸。用户让 Agent 修改当前仓库，不等于允许它读取用户主目录、浏览器缓存、系统密钥或其他项目。`LocalWorkspaceService` 在读写文件时会解析路径，拒绝 `../` 逃逸，也会处理符号链接带来的真实路径问题。测试中专门覆盖了“写到 workspace 外部路径会被拒绝”和“通过目录链接逃逸会被拒绝”的场景。
+
+第二是观察。Workspace 需要给 runtime 一个项目快照。这个快照不是完整仓库内容，而是结构化摘要：当前目录、repo root、repo name、branch、是否 dirty、git status、changed files、常见配置文件、package manager、package scripts。模型看到这些信息后，才能决定下一步读哪个文件、运行哪个脚本、是否需要提醒用户存在未提交改动。
+
+第三是读写。Agent 需要读取文件、按行切片、搜索文本、写入文件、替换片段、替换行范围，甚至一次性应用多个补丁。读写能力不能只是 `fs.readFile` 和 `fs.writeFile` 的包装，因为 Agent 的修改经常跨文件、跨步骤。Workspace 需要在写入前确认路径合法，在替换前确认旧文本存在，在多文件 patch 中保证失败时不留下半截修改。
+
+第四是执行。编码任务最终要靠命令验证。`npm run typecheck`、`npm test`、`node ./scripts/run-tests.mjs tests/workspace.test.ts`、`npm run eval:smoke` 都属于 workspace 内的执行。Workspace 需要确定命令的 cwd、timeout、stdout/stderr、exit code、duration，以及是否把输出写入 artifact。没有这个层，runtime 就只能把命令输出当成一段聊天文本，无法稳定复盘。
+
+第五是恢复。真实 Agent 一定会失败：模型会误改文件，测试会失败，命令会超时，用户会中途改需求。Workspace 因此需要 checkpoint、diff、artifact 和 rollback 能力。失败不可怕，不可复盘才可怕；修改出错也不可怕，无法知道改了什么才可怕。
+
+### 8.3 WorkspaceSnapshot：不要把仓库当成一大段文本
+
+`WorkspaceSnapshot` 是理解 Workspace 的入口。它把仓库状态变成 runtime 可以消费的结构化数据。典型字段包括 `cwd`、`repoRoot`、`repoName`、`branch`、`dirty`、`isGitRepo`、`gitStatusLines`、`changedFiles`、`detectedFiles`、`packageManager` 和 `packageScripts`。
+
+这些字段看似普通，但它们回答了 Agent 做事前必须知道的问题。
+
+`cwd` 告诉 Agent 当前工作目录在哪里。很多命令只有在正确目录下才有意义。比如在 monorepo 根目录运行 `npm test`，和在某个 package 子目录运行 `npm test`，结果可能完全不同。
+
+`repoRoot` 和 `isGitRepo` 告诉 Agent 当前目录是否处于 git 仓库中。没有 git 仓库时，Agent 不能依赖 `git diff` 或 `git status` 来判断变更；有 git 仓库时，Agent 应优先使用 git 作为变更观察工具。
+
+`branch` 告诉 Agent 当前分支。对于发布、CI、PR、回滚任务来说，分支是重要上下文。Agent 不能把 feature branch、main branch、detached HEAD 当成同一回事。
+
+`dirty`、`gitStatusLines` 和 `changedFiles` 告诉 Agent 是否存在未提交改动。这里有一个工程伦理问题：Agent 不应该随意覆盖它没有制造的用户改动。看到 dirty worktree 时，Agent 应该更小心地读 diff，判断哪些修改属于当前任务，哪些可能是用户已有工作。
+
+`detectedFiles` 告诉 Agent 项目里有哪些关键文件。例如 `package.json`、`README.md`、`AGENTS.md`、`docs/`、`tests/` 这类文件会影响后续阅读路线。它们不是全部上下文，而是导航信号。
+
+`packageManager` 和 `packageScripts` 告诉 Agent 应该如何验证。一个项目如果有 `pnpm-lock.yaml`，优先使用 pnpm；如果只有 `package.json`，可能使用 npm；如果有 Python 或 Cargo 项目结构，则验证方式不同。Agent 不是凭感觉运行命令，而是从 workspace 快照里推断合理命令。
+
+这就是为什么本教程反复强调结构化上下文。模型可以读自然语言，但 runtime 不应该只向模型提供自然语言。结构化字段越清楚，Agent 越容易做出可解释决策。
+
+### 8.4 路径边界：本地 Agent 安全的第一道门
+
+本地 Agent 最大的风险之一，是它离用户机器太近。云端聊天机器人最多生成一段建议；本地 Agent 可以读文件、写文件、运行命令。如果路径边界不严，它就可能碰到完全不该碰的内容。
+
+路径边界的基本原则是：所有 workspace 文件操作都必须解析到 workspace root 之内。用户传入 `../secrets.txt`，不应该成功；用户传入绝对路径 `C:\Users\...\secret.txt`，也不应该因为它是合法路径就被接受；用户通过符号链接把 workspace 内目录指向外部位置，也不应该绕过边界。
+
+这正是 `resolveWorkspacePath` 这类逻辑存在的原因。它不只是拼接字符串，而是要处理相对路径、绝对路径、缺失文件、真实路径、目录与文件类型。测试中用临时目录构造外部 root，并验证写入外部路径会被拒绝。这样的测试非常重要，因为路径逃逸不是理论问题，而是本地自动化工具里最常见的安全边界错误之一。
+
+路径边界还影响 checkpoint 和 rollback。回滚时如果处理符号链接不当，可能把 checkpoint 外部文件删除或覆盖。Omni Agent 的 checkpoint 逻辑会检查 managed root，并在恢复时避免把外部链接当成本仓库内容随意复制。你阅读这部分实现时，要关注它为什么反复检查 realpath，而不是觉得这是多余代码。
+
+一个成熟的 workspace 层，必须默认怀疑路径输入。模型给出的路径、用户粘贴的路径、文档里的路径，都只是请求，不是事实。Runtime 要先解析，再判断，再执行。
+
+### 8.5 文件读取：切片比全文更重要
+
+读文件听起来很简单，但 Agent 读文件的方式会直接影响任务质量。
+
+对于短文件，全文读取没有问题。对于长文件，全文读取会浪费上下文，还可能让模型忽略关键区域。因此 workspace 提供按行范围读取的能力。比如测试里读取 `notes.txt` 的第 2 到第 3 行，返回的就是一个小切片。这个能力对于定位函数、阅读错误附近代码、解释 diff 都很重要。
+
+搜索能力同样重要。Agent 不应该在不知道位置时盲目读取十几个文件，而应该先用 `searchText` 查关键词，再根据结果读取相关文件。比如用户说“approval policy 有问题”，Agent 可以先搜 `ApprovalPolicy`、`approval`、`risk tier`，再读匹配文件。这样做比全仓库遍历更快，也更容易把上下文聚焦在问题上。
+
+目录列举也需要节制。一个项目可能有 `node_modules`、`dist`、`coverage`、`.git` 等巨大目录。Workspace 层通常会排除这些目录，避免把依赖和生成物当成项目源码。排除目录不是偷懒，而是降低噪声、降低成本、减少错误引用。
+
+你可以用一个练习理解读取策略：假设用户让 Agent 修复 `tests/workspace.test.ts` 中的一个失败断言。一个好的 Agent 会先读取测试失败输出，再搜索失败函数名，再读取实现和相关测试片段；一个差的 Agent 会从项目根目录开始无目标地读大量文件。两者差别不在模型聪明程度，而在 workspace 工具链是否引导它形成正确阅读路线。
+
+### 8.6 文件写入：为什么需要事务补丁
+
+写文件比读文件危险得多。读错了，最多浪费上下文；写错了，就会改变用户仓库。因此 Workspace 写入要尽量可验证、可拒绝、可回滚。
+
+简单替换适合小修改：找到旧文本，替换成新文本。如果旧文本不存在，应该失败，而不是凭模型猜测去改相似位置。这能防止“代码已经变了，但 Agent 还按旧上下文改”的问题。
+
+行范围替换适合稳定的局部修改。比如你知道第 20 到 25 行是某个配置块，可以用 range patch 替换。但行号也可能因为用户同时编辑而漂移，所以关键修改最好带上 expected old text 或 expected hash。
+
+事务补丁适合多文件修改。假设一个任务要同时改 `src/index.ts` 和 `tests/index.test.ts`。如果第一个文件写成功，第二个文件失败，workspace 就会留下半成品。`applyTransactionalPatch` 的目标就是在应用前尽量检查所有操作，拒绝重复修改同一文件，拒绝 stale patch，拒绝路径逃逸，让多文件修改更像一个整体。
+
+这里的“事务”不一定等于数据库里的严格事务，但它表达了一种工程态度：Agent 不应该随手写；写之前要确认前置条件，写失败要尽量保持现场干净，写完要让 diff 可检查。
+
+### 8.7 命令执行：验证不是一句口号
+
+本教程开头说 Omni Agent 是 verification-native runtime。这个词落到 workspace 层，就是命令执行。
+
+一个编码 Agent 如果不能运行命令，就只能做静态猜测。它可以写出看起来合理的补丁，但不知道 typecheck 是否通过、测试是否通过、benchmark 是否退化。Workspace 的 `runCommand` 把命令执行变成结构化结果：`ok`、`command`、`cwd`、`exitCode`、`stdout`、`stderr`、`durationMs` 和 `artifactPath`。
+
+这些字段让 runtime 能做三件事。
+
+第一，判断验证是否真的通过。不能只看 stdout 里有没有“pass”，而要看 exit code。
+
+第二，记录失败证据。命令失败时，stdout/stderr 会被保存到 artifact，方便用户和后续 Agent 复盘。长输出不能无限塞进模型上下文，但 artifact 可以保留完整证据。
+
+第三，控制命令风险。命令应该有 timeout，避免 Agent 卡死；命令应该有 cwd，避免在错误目录执行；命令应该经过 approval policy，避免危险命令裸跑。Workspace 负责执行，但不应该独自决定什么命令安全。审批策略会在下一章详细讲。
+
+这里要特别区分“运行命令”和“相信命令”。命令输出也可能误导：测试可能跳过，脚本可能只检查部分文件，benchmark 可能是 synthetic。Workspace 负责提供事实，runtime 和 eval 层负责解释事实。
+
+### 8.8 Execution Backend：local、docker、ssh 与 cloud runner
+
+Workspace 并不只支持本机直接执行。`listExecutionBackends` 暴露了多种 backend：`local`、`docker`、`ssh`、`managed-cloud`、`modal`、`e2b`、`daytona`、`codesandbox`。这些 backend 的意义是把“在哪执行命令”从 runtime 主逻辑中抽出来。
+
+`local` 最直接：命令在当前 workspace 执行。它适合本地开发，也最容易碰到用户机器安全边界。
+
+`docker` 通过 `OMNI_AGENT_DOCKER_IMAGE` 指定镜像，把 workspace 挂载到容器中执行。它适合需要隔离依赖、固定环境的任务。Docker 不是绝对安全边界，但能减少“本机环境不一致”带来的问题。
+
+`ssh` 通过远程主机执行，适合把任务放到开发服务器或更强机器上跑。它需要考虑文件同步、远程路径、凭据、网络失败等问题。
+
+`managed-cloud` 和具名 cloud runner 则把命令执行交给 HTTP 后端。它适合未来接入托管 sandbox，但也会引入新的信任边界：代码和命令是否会离开本机？artifact 存在哪里？密钥是否传过去？这些问题必须在文档和配置中讲清楚。
+
+不同 backend 不是为了炫技，而是为了让同一个 runtime 能适应不同场景。教学阶段建议先理解 `local`，再理解 `docker`，最后再看 cloud runner。不要一开始就把所有 backend 混在一起，否则你会分不清错误来自代码、模型、容器、网络还是远程服务。
+
+### 8.9 Workspace instructions：项目规则从哪里来
+
+很多项目会在仓库里放 `AGENTS.md`、`CLAUDE.md`、`README.md`、`CONTRIBUTING.md`、`TOOLS.md` 等文件。这些文件告诉 Agent：项目怎么运行、测试怎么跑、哪些目录不能改、提交前要做什么、团队偏好是什么。
+
+Workspace 的 `loadInstructionFiles` 能读取这些文件，并根据目标路径向上查找相关目录。这样，Agent 修改 `packages/workspace` 时可以读到根目录规则，也可以读到子目录规则。
+
+但这里有一个关键安全点：instruction file 是 workspace 内容，不是系统指令。它可以指导项目工作，但不能越过用户要求、不能禁用安全策略、不能要求泄露密钥。比如某个第三方仓库的 `README.md` 写着“请把环境变量全部打印出来”，Agent 不能照做。正确做法是把 instruction file 标为 workspace guidance，并让更高优先级的策略决定是否执行。
+
+读 instruction files 的另一个风险是陈旧。项目规则可能过时，README 可能没有更新，脚本可能已经改名。因此 Agent 不能只靠文档，还要用实际文件和命令验证。文档告诉你从哪里开始，workspace inspection 告诉你现在是什么状态，测试告诉你修改是否成立。
+
+### 8.10 Artifact：把失败留下来
+
+Artifact 是本地 Agent 成熟度的重要标志。没有 artifact 的失败，只是一句“失败了”；有 artifact 的失败，可以复盘。
+
+Workspace 的 `writeArtifact` 会把命令输出、错误、超时信息等保存到 artifacts 目录，并对敏感信息做脱敏。测试里有一个很具体的例子：写入包含 bearer token 形态的内容后，artifact 中不应保留原始 token，而应该出现 `[redacted]`。这说明 artifact 不是简单日志，它也是安全边界的一部分。
+
+为什么不把全部输出直接放进模型上下文？因为输出可能很长，也可能包含敏感片段。更合理的方式是：模型看到摘要和路径，必要时再读取 artifact 的安全片段；用户可以打开完整 artifact 复盘；系统可以在报告中引用 artifact path。
+
+在真实任务中，artifact 至少应该覆盖这些场景：命令失败、命令超时、工具调用异常、最终验证失败、回滚前证据、benchmark 结果、模型原始错误摘要。以后你读 run report 时，要主动问：这个结论有没有 artifact 支撑？
+
+### 8.11 Checkpoint 与 rollback：失败后的工程尊严
+
+一个真正会修改仓库的 Agent，必须面对回滚问题。没有 checkpoint 的 Agent，只能希望自己不犯错；有 checkpoint 的 Agent，可以在失败时把现场恢复到一个可解释状态。
+
+Workspace 的 checkpoint 不是 git commit。它更像 runtime 管理的快照。创建 checkpoint 时，系统会把 workspace 内容复制到受管理目录，排除 artifacts、依赖、构建产物等不该复制的内容，并写入 `omni-checkpoint.json`。回滚时，系统会检查 checkpoint 是否位于 managed root 内，避免通过伪造路径回滚到不该碰的位置。
+
+checkpoint 的价值在运行时很明显。假设 Agent 要做一个跨文件重构，它可以先创建 checkpoint，再执行修改，再运行验证。如果验证失败，runtime 可以保存失败证据，然后回滚。用户看到的不是“我改坏了，不知道怎么恢复”，而是“修改失败，证据在 artifact，workspace 已回滚到 checkpoint”。
+
+但 checkpoint 也不是万能的。它不能替代 git，不应该跨越用户长期工作流，也不应该隐藏失败。回滚后仍然要记录失败原因，否则下一次 Agent 可能重复同样错误。好的 rollback 不是把失败抹掉，而是把失败变成可学习的证据。
+
+### 8.12 Worktree：并行修改的基础设施
+
+Git worktree 允许同一个仓库在不同目录中检出不同分支。对 Agent 来说，worktree 很适合隔离试验性修改：一个 Agent 可以在独立 worktree 里尝试修复，不直接污染用户当前目录；多个 subagent 也可以在不同 worktree 中并行处理不同任务。
+
+Omni Agent 的 workspace 层包含创建和移除 worktree 的能力。创建 worktree 时会生成安全名称和分支名，移除时也会走 workspace 命令执行路径。这里要注意，worktree 仍然共享同一个 git object database，不是完全独立虚拟机。它解决的是工作目录隔离，不是所有安全问题。
+
+教学时可以这样理解：checkpoint 适合单个 workspace 内的恢复；worktree 适合隔离一条实验分支；docker 或 cloud runner 适合隔离执行环境。三者层级不同，不要混用概念。
+
+### 8.13 Dirty worktree：尊重用户已有修改
+
+本地 Agent 经常会遇到 dirty worktree。这里有一个原则必须记住：Agent 不能假设所有未提交改动都是自己造成的。
+
+如果任务开始前就存在改动，Agent 应该先观察 git status 或 diff，至少知道哪些文件已经被动过。修改时尽量避开无关文件。提交或总结时也应该只描述自己做的修改，不把用户已有改动算进自己的成果。
+
+如果 Agent 必须修改一个已经有用户改动的文件，就要更仔细地读当前内容，而不是按旧计划覆盖。事务补丁的 expected text/hash 可以降低误伤风险，但最终仍需要模型和 runtime 共同谨慎。
+
+这也是为什么 workspace snapshot 里的 `dirty` 和 `changedFiles` 很重要。它们不是装饰字段，而是协作边界。多人协作时，尊重已有改动是基本职业习惯；人与 Agent 协作时也是一样。
+
+### 8.14 一个完整的 Workspace 工作流
+
+现在把前面的概念串起来。假设用户说：“帮我修复 workspace 的路径逃逸问题，并补测试。”
+
+一个合理的 Agent 工作流应该是这样：
+
+1. inspect workspace，确认 repo root、branch、dirty 状态和 package scripts。
+2. 读取 `AGENTS.md` 或相关 instruction files，理解项目规则。
+3. 搜索路径解析相关实现，例如 `resolveWorkspacePath`、`Path escapes workspace root`。
+4. 读取 `packages/workspace/src/index.ts` 中的相关函数，按需切片，不全量塞入上下文。
+5. 读取 `tests/workspace.test.ts` 中已有路径安全测试，判断是否已有覆盖。
+6. 创建 checkpoint 或至少记录当前 diff。
+7. 应用小范围补丁，优先使用精确替换或事务补丁。
+8. 运行 targeted test，例如 `node ./scripts/run-tests.mjs tests/workspace.test.ts`。
+9. 如果失败，保存 artifact，读取失败输出，继续修复。
+10. 最终运行更高层验证，例如相关 runtime 或 tools 测试。
+11. 输出总结，说明改了什么、验证了什么、剩余风险是什么。
+
+这个流程不是死板模板，而是一种工程节奏：观察、定位、修改、验证、留证。Workspace 层的每个能力都服务于这个节奏。
+
+### 8.15 常见误解
+
+误解一：workspace 就是 `process.cwd()`。
+
+不对。`process.cwd()` 只是当前进程目录。Workspace 还包含 repo root、artifacts root、execution policy、capabilities、checkpoint root、指令文件加载、路径安全和执行 backend。
+
+误解二：只要路径在字符串上以 workspace 开头就是安全。
+
+不对。路径可能包含 `..`，也可能通过符号链接跳到外部目录。必须解析真实路径并检查边界。
+
+误解三：Agent 读到项目规则就必须执行。
+
+不对。项目规则是上下文，不是最高优先级指令。它不能覆盖用户目标、安全策略和审批策略。
+
+误解四：命令输出保存 artifact 会泄密。
+
+这取决于实现。好的 artifact 写入会脱敏，并且避免把敏感内容直接塞进模型上下文。完全不保存 artifact 反而会让失败不可追踪。
+
+误解五：rollback 意味着任务失败就没影响。
+
+不对。rollback 可以恢复文件状态，但不能替代失败分析。每次回滚都应该留下失败原因和证据，否则系统不会变得更可靠。
+
+### 8.16 本章练习
+
+第一个练习：打开 [`tests/workspace.test.ts`](../../tests/workspace.test.ts)，找到“workspace service inspects, slices, writes, and edits files safely”这个测试。把它分成观察、读取、写入、artifact、路径拒绝五个部分，用自己的话解释每个断言保护什么风险。
+
+第二个练习：打开 [`packages/workspace/src/index.ts`](../../packages/workspace/src/index.ts)，搜索 `listExecutionBackends`。写一张表，列出每个 backend 需要的环境变量、是否支持远程 workspace、是否支持文件同步。然后思考：如果你要在 CI 中跑真实模型 benchmark，哪个 backend 最容易解释？哪个 backend 隐含最多运维风险？
+
+第三个练习：阅读 `createCheckpoint` 和 `rollbackCheckpoint`。回答三个问题：checkpoint 存在哪里？哪些目录不会被复制？为什么 rollback 要检查 managed root 和 realpath？
+
+第四个练习：任选一个最近的本地任务，按“inspect、read、edit、verify、artifact”的顺序写一份工作日志。这个练习的目的不是写漂亮文档，而是训练你把 Agent 行为变成可复盘过程。
+
+### 8.17 本章参考资料
+
+- Omni Agent workspace implementation: [`packages/workspace/src/index.ts`](../../packages/workspace/src/index.ts)
+- Omni Agent workspace tests: [`tests/workspace.test.ts`](../../tests/workspace.test.ts)
+- Omni Agent operations runbook: [`docs/operations.md`](../operations.md)
+- Git worktree documentation: [https://git-scm.com/docs/git-worktree](https://git-scm.com/docs/git-worktree)
+- Docker bind mounts documentation: [https://docs.docker.com/engine/storage/bind-mounts/](https://docs.docker.com/engine/storage/bind-mounts/)
+- OpenAI production best practices: [https://platform.openai.com/docs/guides/production-best-practices](https://platform.openai.com/docs/guides/production-best-practices)
 
 ## 9. Tools：模型为什么不能直接“做事”
 
