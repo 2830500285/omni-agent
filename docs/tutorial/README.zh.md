@@ -1735,29 +1735,429 @@ Omni Agent 的目录结构不是随机组织的。它大致遵循“入口应用
 
 ## 6. Runtime 主循环：一次任务如何被执行
 
-现在我们开始理解核心问题：当你运行 `npm run dev -- run --task "Fix the parser"` 时，系统内部发生了什么？
+### 6.1 先把一次任务看成一条流水线
 
-第一步是 CLI 解析。CLI 会识别你要执行的 command 是 `run`，读取 `--task`、`--cwd`、`--mode`、`--model-profile`、`--verify`、`--verification-mode`、`--max-iterations` 等参数。参数解析不是小事，因为它决定了用户意图如何进入 runtime。如果 `--cwd` 解析错了，Agent 可能在错误目录工作；如果 `--mode` 错了，系统可能使用 mock 而不是真实模型；如果 `--verify` 丢失，任务可能没有验证闭环。
+当你运行下面这条命令时：
 
-第二步是构造 runtime options。Runtime options 会告诉核心执行器：当前 workspace 在哪里；使用哪个模式；选择哪个 model profile；允许多少轮；验证命令是什么；审批策略是什么；执行域是 workspace、worktree 还是 sandbox。你可以把 runtime options 看作一次任务的“运行合同”。
+```bash
+npm run dev -- run --cwd "." --task "Fix the parser bug" --verify "npm run typecheck"
+```
 
-第三步是加载 workspace context。Agent 需要知道当前项目的大致情况，比如文件树、git 状态、instruction files、memory files、可能的 package scripts。它不一定一次读取所有文件，因为那会浪费上下文。好的 workspace context 应该足够让模型开始判断，又不把无关信息塞满 prompt。
+表面上看，你只是让 Agent 修一个 bug。实际上，系统内部会经过一条相当完整的流水线：
 
-第四步是加载 memory。Memory 可能来自本地 session store，也可能来自 workspace 中的 `MEMORY.md`、`USER.md`、`memory/*.md`。Runtime 应该把 memory 当作提示，而不是事实来源。当前源码永远比旧 memory 更可信。
+```text
+CLI 参数
+  -> RunTaskInput
+  -> AgentRuntimeOptions
+  -> Workspace snapshot
+  -> Context / Memory
+  -> Model profile
+  -> Prompt + Tool definitions
+  -> Model turn
+  -> Tool call parsing
+  -> Approval decision
+  -> Tool execution
+  -> Observation returned to model
+  -> Verification
+  -> Repair loop
+  -> Metrics / Artifact / Session store
+  -> Final report
+```
 
-第五步是选择模型。`mock` 模式会走本地模拟；`openai` 模式会根据环境变量或 profile 调真实 provider。如果配置了多个 profile，系统可能进行 failover。模型选择应该写入 run artifact，否则以后你无法知道一次成功或失败是由哪个模型产生的。
+这条流水线就是 Runtime 主循环的心智模型。它的重点不是“模型回答了什么”，而是用户任务如何被逐步变成可执行动作、可验证结果和可复盘证据。
 
-第六步是构造 prompt。Prompt 不只是用户任务，还包括系统规则、工具说明、workspace 摘要、memory、历史摘要、验证要求。Prompt 的目标不是“说服模型聪明”，而是给模型足够清楚的任务边界和行动协议。
+在 `packages/core-runtime/src/index.ts` 里，可以看到许多和这条流水线对应的类型和依赖：`RunTaskInput` 描述一次任务输入，`AgentRuntimeOptions` 描述运行配置，runtime 会导入 `model-client`、`tools`、`workspace`、`context`、`session-store`、`approvals`、`evals`、`extensions`、`safety` 等包。这说明 runtime 不是孤立函数，而是把许多系统组件编排起来的地方。
 
-第七步是模型返回。模型可能返回自然语言，也可能返回 tool call。普通聊天产品到这里就结束了；Agent runtime 真正的工作从这里开始。Runtime 要解析 tool call，判断工具是否存在，参数是否安全，动作是否需要审批，然后执行。
+学习 runtime 主循环时，不要一开始就试图读懂所有分支。先抓住一条正常路径：任务进入、模型思考、工具执行、验证结果、最终保存。等这条主线清楚后，再看并行工具、子 Agent、checkpoint、rollback、memory provider、tool lifecycle hook、gateway event 等高级路径。
 
-第八步是工具执行。比如模型请求读取 `package.json`，runtime 会调用 workspace 工具；模型请求运行 `npm run typecheck`，runtime 会调用命令执行工具；模型请求搜索 memory，runtime 会调用 memory backend。每个工具结果都应该被记录。
+### 6.2 CLI 到 `RunTaskInput`
 
-第九步是验证。如果任务涉及代码修改，就应该运行验证命令。验证可以是 `npm run typecheck`，可以是测试，也可以是项目特定命令。验证失败不是坏事，它是 repair loop 的输入。成熟 runtime 应该能把失败信息重新送回模型，让它修复。
+Runtime 主循环的第一步不是调用模型，而是把用户输入变成结构化任务。
 
-第十步是总结和保存。最终结果应该告诉用户改了什么、验证了什么、还剩什么风险。更重要的是，run artifact 应该保存关键证据：模型 profile、工具事件、验证命令、退出码、耗时、token usage、失败原因。
+用户在 CLI 里写的是命令：
 
-理解这个循环后，你就能看懂许多设计取舍。比如为什么要有 `maxIterations`：防止模型无限循环。为什么要有 `verificationMode`：区分必须验证和尽力验证。为什么要有 `approvalPolicy`：防止工具执行越界。为什么要有 session store：让任务可以恢复和复盘。
+```bash
+npm run dev -- run --cwd "." --task "Summarize this repository"
+```
+
+CLI 需要把这些字符串参数解析成 runtime 能理解的输入。比如：
+
+- `--task` 对应任务目标，也就是 `objective`。
+- `--cwd` 对应 workspace 根目录。
+- `--mode` 对应 mock 或真实模型路径。
+- `--model-profile` 对应要使用的模型配置。
+- `--verify` 对应验证命令。
+- `--verification-mode` 对应验证要求。
+- `--iterations` 或 `--max-iterations` 对应最大模型轮数。
+- `--execution-domain` 对应 workspace、worktree 或 sandbox。
+
+在 `RunTaskInput` 里，你能看到任务输入不只是一个字符串。它还包含 role、cwd、thread/session、verification commands、max iterations、abort signal 等信息。也就是说，runtime 接收的不是“随便一句话”，而是带边界的任务合同。
+
+这一步很关键，因为很多运行错误都来自入口参数。`--cwd` 错了，Agent 会在错误目录工作；`--mode` 错了，系统可能走 mock 而不是真实模型；`--verify` 没传，任务可能没有验证闭环；`--model-profile` 错了，真实模型请求会失败。一个好 runtime 必须尽早把这些参数结构化，而不是让后面的模型调用去猜。
+
+### 6.3 `AgentRuntimeOptions`：运行时的规则书
+
+如果 `RunTaskInput` 是这次任务要做什么，那么 `AgentRuntimeOptions` 就是这次任务应该在什么规则下做。
+
+在源码里，`AgentRuntimeOptions` 包含许多关键字段：`approvalPolicy`、`executionDomain`、`verificationMode`、`independentVerificationMode`、`mutationCheckpointMode`、`verificationFailureRollbackMode`、`toolPolicy`、`contextEngineFactory`、`memoryProviders`、`approvalHandler`、`eventHandler`、`subagentRuntime` 等。
+
+这些字段说明 runtime 的执行不是随意的。它需要提前知道：
+
+- 工具动作如何审批。
+- 文件和命令在哪个执行域里运行。
+- 验证是 required 还是 best-effort。
+- 是否需要独立验证。
+- 修改前是否创建 checkpoint。
+- 最终验证失败后是否 rollback。
+- 哪些工具允许或禁止。
+- 上下文引擎如何构建。
+- 记忆从哪些 provider 加载。
+- 事件如何向 CLI、gateway 或 workbench 发送。
+- 子 Agent 是否可用。
+
+这就是为什么第 2 章说 runtime 比 prompt 更底层。Prompt 可以告诉模型“请谨慎操作”，但 `AgentRuntimeOptions` 会真正决定工具是否可用、危险动作是否被拦截、验证失败是否触发修复或回滚。
+
+初学者读这里时，要把它当作运行规则书。一次任务最终表现如何，不只取决于模型，也取决于这些 options。两个任务使用同一个模型，但如果一个是 `workspace` 直接执行，一个是 `sandbox` 隔离执行；一个 verification required，一个 best-effort；一个允许写文件，一个禁止写文件，结果就会完全不同。
+
+### 6.4 Workspace snapshot：让模型看见真实项目
+
+Runtime 收到任务后，需要理解当前 workspace。它不会凭空知道项目结构，也不会自动知道哪些文件重要。Workspace snapshot 的作用，是给模型和 runtime 一个初始项目视图。
+
+一个 workspace snapshot 可能包含：
+
+- 当前根目录。
+- 文件树或重要文件列表。
+- git 状态。
+- package scripts。
+- instruction files，例如 `AGENTS.md`、`CLAUDE.md`、`TOOLS.md`。
+- workspace memory files，例如 `MEMORY.md`、`USER.md`、`memory/*.md`。
+- skills 或 extensions 信息。
+- 当前执行域信息。
+
+这里要注意一个平衡：snapshot 需要足够有用，但不能把整个仓库塞进模型上下文。一个大型仓库可能有成千上万个文件，全部放进 prompt 会浪费 token，也会让模型分不清重点。好的 runtime 会先给模型一个足够行动的摘要，然后让模型通过工具进一步读取相关文件。
+
+这也是工具循环存在的原因。Runtime 不需要一开始告诉模型所有细节。它只要让模型知道“这里有一个仓库，有这些入口，有这些工具”，模型就可以请求读取具体文件。这样上下文是逐步展开的，而不是一次性爆炸。
+
+### 6.5 Context 与 Memory：当前信息和历史经验
+
+Runtime 构造模型输入时，会同时处理 context 和 memory。
+
+Context 是当前回合要给模型看的信息。它可能包括用户任务、系统规则、workspace 摘要、工具说明、最近消息、验证要求、工具结果、失败输出。
+
+Memory 是跨任务保存的历史信息。它可能来自 session store，也可能来自 workspace 文件，如 `MEMORY.md`、`USER.md`、`memory/YYYY-MM-DD.md`。Memory 可以告诉模型“这个项目常用 npm run typecheck”“用户偏好小改动”“之前某种方案失败过”。
+
+二者不能混淆。Context 是模型当前看到的输入；memory 是可以被召回并放进 context 的历史材料。Memory 不是事实真理，它必须服从当前源码和当前验证。Runtime 的责任是把 memory 以合适方式加入 context，而不是让旧信息覆盖当前观察。
+
+Omni Agent 的 runtime 还会涉及 memory providers。`memoryProviders` 允许不同来源的记忆参与运行，比如内置 SQLite memory provider、workspace file memory、profile memory 等。后面第 11 章会专门讲 context 与 memory，这里先记住：runtime 主循环中，memory 是辅助上下文，不是执行结果。
+
+### 6.6 Model profile：选择谁来思考
+
+当 context 准备好后，runtime 需要选择模型。模型不是硬编码的，而是通过 model profile 选择。
+
+Profile 会说明 provider 协议、base URL、API key 环境变量、model id、是否支持 tools、是否支持 streaming、是否有额外 headers 或 body。Runtime 根据 mode 和 profile 决定走 mock、本地兼容 endpoint、OpenAI-compatible provider，还是 Anthropic-compatible protocol。
+
+模型选择必须被记录。因为一次 run 的结果离不开模型。后续复盘时，你需要知道：
+
+- 使用了哪个 profile。
+- 使用了哪个 provider 和 model。
+- 是否启用了 tool calling。
+- 是否启用了 streaming。
+- 是否发生 fallback。
+- usage 和 cost 是否可用。
+
+如果 run artifact 里没有这些信息，你就很难解释“为什么这次成功，上次失败”。真实模型评测尤其如此。Benchmark 报告如果只写通过率，不写 model profile，就不是完整证据。
+
+### 6.7 Prompt 与工具声明：告诉模型如何行动
+
+Runtime 调模型时，不只是把用户任务发过去。它还要构造 prompt。Prompt 通常包含：
+
+- 系统行为规则。
+- 用户任务。
+- 当前 workspace 摘要。
+- 相关 instruction files。
+- 可用 memory。
+- 可用 tools。
+- 工具输入输出约定。
+- 验证要求。
+- 当前 run 的限制，例如最大轮数、审批要求、执行域。
+
+工具声明非常关键。模型必须知道有哪些工具、每个工具做什么、参数是什么、什么时候该用。一个工具如果说明不清，模型可能不用、错用、重复用，或者传错参数。
+
+Prompt 的目标不是让模型“显得更聪明”，而是让模型知道任务边界和行动协议。比如它应该知道：不能声称测试通过，除非真的运行验证；需要修改文件时应该使用写工具；需要更多上下文时应该先读文件；不确定时应该观察而不是猜测。
+
+这也是为什么 prompt 与 tool contract 要一起看。只有 prompt，没有工具，模型无法行动；只有工具，没有清楚说明，模型容易误用。
+
+### 6.8 Model turn：一次模型回合
+
+一次 model turn 是 runtime 主循环中的核心节拍。Runtime 把 prompt、messages、tools、context 发给模型，模型返回结果。
+
+模型可能返回三类东西：
+
+第一类是自然语言内容，比如说明分析、提出计划、总结结果。
+
+第二类是 tool call，比如请求读取文件、搜索文本、运行命令、写文件、调用 verification。
+
+第三类是混合结果，比如先解释当前判断，再请求一个或多个工具。
+
+普通聊天产品通常在第一类结果后就结束。但 Agent runtime 不能这样。它要检查模型是否请求工具，如果请求工具，就进入工具处理；如果没有请求工具，则判断任务是否完成，是否需要验证，是否应该继续追问模型。
+
+Omni Agent runtime 还可能处理模型输出中的工具名称修复、tool call fallback、parallel-safe tool calls 等复杂情况。初学阶段不需要先读这些细节，只要理解主逻辑：模型不是终点，模型输出是下一步行动的候选。
+
+### 6.9 Tool call 解析和修复
+
+模型返回 tool call 后，runtime 需要解析它。解析包括工具名称、参数、调用 ID、请求内容等。
+
+实际模型输出并不总是完美。它可能把 `run_verification` 写成 `run_tests`，把 `run_command` 写成 `bash`，或者在不支持原生 tool calling 的 provider 中通过 JSON envelope 返回工具请求。因此 runtime 需要一定的容错和修复能力。
+
+源码中可以看到工具别名和修复阈值，例如把 `bash`、`cmd`、`exec`、`shell` 等映射到 `run_command`，把 `test`、`verify`、`run_tests` 映射到 `run_verification`。这类逻辑不是为了纵容错误，而是为了提升真实 provider 兼容性。不同模型对工具名称的遵循程度不同，runtime 需要在严格和可用之间平衡。
+
+但修复也不能无限宽松。工具名称错得太离谱，就应该失败或提示，而不是猜一个危险工具。工具参数同样需要检查。比如路径是否越界，命令是否高风险，写入是否被允许。
+
+### 6.10 Approval decision：模型请求不等于允许执行
+
+Tool call 被解析后，runtime 还不能直接执行。它必须经过 approval policy。
+
+审批决策一般包含这些问题：
+
+- 这个工具是只读还是会修改状态？
+- 它是否会执行命令？
+- 它是否访问 workspace 外部？
+- 它是否可能泄露敏感信息？
+- 它是否属于 control plane 操作？
+- 当前策略是 allow、prompt 还是 deny？
+- 是否已有 approval grant 可以复用？
+
+`packages/approvals` 提供 `classifyToolCall` 和 `resolveApprovalDecision` 这类逻辑，runtime 会使用它们来判断工具动作。审批结果可能是允许执行、请求人工确认、直接拒绝。被拒绝的动作也应该记录，因为它是 run trace 的一部分。
+
+这一步体现了 Agent runtime 和普通脚本的区别。普通脚本一旦执行就执行了；Agent runtime 会把模型意图放到安全规则里判断。模型说“我要执行这个命令”，只是候选动作，不是最终动作。
+
+### 6.11 Tool execution：行动与观察
+
+审批通过后，runtime 执行工具。工具执行后会产生 observation，再回到模型上下文。
+
+工具执行可能成功，也可能失败。成功时，要把结果摘要返回给模型；失败时，要把足够清楚的错误返回给模型。比如：
+
+- 读取文件成功：返回文件内容或片段。
+- 读取文件失败：说明路径不存在、越界、权限不足或读取错误。
+- 命令执行成功：返回 stdout、stderr、退出码。
+- 命令执行失败：返回退出码和错误输出。
+- 写文件成功：返回写入路径和摘要。
+- 写文件被拒绝：返回审批或策略原因。
+- 验证成功：返回 verification evidence。
+- 验证失败：返回失败输出，供 repair loop 使用。
+
+工具结果不应该无限长。太长的工具输出会浪费上下文，也可能遮蔽关键错误。Runtime 需要压缩和呈现工具结果，让模型能继续推理。
+
+这一步对应 ReAct 思想里的 action/observation。模型通过 action 让 runtime 执行工具，再通过 observation 获得新事实。没有 observation，模型只能猜；有 observation，模型可以基于真实环境修正计划。
+
+### 6.12 Verification：从“我做了”到“我证明了”
+
+验证是 Omni Agent runtime 的核心设计之一。
+
+如果任务只是总结仓库，验证可能是可选的；如果任务修改代码，验证就应该成为主流程。验证命令可以来自用户传入的 `--verify`，也可以由 runtime 或 eval inference 生成。常见验证包括：
+
+```bash
+npm run typecheck
+npm test
+node ./scripts/run-tests.mjs tests/runtime.test.ts
+npm run eval:smoke
+```
+
+验证失败不是终点。对 coding agent 来说，验证失败是 repair loop 的输入。Runtime 应该把失败输出带回模型，让模型分析失败原因并修复。只有在验证通过、达到最大轮数、被用户中止、被策略拒绝或无法继续时，run 才应该结束。
+
+`verificationMode` 很重要。Required verification 表示没有证据不能算完成；best-effort 表示尝试验证但失败时可能仍输出风险；disabled 表示不强制验证。不同模式适合不同任务，但公开能力声明和代码修改任务应尽量使用强验证。
+
+`docs/verification-native-runtime.md` 里强调，任务不能因为最终回复说完成就算完成，eval trace 必须包含可检查或可复放的 verification evidence。这正是 runtime 主循环区别于普通聊天的地方。
+
+### 6.13 Repair loop：失败如何变成下一轮输入
+
+成熟 runtime 不应该一遇到失败就直接总结“失败了”。它应该尝试把失败变成下一轮模型输入。
+
+比如验证命令输出：
+
+```text
+TypeError: expected string but received undefined
+```
+
+Runtime 应该把这段失败信息作为 observation 加入上下文，让模型重新定位相关代码、修改类型处理、再次运行验证。这个循环可能重复多次，直到通过或达到 `maxIterations`。
+
+`maxIterations` 是必要的。没有最大轮数，模型可能陷入无限修复：改一处、失败、再改、再失败。最大轮数让 runtime 有停止边界。停止后，最终报告应该诚实说明哪些验证未通过，而不是强行声称成功。
+
+Repair loop 的质量取决于三件事。第一，失败输出是否足够清楚。第二，模型是否能读取相关文件。第三，runtime 是否把验证失败与之前工具结果组织成可理解 context。任何一环弱，修复能力都会下降。
+
+### 6.14 Mutation checkpoint 与 rollback
+
+代码修改任务有副作用。一个 Agent 可能写错文件、改坏配置、生成无关文件。为了降低风险，runtime 可以支持 mutation checkpoint 和 rollback。
+
+Checkpoint 的思想是：在发生变更前保存一个可恢复状态。如果最终验证失败，可以根据策略回滚到变更前，或者至少留下失败证据和恢复路径。Omni Agent 的 runtime options 里能看到 `mutationCheckpointMode` 和 `verificationFailureRollbackMode` 这类配置。
+
+这说明 runtime 不是只关注“能不能改”，也关注“改坏了怎么办”。本地编码 Agent 必须面对失败。没有 rollback 的系统，失败后可能留下半成品；有 checkpoint 和 artifact 的系统，至少能说明改了什么、为什么失败、如何恢复。
+
+初学阶段不需要立刻读完整 rollback 实现，但要知道它属于 runtime 主循环的高级安全路径。后面安全和运维章节会再讲。
+
+### 6.15 Metrics、events 与 artifact
+
+一次 run 结束后，runtime 不应该只输出最终回答。它还应该保存指标、事件和 artifact。
+
+Metrics 可能包括模型回合数、工具调用数、被阻止的审批数、耗时、usage、模型 profile、验证状态等。
+
+Events 可以被 CLI、gateway、workbench 或 logs 使用。比如工具开始、工具结束、审批请求、验证通过、验证失败、run 完成。
+
+Artifact 则是更持久的证据。`docs/agent-run-artifacts.md` 里说明 agent-run artifact 可以包含 task contract、tool trace、approvals、diff、verification、summary。Benchmark runtime runs 还会把 summary 保存到 `.artifacts/benchmarks/runs/<run-id>/` 并更新 history、trend、latest、report。
+
+这一步让 run 从“聊天过程”变成“工程记录”。没有 metrics 和 artifact，后续 eval、报告、失败复盘、能力声明都缺少基础。
+
+### 6.16 Final report：最后回答应该诚实
+
+Final report 是用户最先看到的结果，但它不应该夸大。
+
+一个好的 final report 应该说明：
+
+- 任务目标是什么。
+- 做了哪些关键动作。
+- 修改了哪些文件。
+- 运行了哪些验证。
+- 验证结果如何。
+- 如果失败，失败在哪里。
+- 如果有未证明部分，要明确说出来。
+- 如果有后续建议，要基于证据。
+
+一个差的 final report 会说“已完成”，但没有验证；会说“应该没问题”，但没有证据；会隐藏失败；会把 warning 当成无关信息；会把 mock 或 synthetic 结果说成真实模型能力。
+
+Omni Agent 的核心理念要求 final report 贴近证据。最终回答不是表演，而是证据摘要。
+
+### 6.17 用伪代码理解主循环
+
+下面是一段简化伪代码，用来帮助理解：
+
+```text
+runTask(input, options):
+  create run record
+  load workspace snapshot
+  load memory and context
+  choose model profile
+  prepare tools
+
+  for turn in 1..maxIterations:
+    build prompt from task, context, tools, memory, observations
+    result = call model
+
+    if result has tool calls:
+      for each tool call:
+        resolve and validate tool
+        classify risk
+        decide approval
+        if denied:
+          record blocked event
+          return observation to model
+        else:
+          execute tool
+          record tool event
+          append observation
+      continue
+
+    if verification required:
+      run verification
+      record evidence
+      if failed and can repair:
+        append failure observation
+        continue
+
+    finalize run
+    write artifact
+    return final report
+
+  finalize as incomplete or failed
+  write artifact
+  return honest report
+```
+
+真实代码比这复杂得多，但这个伪代码抓住了关键：模型回合、工具执行、验证、记录、停止条件。读源码时，可以不断把复杂分支映射回这条主线。
+
+### 6.18 本章小结
+
+Runtime 主循环是 Omni Agent 的核心。它把用户任务变成可执行、可验证、可复盘的过程。
+
+你应该记住这几个关键判断：
+
+- CLI 只是入口，runtime 才是执行中枢。
+- `RunTaskInput` 描述任务，`AgentRuntimeOptions` 描述运行规则。
+- Workspace snapshot 给模型真实项目视图，但不能无限塞上下文。
+- Memory 是辅助信息，不是当前事实。
+- Model profile 决定真实模型调用路径，并且必须进入证据。
+- Prompt 要和 tool definitions 一起理解。
+- Tool call 是模型请求，approval decision 才决定是否执行。
+- Tool execution 产生 observation，observation 推动下一轮推理。
+- Verification 把“做了”变成“证明了”。
+- Repair loop 让失败成为下一轮输入。
+- Metrics、events、artifact 让 run 可以复盘。
+- Final report 必须诚实表达证据和未证明部分。
+
+理解了这一章，后面的 model profile、workspace、tools、approval、context、memory、session store、evals 都会更容易。它们不是分散功能，而是 runtime 主循环中的不同责任环节。
+
+### 6.19 如何判断一次 run 处于什么状态
+
+阅读 runtime 主循环时，还需要理解 run status。因为一次任务不只有“成功”和“失败”两种情况。
+
+第一种状态是正常完成。模型完成任务，必要工具执行成功，验证通过，final report 给出清楚总结。这是最理想情况。但即使正常完成，也要看验证证据是否足够。如果任务修改了代码，却没有运行任何验证，那么“完成”只能算自然语言完成，不能算 verification-native 完成。
+
+第二种状态是带警告完成。比如主要验证通过了，但某个非关键工具失败；或者最终代码可用，但前面有一次被阻止的工具调用；或者模型曾经请求一个不存在工具，runtime 修复后继续执行。这种状态不应该被隐藏。它说明结果可能可用，但运行过程里有需要复盘的信号。
+
+第三种状态是未完成。常见原因是达到最大迭代次数、模型一直没有进入有效行动、缺少必要工具、上下文不足、验证失败后无法修复。未完成不是系统崩溃，它可能是正确的停止。一个诚实 runtime 应该承认未完成，而不是为了给用户好看而声称成功。
+
+第四种状态是被策略阻止。比如模型请求删除大量文件、访问 workspace 外路径、读取敏感文件、执行高风险命令，而 approval policy 拒绝了。这不是模型能力问题，而是安全边界生效。被阻止的动作应该记录到 run events 或 artifact 中，因为它能解释为什么任务没有继续。
+
+第五种状态是执行错误。比如工具抛异常、workspace 不可访问、provider 请求失败、session store 写入失败、gateway 中断。执行错误需要按层级排查。模型请求失败和工具执行失败不是一回事；存储失败和验证失败也不是一回事。
+
+第六种状态是验证失败。验证失败是 coding agent 最常见也最有价值的反馈。它说明模型已经采取行动，但结果没有满足项目合同。Runtime 应该尽可能把验证失败变成下一轮输入，让模型修复。如果最终仍失败，就要在 final report 中说明失败命令、错误摘要、已尝试修复和残余风险。
+
+第七种状态是回滚或部分恢复。对于有 checkpoint 的修改任务，如果最终验证失败，runtime 可能回滚变更或留下可恢复证据。这个状态非常重要，因为它说明系统不仅会行动，还会处理行动失败后的后果。
+
+初学者看 run 时，可以用一个简单表格判断：
+
+```text
+是否启动成功？
+是否选到模型？
+是否拿到 workspace？
+是否调用工具？
+工具是否被审批允许？
+是否产生修改？
+是否运行验证？
+验证是否通过？
+是否保存 artifact？
+最终报告是否承认未证明部分？
+```
+
+这张表能帮助你定位问题。例如没有选到模型，就不要查工具；没有拿到 workspace，就不要查验证；工具被拒绝，就要查 approval policy；验证没跑，就不能说代码修改已证明；artifact 没保存，就要查 session-store 或运行配置。
+
+真实工程里，最糟糕的不是失败，而是失败不可解释。Runtime 主循环的目标之一，就是把失败变得可解释。只要 run status、tool events、verification evidence 和 artifact 足够清楚，失败就能变成下一次改进的材料。
+
+### 6.20 本章参考资料
+
+#### 本项目参考
+
+- [packages/core-runtime/src/index.ts](../../packages/core-runtime/src/index.ts)：runtime 主循环、`RunTaskInput`、`AgentRuntimeOptions`、工具事件、验证和 run metrics。
+- [packages/model-client/src/index.ts](../../packages/model-client/src/index.ts)：model profile、model turn、tool call response、usage 和 provider 兼容逻辑。
+- [packages/tools/src/index.ts](../../packages/tools/src/index.ts)：tool call request、tool result、工具注册和执行契约。
+- [packages/workspace/src/index.ts](../../packages/workspace/src/index.ts)：workspace snapshot、文件/命令执行、checkpoint 和 verification execution。
+- [packages/context/src/index.ts](../../packages/context/src/index.ts)：context engine、thread summary、tool observation compaction、verification mode。
+- [packages/approvals/src/index.ts](../../packages/approvals/src/index.ts)：`classifyToolCall`、`resolveApprovalDecision`、approval class 和 risk tier。
+- [packages/session-store/src/index.ts](../../packages/session-store/src/index.ts)：run、thread、tool events、metrics、artifact 的持久化。
+- [docs/verification-native-runtime.md](../verification-native-runtime.md)：verification evidence 与 completion contract。
+- [docs/agent-run-artifacts.md](../agent-run-artifacts.md)：agent-run artifact 的结构。
+- [docs/operations.md](../operations.md)：runtime failure、rollback、model runtime、memory 和 subagent 的运维语境。
+- [tests/runtime.test.ts](../../tests/runtime.test.ts)：runtime 行为测试。
+- [tests/workspace.test.ts](../../tests/workspace.test.ts)：workspace 和执行边界测试。
+- [tests/tools.test.ts](../../tests/tools.test.ts)：工具行为测试。
+
+#### 外部参考
+
+- [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)：reasoning 与 action/observation 交替的基础思想。
+- [Anthropic: Building Effective AI Agents](https://www.anthropic.com/engineering/building-effective-agents)：agent loop、工具反馈、工作流控制和何时使用 agent。
+- [OpenAI Agents SDK](https://platform.openai.com/docs/guides/agents-sdk/)：tools、handoffs、guardrails、tracing 等 agent runtime 概念。
+- [OpenAI Function Calling](https://platform.openai.com/docs/guides/function-calling)：结构化工具请求和 schema。
+- [Anthropic Tool Use with Claude](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)：模型请求工具、客户端执行工具、结果回传的循环。
+- [OpenTelemetry GenAI Agent and Framework Spans](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/)：agent trace、tool span、runtime observability 的标准化参考。
 
 ---
 
