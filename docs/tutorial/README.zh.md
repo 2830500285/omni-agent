@@ -6262,140 +6262,316 @@ review rubric 是审查标准。没有 rubric，review 很容易变成个人偏�
 ## 23. 从一条 CLI 命令读懂系统调用链
 
 
-本章讨论的是：从 CLI 参数进入 runtime、workspace、model client、tool registry、session store 和报告输出。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章选一条具体命令做源码走读。我们不从“CLI 很重要”这种空话开始，而是从这一条命令开始：
 
+```powershell
+npm run dev -- run --cwd . --mode mock --task "Summarize this repository" --output-format json
+```
 
-### 23.1 本章先建立的心智模型
+这条命令不会直接证明模型能力，因为 `--mode mock` 仍然是本地 mock runtime；但它非常适合学习调用链。它会经过参数解析、命令分发、session store、runtime host、runtime.runTask、输出 writer、exit code。读懂这条链，你就能读懂 `chat`、`evals`、`doctor`、`show-run` 等命令的基本结构。
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，CLI、command 和 exit code 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 23.1 CLI 命令解决什么问题
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，args、runtime 和 stdout 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+CLI 是用户和 runtime 之间的第一层合同。它把人类输入的命令行参数变成结构化 `CliOptions`，再交给对应 command handler。这个过程看起来普通，但对 Agent 项目很关键。因为 CLI 决定了 workspace 是哪里、运行模式是什么、模型 profile 是谁、审批策略是什么、验证命令是什么、输出格式是什么、失败时退出码是什么。
 
-本章反复出现的关键词包括：`CLI`、`args`、`command`、`runtime`、`exit code`、`stdout`、`diagnostics`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+如果 CLI 合同不清楚，后面所有层都会变混乱。比如 `--cwd` 解析错，模型会读错仓库；`--mode` 默认错，会把 mock 当真实模型；`--verify` 丢失，任务可能没有验证；`--output-format` 不稳定，自动化脚本就无法消费结果；失败时 exit code 仍为 0，CI 就会误判成功。
 
-### 23.2 在仓库中找到入口
+所以读 CLI 不只是读一个入口文件，而是在读系统边界。CLI 的职责是把不可靠的人类输入变成可检查的 runtime 配置。
 
-阅读本章时，建议从下面这些文件开始：
+### 23.2 第一步：从 `main` 到 `parseArgs`
 
-1. [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`packages/session-store/src/index.ts`](../../packages/session-store/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
+入口在 [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)。文件中先调用 `parseArgs(process.argv.slice(2))`，然后根据 `options.command` 进入 switch。`process.argv` 是 Node.js 提供的命令行参数数组；`slice(2)` 去掉 Node 可执行文件和脚本路径，只留下用户真正传入的参数。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，command、exit code 和 diagnostics 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`parseArgs` 做三件事。第一，识别命令名，例如 `run`、`chat`、`models`、`evals`、`doctor`。第二，解析通用选项，例如 `--cwd`、`--storage-root`、`--plugin-dir`。第三，解析命令专属选项，例如 `run` 的 `--task`、`--task-file`、`--thread-id`、`--continue-latest`、`--output-format`。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+对 `run` 命令来说，最后得到的是 `RunCliOptions`。它继承 `BaseCliOptions` 和 `RuntimeCliOptions`，包含 `command: "run"`、`cwd`、`storageRoot`、`pluginDirs`、`mode`、`modelProfileId`、`approvalPolicy`、`executionDomain`、`verificationMode`、`verificationCommands`、`autoApproveRisky`、`maxIterations`、`task`、`threadTitle`、`threadId`、`continueLatest`、`outputFormat`。
 
-### 23.3 它在一次 Agent 任务中怎样出现
+这里要注意一个细节：`parseRuntimeOptions` 中，如果用户没有显式写 `--mode`，但写了 `--model-profile`，mode 会默认变成 `openai`；否则默认是 `mock`。这能降低真实模型使用时的命令长度，但也意味着教程和文档必须提醒读者：看到 `--model-profile` 时，不要以为仍然是 mock。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，runtime、stdout 和 CLI 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 23.3 第二步：命令分发
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+参数解析完成后，`main` 进入 switch：
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+```ts
+case "run":
+  process.exitCode = await runTaskCommand(options);
+  return;
+```
 
-### 23.4 设计时最容易忽略的边界
+这段代码很短，但它定义了两个重要行为。第一，`run` 命令的业务逻辑在 `runTaskCommand`，不是散落在 main 里。第二，handler 返回 number，最终写入 `process.exitCode`。这说明 CLI 输出不是只有 stdout；退出码也是合同的一部分。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，exit code、diagnostics 和 args 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+退出码对自动化很重要。人读 stdout，可以看到 “Omni Agent Run Summary”；CI 或脚本更依赖 exit code。`runTaskCommand` 最后返回 `summary.run.status === "failed" ? 1 : 0`。也就是说，失败 run 会让 CLI 以非零退出码结束。这个设计防止自动化把失败任务当成成功。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+### 23.4 第三步：创建 Session Store
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+`runTaskCommand` 第一行创建：
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+```ts
+const sessionStore = new SqliteSessionStore(options.storageRoot);
+```
 
-### 23.5 如何判断实现是否可靠
+Session store 不是附属品。它决定 run、thread、message、tool event、artifact、usage 等证据保存在哪里。如果没有它，CLI 运行结束后你可能只剩 stdout，无法用 `show-run` 查 timeline，也无法后续 continuation 或复盘。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，stdout、CLI 和 command 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`storageRoot` 可以由 `--storage-root` 指定，也可以使用默认位置。实战中最好为测试和临时运行显式指定 storage root，避免污染真实用户数据。测试文件 [`tests/cli-ops.test.ts`](../../tests/cli-ops.test.ts) 就经常用临时目录创建 workspaceRoot 和 storageRoot，然后 spawn CLI，最后清理。这是写 CLI 测试的好习惯。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+### 23.5 第四步：选择输出格式
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+`runTaskCommand` 接着创建：
 
-### 23.6 常见误区
+```ts
+const output = createRunOutputWriter(options.outputFormat);
+```
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，diagnostics、args 和 runtime 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`outputFormat` 支持 `text`、`json`、`stream-json`。这三个格式面向不同用户。`text` 适合人类在终端阅读；`json` 适合脚本一次性读取 summary；`stream-json` 适合长运行时逐条消费事件。不要把输出格式当作 UI 小细节。它影响自动化、benchmark、外部集成和日志收集。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+测试中有 `run command supports json and stream-json headless output`，说明这个行为是受保护的。读者可以从这个测试学习如何验证 CLI 输出合同：用 `spawnSync` 运行 CLI，检查 status、stdout、stderr，再解析输出或匹配关键字段。CLI 的测试不应该只看“命令没崩”，还应该检查输出是否适合调用者消费。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+### 23.6 第五步：创建 Runtime Host
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+接下来是核心步骤：
 
-### 23.7 一个可操作的检查流程
+```ts
+const { runtime, close } = await createRuntimeHost(
+  {
+    ...options,
+    eventHandler: output.handleEvent,
+    structuredOutput: options.outputFormat !== "text",
+  },
+  sessionStore,
+);
+```
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+`createRuntimeHost` 是 CLI 到 runtime 的桥。它把 CLI 解析出的 mode、model profile、approval policy、execution domain、verification mode、plugin dirs、workspace cwd 等信息组装成 runtime 能使用的依赖。它还把输出 writer 的 event handler 注入进去。这样 runtime 执行过程中产生的事件，可以被 CLI 以 text、json 或 stream-json 形式呈现。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，CLI、command 和 exit code 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这里有一个设计边界：CLI 不应该自己执行工具，不应该自己决定模型调用细节，也不应该自己写 session store 的内部记录。CLI 负责接线，runtime 负责执行。这个边界清楚，代码才好维护。
 
-### 23.8 与真实模型评测的关系
+### 23.7 第六步：执行 `runtime.runTask`
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，args、runtime 和 stdout 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+真正执行任务的是：
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+```ts
+const summary = await runtime.runTask({
+  objective: options.task,
+  threadTitle: options.threadTitle,
+  threadId: options.threadId,
+  continueLatest: options.continueLatest,
+  verificationCommands: options.verificationCommands,
+  maxIterations: options.maxIterations,
+});
+```
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+这里 CLI 把命令行任务变成 runtime task contract。`objective` 来自 `--task` 或 `--task-file`；`threadId` 和 `continueLatest` 控制是否继续旧会话；`verificationCommands` 来自 `--verify`；`maxIterations` 控制最多模型/工具轮次。
 
-### 23.9 一个完整的小案例
+这一步之后，主导权进入 [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)。runtime 会构建上下文、选择模型客户端、解析工具调用、执行工具、记录 tool events、执行验证、保存 artifact、生成 summary。CLI 不需要知道每个细节，但必须把必要配置传进去。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+读源码时，你可以把这一步当作边界线：边界线之前是命令解析和接线，边界线之后是 Agent 运行。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+### 23.8 第七步：写 summary 和退出码
 
-这个案例强调的是工程诚实。 在本章语境中，command、exit code 和 diagnostics 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+任务结束后：
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+```ts
+output.writeSummary(summary);
+return summary.run.status === "failed" ? 1 : 0;
+```
 
-### 23.10 排错时的分层问题表
+`writeSummary` 把 runtime summary 转成用户看到的输出。summary 不是简单文本，它包含 run、thread、status、verification、changed files、tool counts、artifacts 等信息。具体输出格式由前面的 output writer 决定。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+退出码把 run status 映射成 shell 可判断的结果。这个设计让 CLI 能进入 CI 和自动化。例如脚本可以运行 `npm run dev -- run ...`，如果 exit code 非零，就停止后续步骤。没有这个映射，失败只会写在 stdout 里，机器很难可靠发现。
 
-分层排错能减少无效尝试。 在本章语境中，runtime、stdout 和 CLI 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+最后 `finally` 会关闭 runtime host 和 session store。这也很重要。CLI 是短生命周期进程，必须释放数据库句柄、文件句柄、后台资源。否则测试会不稳定，Windows 上尤其容易出现文件锁问题。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+### 23.9 `evals` 命令的相似调用链
 
-### 23.11 如何把本章内容写进团队流程
+理解 `run` 后，再看 `evals` 就容易很多。`runEvalCommand` 也创建 `SqliteSessionStore`，读取 manifest JSON，调用 `normalizeEvalSuiteDefinition`，然后用 `runEvalSuite` 遍历 scenario 和 step。每个 step 内部会创建 runtime host，调用 `runtime.runTask`，再用 `mapRunSummaryToEvalObservedRun` 把 runtime summary 转成 eval 能判分的 observed run。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+这条链路解释了第 16 章和第 17 章的重要结论：eval 不是只看最终回答，而是把 run summary 映射成 observed run，再用 expectation 判分。CLI 负责把 manifest 跑起来，runtime 负责完成任务，eval package 负责评分。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，exit code、diagnostics 和 args 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果 `evals` 命令输出失败，你要按层排查。manifest 读不到，是 CLI 文件路径问题；suite normalize 失败，是 manifest schema 问题；runtime.runTask 失败，是运行或模型问题；observedRun 不满足 expectation，是判分或任务行为问题；qualityThresholds 不通过，是 benchmark 质量 gate 问题。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+### 23.10 `doctor` 和 `models` 命令为什么适合入门
 
-### 23.12 练习
+`models` 命令适合入门，因为它不执行完整 agent run，只列出配置的 model profiles 和缺失 key。`doctor` 命令适合入门，因为它检查 workspace、storage、git、model、daemon、routes、automations、extensions 等健康状态。它们比 `run` 更安全，也更容易解释输出。
 
-1. 围绕 `CLI` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `args` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `command` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `runtime` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `exit code` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `stdout` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+[`tests/cli-ops.test.ts`](../../tests/cli-ops.test.ts) 中有 `models command lists configured profiles and missing keys`，[`tests/cli-doctor.test.ts`](../../tests/cli-doctor.test.ts) 中有多个 doctor 测试：成功 workspace、缺失 OpenAI profile credentials、无效 route、blocked instruction files、doctor --fix 等。这些测试说明 CLI 不只是手动工具，而是有行为合同的产品入口。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+学习 CLI 时，建议顺序是：先读 `models`，再读 `doctor`，再读 `run`，最后读 `evals`。因为复杂度逐步增加：配置查看、健康检查、单次任务、套件评测。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 23.11 常见错误
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+第一个错误是只看 help 输出，不看 parseArgs。help 告诉你用户界面，parseArgs 告诉你真实默认值、重复参数处理、必填字段和模式推断。比如 `--verify` 可以 repeat 或 comma-separate，这种细节要看解析逻辑。
 
-### 23.13 本章参考资料
+第二个错误是把 stdout 当成唯一结果。CLI 还有 exit code、artifact、session store、JSON output、stream event。排查自动化问题时，必须同时看 status、stdout、stderr 和持久化记录。
 
-- Omni Agent: [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)
-- Omni Agent: [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)
-- Omni Agent: [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
-- Omni Agent: [`packages/session-store/src/index.ts`](../../packages/session-store/src/index.ts)
-- Node.js command line docs: [https://nodejs.org/api/cli.html](https://nodejs.org/api/cli.html)
-- OpenAI function calling guide: [https://platform.openai.com/docs/guides/function-calling](https://platform.openai.com/docs/guides/function-calling)
-- Commander.js documentation: [https://github.com/tj/commander.js](https://github.com/tj/commander.js)
+第三个错误是把 `mock` 当成真实模型。`run --mode mock` 可以验证 CLI 和 runtime path，但不能证明 OpenAI、DeepSeek 或 Anthropic 的真实能力。只要 mode 是 mock，就要在报告里写清楚。
+
+第四个错误是忽略 `--cwd`。CLI 默认 workspace 是当前目录或配置中的默认 workspace。运行命令前一定确认 cwd，否则 agent 可能读错仓库，验证命令也会跑错位置。
+
+第五个错误是没有关闭资源。写 CLI 测试时，如果自己创建 session store 或临时目录，要在 finally 中关闭和清理。否则测试会因为文件锁、残留 state 或路径污染变得不稳定。
+
+### 23.12 手工调试一条 CLI 命令
+
+当一条 CLI 命令表现异常时，调试顺序应该从外到内。第一步，确认当前目录。很多问题不是代码坏了，而是命令在错误目录运行。运行前先确认 `--cwd`，不要依赖当前 shell 的位置。第二步，确认 storage root。相同 workspace 使用不同 storage root，会看到不同 thread、run、model profile 和 artifact。第三步，确认 mode。mock、openai、doctor、evals 的含义不同，不能混着看。
+
+第四步，确认参数是否真的被解析。你可以先运行 `--help` 看用户界面，再打开 `parseArgs` 看真实默认值。特别注意重复参数，例如 `--verify` 可以重复，也可以用逗号分隔。第五步，看 handler 是否设置 exit code。`run` 命令失败时应该返回 1；doctor strict mode 有 warning 时也可能返回错误；evals 有 qualityThresholds 时，会根据 benchmark quality report 判断退出码。
+
+第六步，查持久化结果。不要只盯着 stdout。运行结束后用 `show-run` 查看 run 详情，用 `runs --thread-id` 查看 thread 下的 run 列表，用 `usage` 查看使用量，用 `show-thread` 查看消息。CLI 的强项不是只打印一段总结，而是把一次运行变成可以回查的记录。
+
+这套调试顺序能避免很多误判。stdout 看起来正常，不代表 artifact 正常；exit code 为 0，不代表没有 warning；mock run 成功，不代表真实模型可用；doctor warning 不一定阻塞普通本地运行，但可能阻塞严格发布流程。
+
+### 23.13 `show-run` 是 CLI 复盘入口
+
+如果 `run` 是执行入口，那么 `show-run` 就是复盘入口。测试中有 `show-run prints timeline, review checklist, and recovery command`，它验证 show-run 会打印 timeline、review checklist 和 recovery command，并且会脱敏敏感 artifact 名称。这说明 `show-run` 不是简单查询命令，而是 operator 工具。
+
+一次 run 失败后，不要只复制终端最后几行。先找到 Run ID，然后运行：
+
+```powershell
+npm run dev -- show-run --run-id <id> --cwd <workspace> --storage-root <store>
+```
+
+你要看五个信息。第一，run status 和 verification status。第二，tool timeline，确认哪些工具成功，哪些工具失败。第三，changed files，确认模型改了什么。第四，artifact 列表，确认验证输出、patch、失败证据是否保存。第五，recovery command，确认能否继续同一 thread 或基于失败状态恢复。
+
+`show-run` 还体现了安全边界。测试会检查敏感 token 和 artifact path 不被原样输出，而是被 redacted。这很重要。复盘工具如果泄露密钥，就会让调试过程本身变成安全风险。CLI 输出给人看，也可能被复制到 issue、PR、日志或截图，所以脱敏是 CLI 合同的一部分。
+
+### 23.14 CLI 测试应该怎样写
+
+CLI 测试通常用 `spawnSync` 或类似方式启动真实入口，而不是直接调用内部函数。这样可以覆盖参数解析、命令分发、stdout、stderr、exit code、环境变量和工作目录。[`tests/cli-ops.test.ts`](../../tests/cli-ops.test.ts) 就使用临时 workspace 和 storage root，然后通过 `process.execPath --import tsx apps/cli/src/index.ts ...` 调用 CLI。
+
+写 CLI 测试时，最小 fixture 很重要。测试 `models` 不需要真实仓库，只要 package.json 和 model profile 配置。测试 `doctor` 需要临时 git 仓库和 storage。测试 `run --task-file` 需要一个任务文件，证明长任务可以从 UTF-8 文件读取。测试 `json` 和 `stream-json` 输出时，要检查输出能被机器消费，而不是只匹配标题。
+
+每个 CLI 测试至少检查三件事。第一，`result.status`，也就是退出码。第二，`stdout` 中的关键合同，例如标题、run summary、diagnostics、redaction、recovery command。第三，`stderr` 是否没有意外错误。对于安全相关命令，还要检查输出不包含原始 secret、不包含本地敏感绝对路径、不泄露 artifact basename。
+
+这类测试看起来比普通函数测试麻烦，但它保护的是用户真正使用的入口。Agent CLI 一旦输出格式或退出码不稳定，自动化、benchmark、GitHub Actions、外部脚本都会受影响。
+
+### 23.15 从 CLI 调用链反推模块职责
+
+读完 `run` 命令后，可以反推出几个模块的职责。`apps/cli` 负责用户界面、参数解析、命令分发、stdout、exit code。`packages/core-runtime` 负责任务执行主循环。`packages/tools` 负责可执行动作和风险呈现。`packages/session-store` 负责保存 run、thread、artifact 和 tool events。`packages/evals` 负责把 run summary 变成 observed run 并评分。`packages/model-client` 负责和真实或 mock 模型交互。
+
+这种反推比先背目录更有效。因为你是从一条真实命令出发，看到每个模块在链路中承担什么责任。以后遇到问题，也能按责任定位。参数没生效，看 CLI；模型没调用工具，看 runtime 和 model-client；工具被拒绝，看 tools 和 approvals；结果没保存，看 session-store；eval 判错，看 evals。
+
+### 23.16 逐行读 `runTaskCommand`
+
+现在把 `runTaskCommand` 当成一段课文来读。第一句创建 session store，这说明任何 run 都应该进入持久化系统。第二句创建 output writer，这说明输出格式不是最后随便拼字符串，而是运行前就决定。第三步创建 runtime host，这说明 CLI 需要把运行依赖组装好，包括事件处理器和是否结构化输出。第四步调用 runtime.runTask，这才是真正执行任务。第五步写 summary。第六步根据 run status 返回退出码。第七步在 finally 中关闭资源。
+
+这七步没有一步是多余的。缺少 session store，就没有可复盘记录；缺少 output writer，就没有稳定的人类或机器输出；缺少 runtime host，就无法把 CLI 配置转成 runtime 依赖；缺少 runTask，就没有任务执行；缺少 summary，就没有用户可读结果；缺少退出码，自动化无法判断失败；缺少 close，测试和 Windows 文件句柄会出问题。
+
+这就是读源码的关键方法：不要只问“这行代码做什么”，还要问“如果删掉这行，系统会失去什么证据或边界”。这种阅读方式比机械解释函数更有价值。
+
+### 23.17 一个故障排查样例
+
+假设用户说：“我运行 `npm run dev -- run --task ...` 后明明失败了，但 CI 仍然继续。”先不要怀疑模型。第一步看 CLI 返回码。如果 run status 是 failed，但 handler 没有返回 1，问题在 CLI exit code 映射。当前源码中 `runTaskCommand` 已经有 `summary.run.status === "failed" ? 1 : 0`，所以要继续看实际 run status 是否真的是 failed。
+
+第二步看输出格式。如果用户用 `--output-format stream-json`，CI 脚本是否错误地只看最后一行？如果用 `json`，脚本是否解析了 summary 里的 status？第三步看 shell。Windows、PowerShell、npm script 对退出码传播有时会被包装层影响，要确认最终命令的 `$LASTEXITCODE` 或 CI step result。第四步看测试。`tests/cli-ops.test.ts` 是否已经覆盖相同路径？如果没有，就补一个最小测试。
+
+再假设用户说：“我指定了 model profile，但怎么跑成真实模型了？”这不是 bug，而是 parseRuntimeOptions 的默认逻辑：有 `--model-profile` 且没有显式 `--mode` 时，mode 默认 openai。修复方向不是改 runtime，而是改文档或 CLI help，让用户知道这个推断规则。如果需要 mock，就显式写 `--mode mock`。
+
+再假设用户说：“evals 命令跑完的结果和 benchmark 不一样。”你要先问它跑的是 CLI `evals`，还是 `scripts/eval-benchmark.ts`。CLI `evals` 读取 manifest，用 runtime 跑 suite，然后按 suite result 决定退出码。benchmark script 还会处理 mode、artifactsDir、runId、quality report、capability maturity、trend report。入口不同，产物和解释也不同。
+
+### 23.18 CLI 调用链报告模板
+
+读完一条命令后，应该写一份调用链报告。模板如下：
+
+```text
+Command:
+Purpose:
+Parsed options:
+Handler:
+Persistent store:
+Runtime boundary:
+Output contract:
+Exit code contract:
+Tests:
+Failure modes:
+What this command proves:
+What this command does not prove:
+```
+
+以 `run` 命令为例，Purpose 是执行一个本地 agent task。Parsed options 包括 cwd、mode、model profile、approval policy、verification commands、max iterations、output format。Handler 是 `runTaskCommand`。Persistent store 是 `SqliteSessionStore`。Runtime boundary 是 `createRuntimeHost` 和 `runtime.runTask`。Output contract 是 text/json/stream-json。Exit code contract 是 failed 返回 1，其他返回 0。Tests 包括 task-file、json/stream-json、model-profile 默认 openai、show-run 复盘。
+
+报告最后两项最重要。`run --mode mock` 能证明 CLI 到 runtime 的本地路径能执行，不能证明真实模型能力。`run --mode openai --model-profile deepseek-flash` 能证明真实 provider 接入一次任务，但不能证明 benchmark 成熟。调用链报告必须保留这种边界。
+
+### 23.19 为什么不直接用 CLI 框架
+
+有些读者会问：为什么不直接用 Commander.js、yargs 或其他 CLI 框架？这个问题可以讨论，但不能脱离当前代码。当前实现是手写 parseArgs 和 switch 分发。它的优点是依赖少、行为完全可见、类型和默认值集中在一个文件里。缺点是随着命令增多，解析逻辑会越来越长，help、validation、重复参数处理都要自己维护。
+
+如果未来要迁移到 CLI 框架，不能只因为“框架更专业”就改。必须先列出具体痛点：help 难维护、参数校验重复、子命令太多、测试覆盖不足、错误信息不统一。然后写迁移测试，保证现有命令、默认值、退出码和输出格式不变。CLI 是公开入口，迁移风险很高。
+
+所以本章不是要求读者接受当前实现永远不变，而是要求读者尊重现有合同。任何 CLI 重构都必须先保护用户可见行为，再谈内部优雅。
+
+### 23.20 从一条命令扩展到三条命令
+
+读懂 `run` 之后，下一步不是立刻读完整 CLI，而是选择三条代表性命令做对比。
+
+第一条是 `doctor`。它不执行 agent task，而是检查环境和配置。它的价值在于告诉你系统能不能安全开始工作。读 `doctor` 时，要关注它如何检查 workspace、memory、instructions、storage、git、model、daemon、routes、automations、extensions，以及 strict mode 如何把 warning 变成失败。`doctor` 的输出适合人类阅读，也适合发布前诊断。
+
+第二条是 `evals`。它不是单个任务，而是读取 manifest 后按 scenario 和 step 跑多个任务。读 `evals` 时，要关注 manifest path、suite normalization、runtimeOptions.cwd 如何从 scenario workspaceCwd 来、observed run 如何映射、qualityThresholds 如何影响退出码。它把 CLI、runtime 和 eval package 串起来，是理解 benchmark 的入口。
+
+第三条是 `show-run`。它不执行任务，而是读取持久化结果。读 `show-run` 时，要关注 timeline、review checklist、artifacts、recovery command、redaction。它证明 session store 不是后台细节，而是 operator 复盘工具。
+
+这三条命令覆盖三种角色：doctor 是启动前检查，evals 是批量评测，show-run 是运行后复盘。加上本章的 run 命令，就形成一个完整闭环：开始前检查，执行任务，批量评测，失败后复盘。读者如果能把四条命令讲清楚，就已经掌握 Omni Agent CLI 的主干。
+
+### 23.21 交付一张调用链图
+
+本章最后要求你画一张图，不要求漂亮，但要准确。可以写成：
+
+```text
+user command
+-> process.argv
+-> parseArgs
+-> CliOptions
+-> main switch
+-> runTaskCommand
+-> SqliteSessionStore
+-> createRunOutputWriter
+-> createRuntimeHost
+-> AgentRuntime.runTask
+-> tool/model/verification loop
+-> RunSummary
+-> output.writeSummary
+-> exit code
+```
+
+每个箭头都要能解释。如果你不能解释 `CliOptions`，说明还没读类型；不能解释 `createRuntimeHost`，说明还没找到 CLI 和 runtime 的边界；不能解释 `RunSummary`，说明还没理解 session store 和输出；不能解释 exit code，说明还没理解自动化合同。
+
+调用链图的价值是让你以后改 CLI 时知道影响面。改 `parseArgs` 会影响所有命令；改 `runTaskCommand` 会影响 task execution；改 output writer 会影响人类终端和机器读取；改 exit code 会影响 CI；改 session store 会影响 show-run 和历史复盘。没有这张图，CLI 改动很容易变成盲改。
+
+### 23.22 本章完成标准
+
+完成本章，不是读完文字，而是能独立完成三件事。
+
+第一，你能拿一条命令，说清它从 shell 到 runtime 的完整路径。比如 `run` 命令先进入 `process.argv`，再进入 `parseArgs`，再变成 `RunCliOptions`，再由 main switch 分发到 `runTaskCommand`，再创建 session store、output writer 和 runtime host，最后调用 `runtime.runTask`。
+
+第二，你能解释这条路径中的证据点。session store 保存历史，output writer 控制输出，runtime summary 保存 run status 和 verification，exit code 服务自动化，show-run 服务复盘。如果只知道函数名，不知道证据点，就还没有真正读懂。
+
+第三，你能为 CLI 改动设计验证。修改参数解析，要补 parse 或 spawn 测试；修改输出格式，要检查 stdout 和 JSON；修改退出码，要检查 result.status；修改脱敏，要检查敏感信息不出现；修改 runtime 接线，要跑至少一个 mock run 或对应 CLI ops 测试。
+
+这三件事都能做到，才算掌握本章。否则只是看过 CLI 文件。
+
+再补一条更实际的判断：如果明天有人报告“命令参数没有生效”“真实模型被误用”“JSON 输出无法解析”“CI 没有因为失败停止”“show-run 泄露了敏感路径”，你应该能马上知道先打开哪个函数、哪个测试和哪个输出样本。能做到这一点，CLI 调用链才真正进入你的工程直觉。
+
+最后，调用链图要和真实代码保持同步。每当 CLI 增加新命令、新参数、新输出格式或新退出码规则，都应该更新对应文档和测试。否则教程会慢慢变成旧地图，读者照着走会迷路。维护 CLI，就是维护用户进入系统的第一扇门，也是维护自动化和评测进入系统的第一条路，不能只靠口头说明，必须有测试保护和示例命令。
+
+这也是本章反复强调调用链的原因：只有调用链清楚，后续修改才知道风险在哪里，验证应该跑什么，报告应该写什么，文档应该补哪里，测试应该守哪里，用户会受什么影响，维护者如何复盘，发布如何判断，边界如何说明，责任如何分配，结果如何解释，异常如何定位。
+
+### 23.23 本章练习
+
+1. 打开 [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)，找到 `parseArgs`，写出 `run` 命令的必填参数和默认参数。
+2. 解释 `--model-profile` 为什么会让默认 mode 变成 `openai`。
+3. 画出 `runTaskCommand` 的调用链：session store、output writer、runtime host、runtime.runTask、writeSummary、exit code。
+4. 阅读 [`tests/cli-ops.test.ts`](../../tests/cli-ops.test.ts) 中 `run command accepts a task file for long objectives`，解释它保护了什么行为。
+5. 阅读 `evals` 命令实现，说明 manifest 如何变成 observed run。
+6. 运行一条 mock run 命令，记录 stdout、exit code、runId 和 storageRoot。
+
+### 23.24 本章参考资料
+
+- Omni Agent CLI entry：[`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)
+- Omni Agent core runtime：[`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)
+- Omni Agent tools package：[`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
+- Omni Agent session store：[`packages/session-store/src/index.ts`](../../packages/session-store/src/index.ts)
+- Omni Agent CLI ops tests：[`tests/cli-ops.test.ts`](../../tests/cli-ops.test.ts)
+- Omni Agent CLI doctor tests：[`tests/cli-doctor.test.ts`](../../tests/cli-doctor.test.ts)
+- Node.js Docs：[Command-line API](https://nodejs.org/api/cli.html)
+- OpenAI Docs：[Function calling](https://platform.openai.com/docs/guides/function-calling)
 
 ## 24. 如何设计一个高质量 Eval Scenario
 
