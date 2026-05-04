@@ -4112,140 +4112,216 @@ swarm 相关测试证明多个 child 可以并行处理不同文件，并各自�
 ## 14. Gateway 与 Workbench：把 Agent 变成可检查的本地服务
 
 
-本章讨论的是：理解 HTTP/SSE、路由、消息、健康检查和本地工作台如何把 runtime 暴露给真实入口。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章讲的是 Omni Agent 怎样从一个命令行 runtime 变成一个可以被检查、被接入、被运维的本地服务。CLI 适合开发者自己运行任务，但真实 Agent 往往还需要从外部入口接收消息、把结果送回渠道、让操作者看到运行状态、在失败时重试或中止。`Gateway` 和 `Workbench` 就是为了这个目的存在的。
 
+这里的 gateway 不是一个简单 HTTP 包装层。它要同时处理 `/health` 健康检查、`/runs` 任务启动、`/routes` 渠道路由、`/deliveries` 出站投递、`/events` 实时事件流、WebSocket 控制面、ACP bridge、channel plugin status、operator-state，以及本地 workbench 页面需要的数据。换句话说，它把 runtime 的内部行为变成可观察的外部接口。
 
-### 14.1 本章先建立的心智模型
+Workbench 也不是宣传页面。它的职责是让开发者和操作者在浏览器里看到系统状态：模型 profile 是否有 key、workspace 是否可读写、channel plugin 是否配置、route 是否 active、delivery 是否 failed、subagent 是否 running、可以执行哪些控制动作。一个成熟的本地 Agent 不能只靠终端最后一句话判断健康，必须有这些可检查的表面。
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，gateway、adapter 和 SSE 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 14.1 为什么需要 Gateway
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，route、health 和 workbench 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果 Omni Agent 只在 CLI 中工作，用户的交互路径很短：输入任务，runtime 执行，终端打印结果。这种模式适合开发和调试，但不适合接入真实消息渠道。真实渠道有几个额外要求。
 
-本章反复出现的关键词包括：`gateway`、`route`、`adapter`、`health`、`SSE`、`workbench`、`delivery status`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+第一，入口不是固定的。用户可能从 Telegram、Slack、Feishu、Discord、Webhook、mobile node 或本地 workbench 发来消息。每个渠道的请求格式、签名方式、线程字段、附件能力和回复方式都不同。runtime 不应该直接理解所有渠道细节，否则 core-runtime 会被平台协议污染。Gateway 把这些差异挡在外面，通过 route 和 adapter 把外部消息转换成 Omni Agent 能理解的 run request 或 inbound message。
 
-### 14.2 在仓库中找到入口
+第二，响应不一定同步。CLI 可以等任务完成再打印结果，但 HTTP 入口常常需要尽快返回 ack，后台继续执行任务。出站投递也可能失败，需要重试、进入 dead letter、被人工检查。Gateway 里的 `GatewayJobStore`、delivery retry timer、route polling timer、event bus，就是为了把这些异步动作变成有状态记录。
 
-阅读本章时，建议从下面这些文件开始：
+第三，系统需要被远程观察。Agent 在运行时会产生工具事件、运行事件、delivery 事件、automation 事件、subagent 控制事件。如果这些事件只在内存里闪过，出了问题就很难复盘。Gateway 通过 `/events`、`/events/history`、WebSocket control plane 和 operator-state 把这些事件暴露出来，让 workbench 或外部节点能订阅。
 
-1. [`packages/gateway/src/index.ts`](../../packages/gateway/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`packages/gateway/src/routes.ts`](../../packages/gateway/src/routes.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`tests/gateway.test.ts`](../../tests/gateway.test.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`docs/operations.md`](../../docs/operations.md)：用来观察本章在仓库中的实现、测试或运维入口。
+第四，安全边界不同。CLI 默认是本地开发者在操作；Gateway 面向 HTTP 和 WebSocket，就必须考虑 access token、inboundSecret、签名验证、route secret、敏感字段脱敏、artifact path 脱敏、外部 URL 不泄漏 key。`packages/gateway/src/event-bus.ts` 里的 redaction 不是细节，而是 gateway 可信的前提。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，adapter、SSE 和 delivery status 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 14.2 从 startGatewayServer 开始读
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+本章源码主入口是 [`packages/gateway/src/index.ts`](../../packages/gateway/src/index.ts)。读这个文件时，不要从所有 endpoint 逐行读起，先看 `startGatewayServer` 创建了哪些核心对象。
 
-### 14.3 它在一次 Agent 任务中怎样出现
+`GatewayEventBus` 是事件总线。runtime、route、delivery、automation 和 control plane 都可以向它发布事件。它保留有限长度的 history，并把事件推送给订阅者。事件总线里最值得注意的是 redaction：发布事件时会调用 `redactGatewayEventValue`，把 token、secret、authorization、signedUrl、artifactPath 等敏感内容变成安全展示形式。测试 `gateway event bus redacts artifact paths before raw replay surfaces` 就在证明这一点。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，health、workbench 和 gateway 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`GatewayJobStore` 记录异步 job。同步 run 可以直接返回结果，异步 run 则需要 job id、状态、完成回调、取消信号等信息。没有 job store，前端只知道“请求已经发出”，不知道它是否还在运行、是否失败、是否取消。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+`RouteAdapterRegistry` 管理渠道 adapter。Gateway 不应把 Slack、Telegram、Feishu、filesystem、webhook 的发送逻辑写成一堆散落的 if。Adapter registry 让 route 的 `adapterType` 可以映射到具体投递实现。这样新增渠道时，核心 gateway 不需要理解每个平台所有字段，只要 route preparation、adapter config 和 delivery result 保持统一。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+`AutomationScheduler` 说明 gateway 不只是被动 HTTP server。它也可以触发 automation run，把定时任务或事件触发任务转成 runtime 执行。scheduler 发布的事件也会进入 event bus，所以 workbench 能看到 automation 相关状态。
 
-### 14.4 设计时最容易忽略的边界
+`GatewayControlPlane` 是 WebSocket 控制面。它挂在 `/ws` upgrade 上，支持 `subscribe`、`ping`、`node.register`、`node.heartbeat`、`nodes.list`、`run.start`、`route.deliver`、`delivery.retry`、`subagent.control`、`inbox.accept` 等消息类型。HTTP 适合请求-响应，WebSocket 适合长期连接、节点注册、实时控制和事件推送。Workbench 可以用 HTTP 拉状态，也可以用控制面接收实时事件。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，SSE、delivery status 和 route 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 14.3 HTTP 端点怎样分层
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+`handleRequest` 是 gateway HTTP 层的核心。它先解析 method 和 path，再执行 auth 检查，然后按 path 分发。读它时可以按功能分层，而不是按文件行号记忆。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+健康层是 `/health`。它应该尽量轻量，返回 service、mode、version、storageRoot、runtime defaults 等信息。健康检查的意义不是证明 Agent 能完成复杂任务，而是证明 gateway server 活着、配置可读、基础信息可返回。运维排错时第一步就是先看 `/health`，因为如果 health 都不可达，后面的 route、run、delivery 都没有意义。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+事件层是 `/events` 和 `/events/history`。`/events` 使用 Server-Sent Events，响应头包含 `Content-Type: text/event-stream`、`Cache-Control: no-cache, no-transform` 和 keep-alive connection。SSE 的特点是浏览器通过一个长连接持续接收服务端事件，适合展示运行日志、工具事件和状态变化。`/events/history` 则返回最近的事件数组，适合页面刚打开时补齐上下文。MDN 和 WHATWG 都把 SSE 描述为服务器向页面推送文本事件流的机制，这正好匹配本地 workbench 的实时观察需求。
 
-### 14.5 如何判断实现是否可靠
+运行层是 `/runs`、`/runs/{id}`、`/runs/{id}/cleanup`。`POST /runs` 把外部请求标准化成 `NormalizedGatewayRunRequest`，再调用 runner 执行 runtime。这里要注意同步和异步的区别：同步 run 可以直接返回 summary，异步 run 应返回 job 信息，后续通过 events 或 run detail 查看结果。`GET /runs?threadId=` 和 `GET /runs/{id}` 则让 workbench 能查看历史 run 和单次 run 的细节。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，workbench、gateway 和 adapter 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+路由层是 `/routes`、`/routes/{id}/deliver`、`/agents/{agentId}/routes`。route 不是网络路由器里的 route，而是“某个外部渠道身份与某个 Omni Agent thread 或 workspace 的绑定关系”。一个 route 记录 channelType、channelKey、adapterType、adapterConfig、inboundSecret、status 等字段。没有 route，gateway 无法知道一条 Slack 消息应该进入哪个 thread，也无法知道一个回复应该发到哪个 webhook 或 chat id。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+投递层是 `/deliveries` 和 `/deliveries/{id}/retry`。出站消息不应只是一句“发送了”。它应该有 delivery record，状态可能是 `queued`、`sending`、`sent`、`acknowledged`、`retrying`、`failed`、`dead_letter`。这些状态能告诉操作者：消息是否真的发出，是否被平台确认，是否正在重试，是否已经需要人工处理。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+运维层是 `/operator-state`、`/channel-plugins`、`/channel-providers`、`/nodes`、`/subagents/{id}/pause` 等控制接口。它们不只是给 UI 用，也是在定义“本地 Agent 如何被操作”。如果一个能力没有运维入口，出了问题就只能重启进程或翻日志。
 
-### 14.6 常见误区
+### 14.4 Route 与 Adapter 的边界
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，delivery status、route 和 health 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+[`packages/gateway/src/routes.ts`](../../packages/gateway/src/routes.ts) 负责 route preparation、capability descriptor、provider manifest 和 adapter config validation。理解 route 的关键，是分清 channel、route 和 adapter 三个层次。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+`channelType` 表示外部平台类别，比如 `telegram`、`slack`、`discord`、`feishu`、`dingtalk`、`teams`、`whatsapp`、`signal`、`matrix`、`voice`、`canvas`、`mobile-node`、`media`。它告诉系统“这是哪类入口”。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+`channelKey` 表示这个平台中的具体会话或目标，例如 Slack channel id、Telegram chat id、Feishu chat id、某个 mobile device id。它告诉系统“这一类入口中的哪一个对象”。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+`adapterType` 表示出站投递时用哪种 adapter。通常 adapterType 会接近 channelType，但它们不是同一个概念。一个 channelType 可能采用 webhook adapter、native API adapter、filesystem adapter 或未来自定义 adapter。`normalizeRouteAdapterType` 和 `validateRouteAdapterConfig` 的意义，就是不要让错误配置静默进入运行时。
 
-### 14.7 一个可操作的检查流程
+`adapterConfig` 是平台相关配置，比如 webhookUrl、botToken、channelId、threadTs、accessToken、endpointUrl、serviceToken 等。它是最容易泄漏敏感信息的地方，所以教程要强调：公开文档和 event history 不应直接展示 raw adapterConfig。测试里 channel plugin status 会检查 requiredSecrets、activeAuthModes、missingSecrets，说明正确做法是展示配置健康，而不是展示密钥值。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+`inboundSecret` 是入站鉴权边界。对于 signed inbound providers，运维文档要求检查 request signature 或 `x-omni-route-secret`。Gateway 的授权检查还允许某些入站 endpoint 在 accessToken 模式下绕过 Bearer token，但它们必须靠 route secret 或平台签名保护。也就是说，外部平台 callback 不一定能带你的 gateway access token，但不能因此变成开放入口。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，gateway、adapter 和 SSE 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 14.5 Channel Capability 与 Provider Manifest
 
-### 14.8 与真实模型评测的关系
+route 文件里还有 `ChannelCapabilityDescriptor` 和 `ChannelProviderManifest`。它们不是为了 UI 漂亮，而是为了让系统能回答“这个渠道支持什么”。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，route、health 和 workbench 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Capability descriptor 包括 supportsInbound、supportsOutbound、supportsDm、supportsThreads、supportsFiles、supportsVoice、supportsMarkdown、supportsMentions、supportsPairing、requiresSignatureVerification、rateLimitProfile 等字段。举例说，Slack 支持 inbound、outbound、threads、files、markdown、mentions，Feishu 和 DingTalk 要求签名验证，voice 和 mobile-node 更偏本地 rate limit profile。Workbench 显示这些能力时，操作者能知道为什么某个功能不可用，而不是只看到按钮灰掉。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+Provider manifest 则把能力、认证、出站配置、security、setupNotes、plugin 信息组织成可展示文档。它告诉用户需要哪些 secret，是否支持 secret refs，默认 DM policy 是 open 还是 pairing，出站是否有 nativeSender，adapterConfig 需要哪些字段。测试 `channel plugin status` 会检查 Slack、Feishu、Telegram 等插件的能力、requiredSecrets、activeAuthModes、deliveryEvents、agentTools。这说明 provider manifest 不只是静态文案，而是 gateway 与 workbench 之间的契约。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+当新增一个渠道时，最低标准不是“能发送一条消息”。最低标准应该包括：capability 描述正确、required secrets 明确、route config 校验失败时能给清楚错误、inbound secret 或签名验证存在、outbound delivery 有状态记录、delivery event 能进入 event bus、workbench 能看到配置健康。
 
-### 14.9 一个完整的小案例
+### 14.6 Event Bus 与敏感信息脱敏
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+Gateway 最容易出问题的地方之一，是把敏感信息写进可回放事件。事件流很方便，但越方便越危险：它会被 workbench 读取，被 WebSocket client 订阅，被 `/events/history` 返回，甚至可能被用户复制到 issue 里。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+`GatewayEventBus.publish` 在保存事件前会调用 redaction。它会处理几类信息。第一，字符串里的 query 参数，比如 access_token、api_key、client_secret、signature、token、password、authorization 等会被替换。第二，Bearer、Bot token、Slack token、GitHub token、OpenAI-style key 会被替换。第三，对象字段名如果像 secret、token、webhook、endpointUrl、signedUrl，也会直接变成 `[redacted]`。第四，artifactPath 不展示完整本地路径，只展示安全文件名或 `[redacted-artifact]`。
 
-这个案例强调的是工程诚实。 在本章语境中，adapter、SSE 和 delivery status 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+测试 `ACP event projection normalizes runtime tool events` 和 `ACP gateway event presentation redacts raw event data and projection` 更进一步说明：不只是 raw event 要脱敏，投影到 ACP event 的结构也要脱敏。否则同一份敏感数据可能在 raw 层被处理了，却在 projection 层泄漏。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+读者应该形成一个习惯：任何会被 UI、history、trace、artifact metadata、webhook response 展示的数据，都不能假设是内部私有。Gateway 是边界层，边界层必须默认会被人查看。
 
-### 14.10 排错时的分层问题表
+### 14.7 SSE、WebSocket 和 History 各自解决什么
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+Gateway 同时使用 HTTP JSON、SSE 和 WebSocket，不是为了技术堆叠，而是因为它们解决的问题不同。
 
-分层排错能减少无效尝试。 在本章语境中，health、workbench 和 gateway 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+普通 HTTP JSON 适合一次请求一次响应。例如 `GET /health`、`GET /routes`、`POST /runs`、`POST /deliveries/{id}/retry`。调用方发一个明确动作，gateway 返回明确结果。Workbench 的 `WorkbenchApi` 就是一个小封装：`get`、`post`、`optional`，带 token 时设置 Authorization header，失败时抛出 path 和 status。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+SSE 适合服务端持续向浏览器推送事件。它比 WebSocket 简单，因为只需要单向推送，不需要客户端在同一连接上发控制消息。Workbench 如果只想看 runtime events，SSE 很合适。`/events/history` 则解决页面打开前已经发生的事件：先拉 history，再订阅实时 stream，避免用户只看到之后的事件。
 
-### 14.11 如何把本章内容写进团队流程
+WebSocket 控制面适合双向控制。`GatewayControlPlane` 支持客户端注册 node、heartbeat、订阅 channels、发起 run、投递 route、重试 delivery、控制 subagent、接收入站 inbox。它更像操作总线，而不是日志 stream。一个移动节点或外部控制器需要持续连着 gateway、接收事件、提交动作，WebSocket 比 SSE 更合适。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+MCP 规范的 transport 章节也能帮助理解这一点：协议可以通过不同 transport 承载，但必须保留消息格式和生命周期语义。Omni Agent 的 gateway 同样如此：HTTP、SSE、WebSocket 只是传输方式，真正要保持稳定的是 run、route、delivery、event、node、subagent 这些领域对象。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，SSE、delivery status 和 route 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 14.8 Workbench 读取的不是页面数据，而是 Operator State
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+Workbench 的入口在 [`apps/workbench`](../../apps/workbench)。它通过 [`apps/workbench/src/api.ts`](../../apps/workbench/src/api.ts) 请求 gateway，通过 [`apps/workbench/src/views/diagnostics.ts`](../../apps/workbench/src/views/diagnostics.ts) 汇总诊断，通过 [`apps/workbench/src/views/operations.ts`](../../apps/workbench/src/views/operations.ts) 生成可执行操作。
 
-### 14.12 练习
+`diagnostics.ts` 做的事情很克制：从 operatorState 中提取 gateway、modelProfiles、memoryProviders、extensions、channelPlugins。它没有重新发明健康模型，只是把 gateway 给出的状态整理成页面可展示结构。这种设计是对的：健康判断应该在后端集中，前端只负责展示。
 
-1. 围绕 `gateway` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `route` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `adapter` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `health` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `SSE` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `workbench` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+`operations.ts` 更能体现 workbench 的价值。`failedDeliveryRetryActions` 会从 operatorState 里找出 status 为 `failed` 的 delivery，生成 `POST /deliveries/{id}/retry` 动作。`subagentControlActions` 会找出 queued、running、paused 的 subagent，生成 pause、resume、cancel 控制动作。Workbench 不是只读 dashboard，它应该把“我看到问题”连接到“我能执行修复动作”。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+不过 workbench 的动作必须谨慎。retry delivery 可能重复发送消息，cancel subagent 可能终止正在写文件的任务，switch model profile 可能改变后续运行结果。好的 UI 不应该把这些按钮做成装饰，而要让用户看到目标 id、状态、影响范围和执行结果。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 14.9 Operations Runbook 如何配合 Gateway
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+[`docs/operations.md`](../../docs/operations.md) 里的 `Gateway And Channels` 小节给出了排错顺序：先查 `/health`、`/routes` 和 route plugin status，再确认 adapterType 与 channel plugin 匹配，检查 secret refs 或签名，最后看 delivery status transitions。
 
-### 14.13 本章参考资料
+这个顺序很实用。很多 gateway 问题表面上像“模型没有回复”，实际是 route 没配置、adapterConfig 缺字段、inboundSecret 不匹配、delivery 卡在 retrying、outbound transcript retention 出错。先查模型只会浪费时间。
+
+一个 inbound 消息被拒绝时，应按这个顺序排查：gateway 是否健康；route 是否 active；channelType 和 channelKey 是否匹配；inboundSecret 或平台签名是否通过；sender 是否满足 DM policy 或 pairing；消息是否被写入 inbox；是否触发 run；run 是否创建 thread；event history 是否有对应事件。
+
+一个 outbound delivery 失败时，应按这个顺序排查：delivery record 的 status；adapterType；adapterConfig required secrets；平台 API response；是否进入 retrying；重试次数是否耗尽；是否进入 dead_letter；Workbench 是否生成 retry action；event bus 是否记录 route.delivery.failed 或 route.delivery.dead_letter。
+
+运维文档还要求运行 `node ./scripts/run-tests.mjs tests/channel-contracts.test.ts tests/gateway.test.ts tests/gateway-messages.test.ts`。这组测试比手动点页面更可靠，因为它覆盖配置契约、gateway 端点、消息格式和 delivery 状态。
+
+### 14.10 测试怎样保护 Gateway 能力
+
+[`tests/gateway.test.ts`](../../tests/gateway.test.ts) 是本章最应该细读的测试文件。它不是只测 server 能启动，而是在保护几个关键边界。
+
+第一类测试保护 run request normalization。`gateway normalizes tool policy context from run requests` 确认 routeId、channelType、channelKey、modelProfileId、providerId、sessionId、agentId、roleModelProfileIds 会进入 toolPolicyContext。没有这个映射，外部渠道触发的 run 就无法带上正确策略上下文，审批、工具策略、模型选择都可能错位。
+
+第二类测试保护事件投影和脱敏。ACP event projection 测试确认 tool.completed、tool.failed 能变成稳定的 ACP tool_call event，同时敏感 token、signed URL、artifact path 会被移除。Gateway event presentation 测试确认 raw event 和 projection 都脱敏。这些测试防止“为了 UI 好看”而泄漏真实 key。
+
+第三类测试保护 ACP bridge。它创建 session、prompt、list、load，并从 `/acp/events/history` 读取投影事件。这个路径证明 gateway 不只是一个 Omni 私有 API，也能把运行事件投影成更通用的 agent-client protocol 形状。
+
+第四类测试保护 channel plugin status 和 route 创建。Slack route 创建后，测试会检查 plugin authHealth、activeAuthMode、missingSecrets；Feishu provider 会检查 requiresSignatureVerification；operator-state 会检查 gateway authMode、workspace path、model profile health、memory provider health、channel plugin 列表和可用 controls。这说明 workbench 的状态不是随意拼出来的，而是有测试保护的 API 契约。
+
+第五类测试保护 delivery 与 retry。出站 delivery 的价值在于失败可见、可重试、可进入 dead letter。只要测试能覆盖 queued、sending、sent、acknowledged、retrying、failed、dead_letter 这些状态，操作者就不会只能看到“发送失败”四个字。
+
+### 14.11 一个具体场景：Feishu 入站到 Workbench 排错
+
+假设你配置了一个 Feishu route，用户在群里发消息，但 Omni Agent 没有回复。不要马上怀疑模型。按 gateway 层排查会更快。
+
+第一步打开 `/health`。如果 health 不通，说明 server、端口、host 或 access token 有问题。此时看 route 没意义。
+
+第二步打开 `/routes` 或 Workbench 的 routes 区域，确认 Feishu route 存在、status 是 active、channelType 是 `feishu`、channelKey 与目标 chat 对应、adapterConfig 没缺必需字段。
+
+第三步确认入站 secret。Feishu 类 enterprise provider 要求签名或 `x-omni-route-secret`。如果平台 callback 没带正确 secret，gateway 应拒绝请求。这个拒绝是正确行为，不是 bug。
+
+第四步看 `/events/history`。如果没有 inbound 相关事件，说明请求没有到达 gateway 或被 auth 层挡住。如果有 inbound.accepted 但没有 run.start，说明 inbox 到 runtime 的桥接有问题。如果有 run.start 但没有 tool events，说明 runtime 初始化、model profile、approval 或 workspace 可能出错。
+
+第五步看 `/runs` 和 `/runs/{id}`。如果 run 失败，要看 error、verification、artifact、tool events，而不是只看最终回答。OpenAI Agents SDK tracing 文档也强调 trace 应覆盖 LLM generation、tool calls、handoffs、guardrails 和 custom events；Gateway 的 events/history 与 run detail 承担类似职责，都是为了复盘完整流程。
+
+第六步看 `/deliveries`。如果 run completed 但用户没收到回复，问题可能在 outbound delivery。delivery 可能 stuck at retrying，可能 failed，可能 dead_letter。Workbench 的 retry action 只有在 delivery status 为 failed 且有 id 时才生成，这是合理的，因为你需要明确重试哪条 delivery。
+
+### 14.12 启动与最小验证流程
+
+真正学习 Gateway，不能只读 endpoint 名称。你应该至少跑一遍最小验证流程，哪怕是在 mock runtime 下。这个流程的目标不是证明模型能力，而是证明 gateway 的服务层、事件层、状态层和 workbench 数据层能连起来。
+
+第一步，确认 gateway 以本地模式启动。启动参数通常应该包括 host、port、storageRoot、cwd、mode、executionDomain、approvalPolicy、verificationMode。如果你只是调试服务层，可以使用 mock mode，因为此时重点是 HTTP 路径、Session Store 写入、event bus 和 workbench 状态，不是模型质量。启动后先访问 `/health`，确认返回的 service 是 `omni-agent-gateway`，host 和 port 是你期望的值，mode、executionDomain、verificationMode 与启动配置一致。不要跳过 health。很多后续错误其实是启动目录、storageRoot 或访问 token 错了。
+
+第二步，打开事件 history。调用 `/events/history?limit=20`，看它是否返回 events 数组。刚启动时 events 可能很少，但响应格式必须稳定。如果你看到敏感路径或 token 原样出现，就要先修 event redaction，不要继续写 UI。事件 history 是最容易被复制、截图、提交到 issue 的表面，安全性优先级很高。
+
+第三步，创建一个最小 run。用 `POST /runs` 提交一个简单任务，例如检查 workspace 信息或返回 mock summary。请求体里可以带 `task`、`cwd`、`mode`、`threadTitle`、`async`。同步运行时，响应应包含 run/thread/summary 一类信息；异步运行时，响应应包含 job id，然后你要通过 `/events/history` 或 `/runs/{id}` 观察进度。这里要记录一个原则：HTTP status 200 只说明 gateway 接受并处理了请求，不等于 Agent 任务语义成功。任务成功要看 run status、verification、tool events 和 final response。
+
+第四步，创建一个 route。最简单可以用 filesystem 或 webhook 风格的 adapter；如果使用 Slack、Feishu、Telegram 这类平台，要确保 adapterConfig 中必需字段存在。调用 `POST /routes` 后，马上调用 `GET /routes`，确认 route id、channelType、channelKey、adapterType、status、plugin health 都是预期值。如果 route 创建成功但 plugin health 显示 missing secret，说明 gateway 记录了 route，但实际投递仍然可能失败。Workbench 应该展示这种差异，而不是只显示“已配置”。
+
+第五步，制造一次 delivery。可以使用 `POST /routes/{routeId}/deliver` 手动投递一条测试消息。成功时，你应该能在 `/deliveries` 看到 queued 到 sent 或 acknowledged 的状态变化；失败时，应该能看到 failed、retrying 或 dead_letter，并且 workbench 能生成 retry action。这里最重要的是状态转换，不是消息内容。一个没有 delivery record 的 outbound 发送，即使平台收到了，也不是可运维能力。
+
+第六步，打开 workbench 或读取 `/operator-state`。确认 diagnostics 里有 gateway、workspacePath、modelProfiles、memoryProviders、channelPlugins；operations 里能看到 deliveries、subagents、routes 等状态；controls 里列出 retryDelivery、pauseSubagent、interruptSubagent、runProfileEvaluation、switchAgentModelProfile 等动作。Workbench 的意义就是把前五步分散的 HTTP 证据组织成一个操作者能理解的界面。
+
+第七步，跑本章相关测试。最低命令是 `node ./scripts/run-tests.mjs tests/gateway.test.ts`。如果你改了 channel contract 或 message formatting，还要跑 `tests/channel-contracts.test.ts` 和 `tests/gateway-messages.test.ts`。如果你改了 workbench 前端代码，还应该补充构建或页面级检查。不要把“浏览器看起来能打开”当成唯一验证。Gateway 的核心风险在于状态、脱敏、重试、授权和异步边界，这些必须靠测试保护。
+
+完成这七步后，你才可以说 gateway 路径具备最小可检查性。注意这个结论仍然不是“生产可用”。生产可用还需要真实平台 secret、签名验证、网络超时、rate limit、平台错误码、部署日志、监控告警和备份恢复策略。最小验证只证明本地工程契约没有断。
+
+还有一个容易忽略的习惯：每次验证都要保存“请求、响应、事件、状态”四类证据。请求说明你让 gateway 做了什么，响应说明 HTTP 层是否接受，事件说明内部流程是否推进，状态说明最终对象停在哪里。只保存其中一类都不够。例如只保存 curl 响应，看不出后续 delivery 是否失败；只保存 events，看不出原始 route 配置是否缺字段；只保存 workbench 截图，看不出请求体里是否使用了正确 cwd。把四类证据放在一起，排错才不会变成猜测。
+
+### 14.13 最低完成标准
+
+学完本章后，读者应该能做到下面这些事。
+
+第一，能解释 gateway 与 runtime 的边界。runtime 负责执行 Agent 任务，gateway 负责把 HTTP、WebSocket、channel route、delivery、events 和 operator controls 接到 runtime，不应该把平台协议塞进 core-runtime。
+
+第二，能读懂一次外部消息的路径：inbound endpoint 接收请求，route 校验 channel 和 secret，消息进入 inbox 或 run request，runtime 创建 thread/run，event bus 发布状态，delivery record 记录出站回复，workbench 展示健康和失败动作。
+
+第三，能解释 route、adapter、provider manifest 的区别。route 是某个渠道实例的绑定，adapter 是发送或接收实现，provider manifest 是渠道能力和配置要求说明。
+
+第四，能说明 SSE、WebSocket、history 的用途。SSE 用来推送实时事件，history 用来补齐过去事件，WebSocket 用来做双向控制，HTTP JSON 用来处理明确的查询和动作。
+
+第五，能判断 gateway 事件是否安全展示。任何含 token、secret、signed URL、artifact path 的数据都应该经过 redaction。测试中没有泄漏，不代表未来新字段也安全；新增事件字段时必须考虑脱敏。
+
+第六，能按 operations runbook 排错。先查 health，再查 routes 和 plugin status，再查 secret 与签名，再查 delivery 状态，再跑 gateway 相关测试。不要一开始就改 prompt 或换模型。
+
+### 14.14 练习
+
+1. 在 [`packages/gateway/src/index.ts`](../../packages/gateway/src/index.ts) 中找到 `/health`、`/events`、`/runs`、`/routes`、`/deliveries` 的分支，写出每个 endpoint 的输入、输出和典型失败。
+2. 阅读 [`packages/gateway/src/routes.ts`](../../packages/gateway/src/routes.ts)，选择 Slack、Feishu、Telegram 三个 channel，比较它们的 capability descriptor 和 required secrets。
+3. 阅读 [`packages/gateway/src/event-bus.ts`](../../packages/gateway/src/event-bus.ts)，写出 redaction 覆盖的四类敏感信息，并设计一个应该被脱敏的新字段名。
+4. 阅读 [`apps/workbench/src/views/operations.ts`](../../apps/workbench/src/views/operations.ts)，解释为什么 failed delivery 才会生成 retry action，为什么 terminal subagent 不应该再出现 pause/resume/cancel。
+5. 从 [`tests/gateway.test.ts`](../../tests/gateway.test.ts) 中找出一个 ACP projection 测试，说明它保护的是字段格式、脱敏，还是 protocol compatibility。
+6. 根据 [`docs/operations.md`](../../docs/operations.md) 写一个 Feishu 入站失败排查清单，至少包含 health、routes、secret、events、runs、deliveries 六步。
+7. 设计一个 Workbench 页面上的“危险动作”确认文案，例如 retry delivery 或 cancel subagent。文案要包含目标 id、当前状态和可能影响。
+8. 写一个 benchmark 报告片段，说明真实模型运行失败并不是模型能力差，而是 gateway route 的 adapterConfig 缺少 outbound secret，导致 delivery 进入 failed。
+
+### 14.15 本章参考资料
 
 - Omni Agent: [`packages/gateway/src/index.ts`](../../packages/gateway/src/index.ts)
 - Omni Agent: [`packages/gateway/src/routes.ts`](../../packages/gateway/src/routes.ts)
+- Omni Agent: [`packages/gateway/src/event-bus.ts`](../../packages/gateway/src/event-bus.ts)
+- Omni Agent: [`packages/gateway/src/control-plane.ts`](../../packages/gateway/src/control-plane.ts)
+- Omni Agent: [`apps/workbench/src/api.ts`](../../apps/workbench/src/api.ts)
+- Omni Agent: [`apps/workbench/src/views/diagnostics.ts`](../../apps/workbench/src/views/diagnostics.ts)
+- Omni Agent: [`apps/workbench/src/views/operations.ts`](../../apps/workbench/src/views/operations.ts)
 - Omni Agent: [`tests/gateway.test.ts`](../../tests/gateway.test.ts)
 - Omni Agent: [`docs/operations.md`](../../docs/operations.md)
-- MDN Server-sent events: [https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events)
-- Model Context Protocol specification: [https://modelcontextprotocol.io/specification](https://modelcontextprotocol.io/specification)
-- OpenAI Agents SDK tracing: [https://openai.github.io/openai-agents-python/tracing/](https://openai.github.io/openai-agents-python/tracing/)
+- MDN: [Using server-sent events](https://developer.mozilla.org/en-US/docs/Web/API/Server-sent_events/Using_server-sent_events)
+- WHATWG HTML Standard: [Server-sent events](https://html.spec.whatwg.org/dev/server-sent-events.html)
+- Model Context Protocol: [Transports](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports)
+- OpenAI Agents SDK: [Tracing](https://openai.github.io/openai-agents-python/tracing/)
 
 ## 15. Evals：如何评测 Agent，而不是只评测一句回答
 
