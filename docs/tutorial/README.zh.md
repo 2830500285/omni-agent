@@ -1300,13 +1300,28 @@ npm/tsx 是否启动
 
 ## 5. 项目目录地图：每个模块负责什么
 
-理解 Omni Agent，最好从目录结构开始。目录结构是系统架构最直接的地图。下面不是简单列文件，而是解释每个目录为什么存在。
+### 5.1 为什么先看目录地图
+
+读一个 Agent runtime 项目，最怕一上来就随机打开文件。你可能先看到某个工具实现，再看到某个测试，再看到某个 gateway route，然后很快迷失：这些东西到底谁调用谁？任务从哪里进来？模型在哪里被调用？工具在哪里执行？运行记录在哪里保存？eval 又在哪里判断成功？
+
+目录地图的作用，就是先建立源码导航。它不要求你立刻读懂每个文件，而是让你知道每个区域承担什么责任。后面遇到问题时，你能迅速判断应该去哪个目录。
+
+Omni Agent 的仓库可以先分成七层：
+
+```text
+apps/          用户入口和界面层
+packages/      核心能力包
+examples/      示例和 eval fixture
+scripts/       构建、测试、评测、发布脚本
+docs/          设计、运维、安全、教程和证据文档
+tests/         自动化测试
+deploy/        部署相关文件
+```
+
+如果只看源码主线，可以进一步压缩成：
 
 ```text
 apps/cli
-apps/workbench
-apps/mobile-node
-apps/mobile-native
 packages/core-runtime
 packages/model-client
 packages/tools
@@ -1316,46 +1331,405 @@ packages/session-store
 packages/approvals
 packages/evals
 packages/gateway
-packages/automation
-packages/safety
-examples/evals
-scripts
-docs
 ```
 
-`apps/cli` 是命令行入口。用户输入的 `npm run dev -- run ...`、`doctor`、`models`、`evals`、`serve` 等命令，最终都会在 CLI 层被解析。CLI 的职责不是完成所有业务逻辑，而是把用户意图转换成 runtime 或服务层能理解的参数。一个好的 CLI 应该薄而清晰：它负责解析、校验、展示，但不应该把核心 Agent 行为写死在命令解析里。
+这十个目录就是理解 Omni Agent 的主干。其它目录不是不重要，而是可以在主干清楚后再读。
 
-`apps/workbench` 是面向操作者的工作台。CLI 适合开发者，但长期运行的 Agent 还需要可视化检查：当前有哪些 agents，哪些 routes，哪些 automations，哪些 runs 失败，哪些工具被禁用。Workbench 的价值在于让运行状态可见。
+### 5.2 应用层：`apps/`
 
-`apps/mobile-node` 和 `apps/mobile-native` 是移动端相关入口。你可以先不深入它们，但要知道 Omni Agent 不是只打算停留在单机 CLI，而是有向多端控制面扩展的设计。
+`apps/` 目录放的是用户入口。它不是能力本身，而是把能力暴露给用户或操作者。
 
-`packages/core-runtime` 是最重要的包之一。它是任务执行主循环所在的位置。你想理解 Agent 如何从任务走到模型调用、工具执行、验证和总结，就应该从这里读。Runtime 是系统心脏。
+#### `apps/cli`
 
-`packages/model-client` 负责模型调用。它把不同 provider 的 API 差异封装起来，比如 OpenAI-compatible chat completions、Anthropic Messages、streaming、tool calling、usage 统计、错误处理。模型调用不要散落在各处，否则很难做 failover、成本统计和协议兼容。
+`apps/cli` 是最重要的应用入口。你在终端运行的这些命令都会从这里进入：
 
-`packages/tools` 定义可用工具和执行契约。工具是模型与真实世界之间的桥。模型不能直接读你的硬盘，只能请求工具；工具由 runtime 执行。工具契约越清晰，模型越容易正确使用，eval 也越容易判断。
+```bash
+npm run dev -- run --cwd "." --task "Summarize this repository"
+npm run dev -- doctor --cwd "."
+npm run dev -- models
+npm run dev -- evals --cwd "." --manifest ".\examples\evals\suite.json"
+npm run dev -- serve --cwd "." --port 4040
+```
 
-`packages/workspace` 负责本地仓库视图。它会处理路径、文件、git、workspace snapshots、执行后端等。Workspace 层很关键，因为 Agent 的能力边界首先来自它能看见什么、能改什么、能在哪个目录运行命令。
+CLI 的职责是解析命令、校验参数、展示结果、调用 runtime 或服务层。它不应该承担所有核心逻辑。比如 `run` 命令应该把任务交给 `packages/core-runtime`；`models` 命令应该读取 `packages/model-client` 提供的信息；`evals` 命令应该调用 `packages/evals`；`serve` 命令应该启动 `packages/gateway`。
 
-`packages/context` 负责上下文和压缩。模型上下文窗口有限，不能无限塞历史消息。Context 层要决定保留哪些事实、哪些工具结果、哪些 summary、哪些 memory。长任务是否能恢复，很大程度取决于 context 压缩质量。
+第一次读源码时，可以把 `apps/cli` 当成路线入口。你想知道一个命令最后去了哪里，就从 CLI 查起。读 CLI 的目标不是背所有命令，而是理解参数如何变成 runtime options。
 
-`packages/session-store` 保存持久化数据。Session、thread、run、memory、route、automation 等，都需要可靠存储。没有持久化，就没有复盘；没有复盘，就没有真正的工程改进。
+常见误解是把 CLI 当成系统本体。CLI 只是入口。未来同一套 runtime 也可以通过 gateway、workbench、automation 或外部控制面触发。
 
-`packages/approvals` 负责审批策略。不要把审批当作 UI 功能，它是安全模型的一部分。高风险命令、破坏性文件操作、敏感数据传输、外部通信，都应该经过规则判断。
+#### `apps/workbench`
 
-`packages/evals` 是评测核心。它定义 eval suite、scenario、step、observed run、score、report。一个 Agent 项目如果没有 eval，就很难从“看起来能用”走向“持续可证明”。
+`apps/workbench` 是面向操作者的工作台。CLI 适合执行命令，但长期运行的 Agent 需要可视化状态：当前有哪些 run、哪些 route、哪些 automation、哪些 subagent、哪些 artifact、哪些 skill maintenance 项目。Workbench 的意义是把运行状态暴露出来。
 
-`packages/gateway` 把 runtime 暴露成 HTTP/SSE/WS 服务。Gateway 让外部系统可以创建任务、查看 run、监听事件、管理 routes。CLI 是本地入口，gateway 是服务入口。
+如果你只是第一次学习本地 CLI，可以先不深入 workbench。但你应该知道它存在，因为它说明 Omni Agent 不只想成为一个命令行脚本，而是有 operator surface。Agent 系统一旦长期运行，只有 CLI 输出是不够的，操作者需要看见状态、历史和风险。
 
-`packages/automation` 负责定时或事件触发的任务。Agent 不应该只在人手动输入时运行，它也可以定期检查仓库、响应路由消息、生成报告。
+#### `apps/mobile-node` 与 `apps/mobile-native`
 
-`packages/safety` 负责安全检查。包括 secret pattern、prompt injection、路径逃逸、命令风险等。安全不是最后加一个过滤器，而应该贯穿工具、审批、测试和发布流程。
+这两个目录是移动端相关入口。初学阶段可以先跳过。它们的存在说明控制面可以扩展到更多终端，但它们不是理解 runtime 的第一入口。等你掌握 gateway 和 route 之后，再回头看这些应用会更自然。
 
-`examples/evals` 是默认评测套件和 fixture 的位置。读这个目录可以知道系统认为哪些能力需要被评测。
+### 5.3 核心包层：`packages/`
 
-`scripts` 包含 build、benchmark、release、maturity 等脚本。很多工程项目的真实质量不在 README，而在 scripts。因为 scripts 表示团队实际用什么命令验证项目。
+`packages/` 是仓库真正的核心。Omni Agent 的架构能力基本都在这里。每个包承担一个相对清晰的责任。
 
-`docs` 放安全、运维、release checklist、capability claims、教程等文档。好的 docs 不只是介绍功能，而是告诉读者如何验证功能。
+#### `packages/core-runtime`
+
+这是最核心的包。它负责一次任务如何执行。
+
+你可以把 `core-runtime` 看成系统心脏。它接收用户任务和 runtime options，加载 context、workspace、memory，选择 model profile，准备工具，调用模型，处理 tool call，执行审批，收集工具事件，运行验证，保存 run record，生成 final report。
+
+如果你想理解“Agent 如何从一句任务变成一串行动”，就读这里。第 6 章会专门讲 runtime 主循环，届时会更深入地看这个包。
+
+读这个包时要注意两类内容。第一类是运行配置，例如 approvalPolicy、executionDomain、verificationMode、contextEngine、memoryProviders、eventHandler、subagentRuntime。第二类是执行过程，例如模型回合、工具事件、验证结果、metrics、artifact。把这两类连起来，你就能理解一次 run 的生命周期。
+
+#### `packages/model-client`
+
+这个包负责模型 provider 接入。它处理 model profile、OpenAI-compatible 请求、Anthropic-compatible 请求、streaming、tool calling、usage、错误和 fallback。
+
+为什么要单独拆出 model-client？因为 provider 差异很大。不同模型服务的 URL、请求 body、headers、tool call 格式、streaming 格式、usage 字段、错误结构都不一样。如果把这些逻辑散落在 runtime 或 CLI 里，系统会很快变乱。
+
+Model-client 的目标是给 runtime 一个稳定接口：runtime 不应该关心底层 provider 的所有 HTTP 细节，它应该只知道“这里有一个 profile，可以调用，可能返回文本、tool call、usage 或错误”。
+
+第 7 章讲 model profile 时，会回到这个包。
+
+#### `packages/tools`
+
+这个包定义工具能力。工具是模型与真实世界之间的桥。模型不能直接读文件、运行命令、保存 memory、调用 extension；它只能请求工具，runtime 决定是否执行。
+
+读 `packages/tools` 时，要重点看工具的三件事：名称、输入、输出。名称决定模型如何选择工具；输入决定参数是否可检查；输出决定模型能否根据工具结果继续推理。
+
+一个好的工具不只是“能执行”。它还应该有清晰失败模式。比如读文件失败时，要说明路径不存在、越界、权限不足，还是读取错误；运行命令失败时，要说明退出码、stdout、stderr；搜索结果应该有足够上下文但不能无限长。
+
+工具包和 approvals、workspace、runtime 都有关。工具请求会先被 runtime 处理，再由 approval policy 判断风险，最后在 workspace 或其他后端执行。
+
+#### `packages/workspace`
+
+`workspace` 包负责本地仓库视图和文件/命令边界。它处理路径、目录、文件、git、workspace snapshots、执行后端等。
+
+这个包体现 Omni Agent 的 local-first 特征。Agent 不是在抽象文本里工作，而是在真实目录里工作。Workspace 决定它能看见什么、能改什么、能在哪个根目录里执行命令。
+
+读这个包时要特别注意安全边界：路径是否被规范化，是否允许访问 workspace 外部，命令执行在哪个 cwd，worktree 或 sandbox 如何隔离。很多本地 Agent 的严重问题不是模型回答错，而是 workspace 边界不清。
+
+#### `packages/context`
+
+`context` 包处理上下文和压缩。模型上下文窗口有限，一次长期任务不可能把所有历史消息、所有文件、所有工具输出都原样塞进去。Context 层要决定保留什么、压缩什么、丢弃什么、如何标记来源。
+
+读这个包时，要把它和 memory 区分开。Memory 是跨任务保存的信息；context 是当前模型回合看到的信息。Memory 可以进入 context，但 context 还包括任务、工具说明、workspace 摘要、最近消息、验证状态等。
+
+长期运行的 Agent 能否恢复上下文，很大程度取决于 context compression。压缩太粗，会丢关键事实；压缩太细，会浪费窗口；没有结构，会让模型混乱。
+
+#### `packages/session-store`
+
+`session-store` 是持久化层。它保存 session、thread、run、memory、route、automation、artifact 等。
+
+这个包支撑“可复盘”。如果没有持久化，Agent 每次运行结束后只剩终端输出。出了问题，没人知道模型用了哪个 profile、调用了哪些工具、验证命令是什么、失败原因是什么、artifact 在哪里。
+
+读这个包时，不要只把它当数据库封装。它是证据系统的一部分。Run artifact、memory tags、thread summary、usage、route delivery、automation 状态，都需要被可靠保存。
+
+#### `packages/approvals`
+
+`approvals` 包负责审批策略。它会把工具调用按类别和风险分层，然后决定 allow、prompt 或 deny。
+
+本地 Agent 的安全关键在这里。模型请求工具不代表工具应该执行。Approval policy 是模型意图和真实副作用之间的安全阀。读这个包时，要关注 approval class、risk tier、command classification、tool call classification、policy resolution。
+
+审批不是 UI 功能，而是 runtime 安全模型。即使没有图形界面，审批逻辑也必须存在。
+
+#### `packages/evals`
+
+`evals` 包是评测核心。它定义 suite、scenario、step、expectation、observed run、score、report 等结构。
+
+如果说 runtime 负责“执行任务”，evals 就负责“判断任务是否按合同完成”。它不是普通单元测试。Eval 关注的是 Agent 行为：是否调用必要工具，是否修改必要文件，是否输出必要片段，是否有 verification evidence，是否满足 maturity gate。
+
+读这个包时，要结合 `examples/evals/suite.json`。单看代码会抽象，结合 manifest 才能看出评测系统如何表达任务。
+
+#### `packages/gateway`
+
+`gateway` 包把 runtime 暴露为服务。CLI 是本地命令入口，gateway 是 HTTP/SSE/WS 入口。它支持远程编排、事件流、async jobs、routes、inbox、node control plane 等。
+
+Gateway 让 Omni Agent 从“本地工具”变成“可被其他系统调用的 runtime”。这也带来新的安全要求：token、route safety、event replay、delivery record、pairing、auth boundary。
+
+初学者可以先理解 CLI，再理解 gateway。因为 gateway 的很多概念都是把 CLI/runtime 能力服务化。
+
+#### `packages/automation`
+
+`automation` 包处理定时或事件触发任务。一个 Agent 不一定只在人输入命令时运行，也可以定期检查仓库、处理 route 消息、生成报告、跑维护任务。
+
+Automation 的难点是控制频率、失败重试、dead-letter、记录和权限。自动化越强，越需要 artifact 和审批策略，否则系统会在没人看着的时候做危险动作。
+
+#### `packages/safety`
+
+`safety` 包负责安全检查，例如 secret pattern、prompt injection、路径风险、命令风险等。安全不是最后加一个过滤器，而应该贯穿工具、workspace、approvals、gateway、release checklist。
+
+如果你未来要改命令执行、文件写入、外部请求、artifact redaction、credential handling，就应该同时查看 safety 和 security docs。
+
+#### `packages/extensions`
+
+`extensions` 包支持本地扩展和 plugin/MCP 风格资源。它让 runtime 可以读取 extension resources、prompts、tools 或本地能力声明。
+
+Extensions 的价值是让 Omni Agent 不必把所有能力硬编码在核心里。外部工作区可以带自己的 playbook、prompt template、resource 和工具。但扩展也需要安全边界，不能让未知插件随意执行危险动作。
+
+#### `packages/reference-native` 与 `packages/reference-translated`
+
+这两个包与参考实现、对比和生成材料有关。初学阶段不要从这里开始。它们更适合做能力对比、参考融合、文档生成或验证 parity 时使用。
+
+如果你想理解 Omni Agent 自身 runtime，优先看 `core-runtime`、`tools`、`workspace`、`model-client`、`session-store`、`approvals`、`evals`。参考包可以后置。
+
+### 5.4 示例层：`examples/`
+
+`examples/` 不是随便放 demo 的地方。对 Omni Agent 来说，最重要的是 `examples/evals`。
+
+当前 `examples/evals` 中有：
+
+```text
+suite.json
+capability-scorecard.json
+complex-suite.json
+release-local.json
+verification-native-runtime.json
+```
+
+`suite.json` 是默认评测 suite。它定义项目默认关心哪些 scenario。读它可以理解系统当前如何表达任务、期望和评分。
+
+`capability-scorecard.json` 是能力声明和证据状态的结构化记录。它回答“哪些能力是 usable，哪些 mature，哪些还有风险”。这比 README 口号更接近真实状态。
+
+`complex-suite.json` 适合看更复杂 scenario 的组织方式。
+
+`release-local.json` 用于 release-local runtime eval，帮助验证发布路径。
+
+`verification-native-runtime.json` 是 verification-native contract 的最小 fixture，它说明任务完成需要 verification evidence，而不是只看最终状态。
+
+学习 eval 时，不要只读 `packages/evals` 的 TypeScript 类型。一定要同时读 examples。类型告诉你系统能表达什么，manifest 告诉你项目实际在测什么。
+
+### 5.5 脚本层：`scripts/`
+
+`scripts/` 是项目真实工程流程的入口。很多项目 README 写得很好，但 scripts 才能说明团队实际如何验证、构建、发布和评测。
+
+Omni Agent 的重要脚本包括：
+
+```text
+build.mjs
+run-tests.mjs
+eval-smoke.ts
+eval-benchmark.ts
+eval-release-local.ts
+eval-program-check.ts
+release-check.ts
+release-diagnostics.ts
+release-artifact-smoke.ts
+maturity-check.ts
+reference-parity.ts
+reference-evidence-smoke.ts
+generate-reference-native.ts
+sync-reference-projects.ts
+```
+
+`build.mjs` 负责构建发布产物。它通常由 `npm run build` 调用。
+
+`run-tests.mjs` 是测试运行器，`npm test` 和 targeted tests 都会用到。
+
+`eval-smoke.ts` 和 `eval-benchmark.ts` 是 eval/benchmark 入口。前者适合快速检查，后者适合 benchmark。
+
+`eval-release-local.ts` 用于 release-local runtime 路径验证。
+
+`eval-program-check.ts` 检查 eval program governance metadata，确保 benchmark 不是只有分数，还包含 release decision、trace unit、judge roles、operational metrics 等合同。
+
+`release-check.ts` 是发布门禁入口。它比普通 test 更严格。
+
+`maturity-check.ts` 检查 capability-backed claims 是否有证据支撑。
+
+`reference-parity.ts`、`reference-evidence-smoke.ts`、`generate-reference-native.ts` 等和参考系统对比、parity、融合材料有关。
+
+读脚本时要问：这个脚本证明什么？它不证明什么？它是否写 artifact？它是否会修改仓库？它是否依赖真实模型？它是否应该进入 CI？
+
+### 5.6 文档层：`docs/`
+
+`docs/` 不是附属品。对 verification-native 项目来说，文档本身也是证据系统的一部分。
+
+重要文档包括：
+
+```text
+docs/security.md
+docs/operations.md
+docs/release-checklist.md
+docs/live-testing.md
+docs/product-parity-dashboard.md
+docs/omni-agent-paradigms.md
+docs/capability-backed-claims.md
+docs/accountable-memory.md
+docs/agent-run-artifacts.md
+docs/verification-native-runtime.md
+docs/governed-subagents.md
+docs/tutorial/
+```
+
+`security.md` 记录安全边界、威胁和需要验证的安全场景。
+
+`operations.md` 是运维手册，说明 release gate、shell/file safety、model runtime、memory、automation 等问题如何处理。
+
+`release-checklist.md` 是发布前检查清单。
+
+`live-testing.md` 说明真实 provider/live testing 的范围。
+
+`product-parity-dashboard.md` 用于表达与参考系统的能力状态。
+
+`omni-agent-paradigms.md` 是项目理念的总纲。
+
+`capability-backed-claims.md` 把公开能力声明映射到证据。
+
+`accountable-memory.md` 说明 memory accountability。
+
+`agent-run-artifacts.md` 说明 run artifact 应该记录什么。
+
+`verification-native-runtime.md` 说明任务完成为什么需要 verification evidence。
+
+`governed-subagents.md` 说明 subagent 的治理模型。
+
+`docs/tutorial/` 就是本教程所在位置。它应该连接读者、源码、命令、证据和参考资料。
+
+### 5.7 测试层：`tests/`
+
+`tests/` 是行为证据。`npm test` 会自动发现 `tests/**/*.test.ts`，避免新增测试却没有进入默认测试路径。
+
+测试名称通常能告诉你系统能力边界。例如 runtime、workspace、tools、approvals、evals、gateway、model-client、cli-chat、cli-doctor、extensions、release-check、maturity-artifacts 等。读测试是理解系统的捷径，因为测试会展示作者认为哪些行为必须稳定。
+
+第一次读源码时，可以先读文档和主包，再读对应测试。比如你读 `packages/approvals`，就找 approval 相关测试；读 `packages/evals`，就看 evals 测试；读 gateway，就看 gateway tests。
+
+测试的价值不仅是防回归，还能帮助你理解“正确行为”是什么。代码告诉你系统现在怎么做，测试告诉你系统必须保持什么。
+
+### 5.8 部署层：`deploy/`
+
+`deploy/` 放部署相关文件，例如 Dockerfile、环境变量示例、服务配置等。它不是第一次读源码的入口，但它对发布和运维很重要。
+
+Agent runtime 一旦部署，就不再只是本地脚本。它会面对 secret management、network boundary、gateway token、health check、storage path、log retention、artifact path 等问题。部署文件和 `docs/security.md`、`docs/operations.md`、`docs/release-checklist.md` 应该一起读。
+
+### 5.9 哪些目录初学阶段可以先跳过
+
+第一次阅读时，不需要每个目录都深入。可以先跳过或后置：
+
+- `dist/`：构建产物，不是源码主线。
+- `node_modules/`：依赖目录，不读。
+- `.artifacts/`：运行生成的 artifact，按需要看。
+- `.tmp/`、`.omni-agent-artifacts/`：本地临时或运行产物，按需要看。
+- `vendor/`：外部或参考材料，按任务需要看。
+- `packages/reference-native`、`packages/reference-translated`：参考对比相关，等主线清楚后再读。
+
+这不是说它们没价值，而是初学者需要先抓主线。主线是 CLI -> runtime -> model-client/tools/workspace/context/approvals/session-store -> evals/gateway。
+
+### 5.10 推荐的第一次源码阅读路线
+
+如果你是第一次读 Omni Agent 源码，建议按下面顺序：
+
+1. 读 [README.zh.md](../../README.zh.md)，了解项目主张、命令和能力范围。
+2. 读 [docs/omni-agent-paradigms.md](../omni-agent-paradigms.md)，理解五个范式。
+3. 读 [package.json](../../package.json)，看 scripts、workspaces、dependencies。
+4. 读 `apps/cli`，找 `run`、`doctor`、`models`、`evals`、`serve` 如何进入系统。
+5. 读 `packages/core-runtime/src/index.ts`，理解 runtime options 和一次 run 的主流程。
+6. 读 `packages/model-client/src/index.ts`，理解 model profile。
+7. 读 `packages/tools/src/index.ts` 和 `packages/workspace/src/index.ts`，理解工具和本地仓库边界。
+8. 读 `packages/approvals/src/index.ts`，理解工具动作如何被允许、提示或拒绝。
+9. 读 `packages/session-store/src/index.ts`，理解 session、run、memory、artifact 如何保存。
+10. 读 `packages/evals/src/index.ts` 和 `examples/evals/suite.json`，理解评测合同。
+11. 读 `docs/security.md`、`docs/operations.md`、`docs/release-checklist.md`，理解发布和安全边界。
+12. 读对应测试，确认你的理解是否和行为合同一致。
+
+这个路线不是唯一的，但它能避免一开始被 gateway、mobile、reference generated docs、临时产物分散注意力。
+
+### 5.11 从任务反推目录
+
+以后你遇到具体任务，可以用“任务 -> 目录”的方式定位。
+
+如果任务是“新增一个 CLI 命令”，先看 `apps/cli`，再看它是否需要调用 runtime、session-store 或其他包。
+
+如果任务是“修改 Agent 执行循环”，先看 `packages/core-runtime`，再看相关 tests。
+
+如果任务是“接入新模型 provider”，先看 `packages/model-client`，再看 `models` 命令和 model-client tests。
+
+如果任务是“新增工具”，先看 `packages/tools`，再看 `packages/approvals` 和 `packages/core-runtime` 的工具注册路径。
+
+如果任务是“限制文件读写范围”，先看 `packages/workspace`、`packages/tools`、`packages/approvals` 和 `docs/security.md`。
+
+如果任务是“改变 memory 行为”，先看 `packages/session-store`、`packages/context`、`docs/accountable-memory.md`。
+
+如果任务是“新增 benchmark scenario”，先看 `examples/evals/suite.json`、`packages/evals`、`scripts/eval-benchmark.ts`。
+
+如果任务是“发布前检查失败”，先看 `scripts/release-check.ts`、`docs/release-checklist.md`、相关 test 输出。
+
+如果任务是“gateway 路由或 workbench 状态不对”，先看 `packages/gateway`，再看 `apps/workbench` 和 gateway tests。
+
+这种反推能力很重要。它能让你改动更小，避免为了一个局部问题重构无关模块。
+
+### 5.12 本章小结
+
+Omni Agent 的目录结构不是随机组织的。它大致遵循“入口应用 -> 核心包 -> 示例评测 -> 工程脚本 -> 文档证据 -> 测试 -> 部署”的分层。
+
+初学者应先抓主线：`apps/cli` 是入口，`packages/core-runtime` 是执行中枢，`packages/model-client` 接模型，`packages/tools` 暴露动作，`packages/workspace` 管本地仓库，`packages/context` 管上下文，`packages/approvals` 管风险，`packages/session-store` 管记录，`packages/evals` 管评测，`packages/gateway` 管服务化。
+
+等这条主线清楚后，再读 automation、extensions、safety、workbench、deploy、reference 相关目录。这样阅读效率最高，也最不容易被旁支内容带偏。
+
+### 5.13 读目录时如何不迷路
+
+第一次读大型 Agent 仓库，很容易陷入“每个文件都看一点，但没有形成主线”的状态。避免这个问题，可以用三种读法。
+
+第一种是从命令读。比如你关心 `npm run dev -- doctor --cwd "."`，就从 `apps/cli` 找 doctor 命令入口，再看它调用哪些诊断函数，再看这些诊断函数分别访问 workspace、session-store、model-client、gateway 还是 extensions。这样读的好处是目标明确：你知道自己在追一条用户可见命令。
+
+第二种是从一次 run 读。比如你关心 `npm run dev -- run --task "..."`，就从 CLI 进入 `packages/core-runtime`，再跟踪 runtime 如何加载 context、选择 model profile、准备 tools、处理 tool call、写 session-store。这样读的好处是能建立系统主循环，而不是只理解单个工具。
+
+第三种是从证据读。比如你关心 benchmark 或能力声明，就从 `examples/evals/suite.json`、`examples/evals/capability-scorecard.json`、`packages/evals`、`scripts/eval-benchmark.ts`、`docs/capability-backed-claims.md` 一路读。这样读的好处是能理解项目如何证明自己，而不是只看实现。
+
+不要用“随机打开文件”的方式读。随机阅读适合熟悉项目以后查细节，不适合第一次建立地图。第一次阅读应该每次只追一条线：命令线、运行线、证据线、安全线、模型线、工具线。每条线读完后，再把它们合并成整体图。
+
+### 5.14 改代码时如何保持边界
+
+目录地图不仅帮助阅读，也帮助修改。改代码时最重要的原则是：先判断责任边界，再改最小范围。
+
+如果你要改 CLI 输出，不应该顺手改 runtime 行为。CLI 是展示层，runtime 是执行层。除非输出问题来自 runtime 缺少数据，否则不要把展示逻辑扩散到核心执行。
+
+如果你要改 model profile，不应该顺手改工具定义。模型接入属于 `packages/model-client`，工具契约属于 `packages/tools`。二者会交互，但职责不同。把 provider-specific 逻辑塞进工具层，会让系统以后更难维护。
+
+如果你要改 workspace 路径规则，必须同时考虑 approvals 和 security docs。路径规则不是纯工具问题，它直接影响安全边界。比如允许读取 workspace 外文件，可能会让 memory、artifact、tool output 都泄露敏感数据。
+
+如果你要改 eval scoring，要同步检查 examples 和 scripts。Eval 不是单个函数，manifest、score、report、benchmark history、maturity check 都可能受影响。只改评分逻辑但不改 fixture 或文档，会让读者看不懂新结果。
+
+如果你要新增能力声明，不应该只改 README。要更新 scorecard、scenario、tests 或 maturity evidence。能力声明必须能被检查，这是 Omni Agent 的核心范式。
+
+这种边界意识会让改动更小，也让 review 更容易。一个好的改动应该能说清楚：它属于哪个目录的职责，为什么需要碰这个目录，验证命令是什么，是否影响其他边界。
+
+还有一个实用判断：如果你发现自己为了一个小问题同时修改了五六个互不相邻的目录，就应该停下来重新检查设计。也许真正缺的是一个已有 helper，也许你改错了入口，也许这个功能本来应该放在更靠近责任源头的包里。比如只是为了让 CLI 多显示一行信息，不应该修改 eval schema；只是为了让 model profile 多一个诊断字段，不应该改 workspace；只是为了让某个 benchmark report 更清楚，不应该动 runtime 主循环。目录地图的价值就在这里：它让你在动手之前先判断“这个改动应该住在哪里”。
+
+对贡献者来说，这种判断还能降低合并风险。边界清楚的补丁更容易 review，也更容易写测试。维护者看到 diff 时，可以快速确认改动是否符合模块职责；如果 diff 横跨太多目录，就必须重新评估是否存在隐藏耦合。长期看，目录边界就是项目可维护性的骨架。
+
+因此，本章不是让你背目录名，而是训练一种工程直觉：先找入口，再找责任，再找证据，最后才动手修改。只要这个顺序稳定，后面阅读 runtime、工具、评测和网关时，就不会被大量文件淹没，也能更快定位真实问题和根因。
+
+### 5.15 本章参考资料
+
+#### 本项目参考
+
+- [package.json](../../package.json)：workspaces、scripts、dependencies，是理解仓库结构的第一入口。
+- [README.zh.md](../../README.zh.md)：项目总览、命令入口、runtime modes、evals、gateway、workspace memory。
+- [docs/omni-agent-paradigms.md](../omni-agent-paradigms.md)：五个核心范式，帮助理解目录为什么围绕证据和权限组织。
+- [docs/security.md](../security.md)：安全边界和需要验证的安全场景。
+- [docs/operations.md](../operations.md)：运维排错和 release gate 说明。
+- [docs/release-checklist.md](../release-checklist.md)：发布前检查清单。
+- [docs/capability-backed-claims.md](../capability-backed-claims.md)：能力声明与证据映射。
+- [docs/agent-run-artifacts.md](../agent-run-artifacts.md)：run artifact 的结构。
+- [examples/evals/suite.json](../../examples/evals/suite.json)：默认 eval suite。
+- [examples/evals/capability-scorecard.json](../../examples/evals/capability-scorecard.json)：能力状态和证据 scorecard。
+- [packages/core-runtime/src/index.ts](../../packages/core-runtime/src/index.ts)：runtime 主线。
+- [packages/model-client/src/index.ts](../../packages/model-client/src/index.ts)：模型接入。
+- [packages/tools/src/index.ts](../../packages/tools/src/index.ts)：工具契约。
+- [packages/workspace/src/index.ts](../../packages/workspace/src/index.ts)：workspace 边界。
+- [packages/approvals/src/index.ts](../../packages/approvals/src/index.ts)：审批策略。
+- [packages/session-store/src/index.ts](../../packages/session-store/src/index.ts)：持久化记录。
+- [packages/evals/src/index.ts](../../packages/evals/src/index.ts)：评测核心。
+- [packages/gateway/src/index.ts](../../packages/gateway/src/index.ts)：服务入口。
+
+#### 外部参考
+
+- [npm Workspaces](https://docs.npmjs.com/cli/v11/using-npm/workspaces)：理解 monorepo/workspaces 的基本组织方式。
+- [TypeScript Project References](https://www.typescriptlang.org/docs/handbook/project-references.html)：理解多包 TypeScript 项目如何通过 `tsc -b` 建立编译关系。
+- [Node.js Packages Documentation](https://nodejs.org/api/packages.html)：理解 Node.js 包、ESM、package metadata 的基本规则。
+- [Anthropic: Building Effective AI Agents](https://www.anthropic.com/engineering/building-effective-agents)：理解 agent 系统应如何按 workflow、tools、feedback 和 control patterns 分层。
+- [OpenAI Agents SDK](https://platform.openai.com/docs/guides/agents-sdk/)：参考 agent runtime 中 tools、guardrails、handoffs、tracing 的模块化组织。
+- [OpenTelemetry GenAI Agent and Framework Spans](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/)：理解为什么 runtime、tools、trace、artifact 应该有清晰边界。
 
 ---
 
