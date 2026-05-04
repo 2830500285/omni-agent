@@ -9057,142 +9057,151 @@ Omni Agent 当前的安全基础已经覆盖了多条关键边界：workspace �
 - MITRE 官方资料：[ATLAS](https://atlas.mitre.org/)
 ## 35. 运维手册：日常维护、排错与升级
 
+前面的章节讲了运行时、工具、验证、benchmark、安全和发布检查。到这一章，视角要从“怎样实现一个功能”转成“怎样长期维护一个会真实运行的 Agent 系统”。运维不是等出故障以后临时翻日志，也不是发布前跑一串命令就结束。对 Omni Agent 这种本地 coding-agent runtime 来说，运维的核心是：知道系统现在是否健康，知道异常从哪个边界进入，知道哪些证据可以解释失败，知道什么操作可以恢复，知道升级前后应该保留哪些对比。
 
-本章讨论的是：把运行时健康、gateway、MCP、工具钩子、模型、memory、subagent 和自动化排错写成操作手册。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章不会把 operations 写成抽象口号，而是把它拆成日常工作流。你需要学会看 gateway health、route 状态、MCP 状态、model provider 健康、memory provider 生命周期、tool lifecycle hook、subagent 队列、automation dead-letter、checkpoint/rollback artifact、release diagnostics 和 benchmark 报告。每一个观察点都回答一个具体问题：服务有没有活着，外部通道有没有收发，模型有没有凭证和冷却，工具有没有被审批或 hook 阻断，失败是否有恢复证据，升级是否破坏已有合同。
 
+如果说第 34 章回答“本地 Agent 需要防什么”，第 35 章回答的就是“防线触发以后，操作者怎样知道、怎样处理、怎样复盘”。一个系统真正成熟，不是因为它永远不失败，而是因为它失败时不会沉默、不会扩大损害、不会让维护者靠猜测恢复。
 
-### 35.1 本章先建立的心智模型
+### 35.1 运维手册解决什么问题
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，operations、diagnostics 和 rollback 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+很多开发者第一次写 Agent 项目时，会把注意力放在模型效果和工具数量上。等系统接入真实模型、真实仓库、真实通道以后，问题会迅速变成另一类：为什么用户消息没有触发任务？为什么模型 fallback 了？为什么工具被 blocked？为什么 subagent 一直 queued？为什么 automation 连续失败？为什么 release benchmark 退步？为什么本地能跑，Docker 里 `/health` 不通？这些问题不是靠更聪明的 prompt 解决，而是靠可观察性、运行手册和恢复流程解决。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，health、recovery 和 logs 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+运维手册的第一项任务，是把“现象”映射到“检查入口”。比如“命令被拦截”应该去看 approval class、risk tier、command rule id 和 resolved path；“MCP 工具不可用”应该去看 `/mcp/status`、server command、transport、credential 和 runtime health；“消息发不出去”应该去看 `/routes`、channel plugin status、delivery 状态机、dead-letter 和 transcript retention；“模型不可用”应该去看 model profile、provider id、auth profile health、cooldown 和 fallback attempts。
 
-本章反复出现的关键词包括：`operations`、`health`、`diagnostics`、`recovery`、`rollback`、`logs`、`upgrade`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+第二项任务，是把“恢复动作”限制在安全边界内。运维最危险的时刻往往是故障恢复，因为维护者容易为了赶紧恢复服务而绕过策略。比如手动删除数据目录、直接修改 SQLite、跳过 secret reference、把危险命令临时设为 always allow、用外部 checkpoint 覆盖 workspace。好的 runbook 会写清楚：哪些操作可以做，哪些操作必须保留审批，哪些操作只能在 managed root 内进行，恢复后必须重跑哪些回归。
 
-### 35.2 在仓库中找到入口
+第三项任务，是把“证据”留下来。运维不是把系统修好就结束。一次失败后应该能回答：什么时候开始失败，影响哪个 workspace 或 route，触发了什么工具，哪个 policy 阻断，是否创建 checkpoint，是否执行 rollback，最终验证是什么状态，是否需要 release note 或 benchmark baseline 更新。没有证据的恢复只是手工经验，下一次同类问题还会重新排查。
 
-阅读本章时，建议从下面这些文件开始：
+### 35.2 仓库里的运维入口
 
-1. [`docs/operations.md`](../../docs/operations.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`docs/live-testing.md`](../../docs/live-testing.md)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`packages/gateway/src/index.ts`](../../packages/gateway/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`deploy/Dockerfile`](../../deploy/Dockerfile)：用来观察本章在仓库中的实现、测试或运维入口。
+阅读本章时，先打开 [`docs/operations.md`](../operations.md)。这个文件是 Omni Agent 当前的 operations runbook。它按故障类型组织：Shell And File Safety、Checkpoint And Rollback Recovery、Gateway And Channels、MCP Runtime、Tool Lifecycle Hooks、Model Runtime、Memory And Skills、Subagents And Automation。每一节都包含 symptoms、排查步骤、回归命令和 recovery evidence。这个结构非常重要：它不是“功能介绍”，而是“当某类症状出现时应该怎样处理”。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，diagnostics、rollback 和 upgrade 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二个入口是 [`docs/release-checklist.md`](../release-checklist.md)。第 29 章已经讲过发布检查清单，这里要从运维角度重新看它。`npm run release:check` 不只是发布前仪式，它把 typecheck、build、artifact smoke、release-local eval、diagnostics、reference evidence、full test、benchmark 和 maturity check 串成一个可重复 gate。运维人员不需要记住每个底层命令，但必须知道 gate 失败时应该拆到哪一层查。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+第三个入口是 [`docs/live-testing.md`](../live-testing.md)。本地 contract test 是默认安全选择，live test 是可选门槛，因为它需要真实凭证、可能发送外部消息、也可能消耗模型额度。这个文件把 live channel、live MCP、live model 分开，并通过 `OMNI_LIVE_CHANNEL_TESTS`、`OMNI_LIVE_MCP_TESTS`、`OMNI_LIVE_MODEL_TESTS` 这样的环境变量显式开启。运维上这很重要：不能让普通测试默认触发真实外部副作用。
 
-### 35.3 它在一次 Agent 任务中怎样出现
+第四个入口是 [`packages/gateway/src/index.ts`](../../packages/gateway/src/index.ts)。gateway 暴露 `/health`、`/routes`、`/mcp/status`、channel plugin status、agents、automations、subagents、diagnostics 等接口。你不需要一次读完整个 gateway 文件，但要知道这些 endpoint 是运行时观测面。比如 `/health` 证明服务进程可响应，`/mcp/status` 证明 MCP registry 能列出 server/resource/prompt/tool/runtime health，channel plugin status 能汇总 routes、deliveries 和 inbound messages，diagnostics 能展示 gateway mode、auth mode、model profile key status 等信息。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，recovery、logs 和 operations 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第五个入口是部署文件：[`deploy/env.example`](../../deploy/env.example)、[`deploy/docker-compose.production.yml`](../../deploy/docker-compose.production.yml)、[`deploy/Dockerfile`](../../deploy/Dockerfile)、[`deploy/kubernetes/omni-agent.yaml`](../../deploy/kubernetes/omni-agent.yaml)。这些文件定义了 gateway token、store path、workspace root、model profile、execution backend、channel secrets、健康检查和持久卷。部署文件不是运维之外的内容；它们决定故障时日志在哪里、数据在哪里、服务监听哪里、健康检查如何判断失败。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+### 35.3 日常健康检查：先看活性，再看能力
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+日常检查要分两层：活性和能力。活性回答“服务是否还在响应”，能力回答“关键功能是否可用”。只看活性会误判，比如 `/health` 正常，但模型 API key 缺失、route secret 错误、MCP server 挂掉，用户任务仍然无法完成。只看能力又会太重，频繁触发外部调用或 benchmark 没必要。
 
-### 35.4 设计时最容易忽略的边界
+第一层活性检查是 gateway `/health`。生产 compose 文件里 healthcheck 使用 `fetch('http://127.0.0.1:4318/health')` 判断服务是否可响应。如果这个检查失败，先排查进程是否启动、端口是否映射、`OMNI_AGENT_GATEWAY_PORT` 是否一致、容器日志是否有启动异常、store path 是否可写。活性失败时，不要直接去调模型或跑 benchmark，因为基础服务还没起来。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，rollback、upgrade 和 health 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二层是配置检查。看 `OMNI_AGENT_STORE_PATH`、`OMNI_AGENT_WORKSPACE_ROOT`、`OMNI_AGENT_GATEWAY_ACCESS_TOKEN`、model API key、execution backend endpoint、channel token 是否按环境注入。`deploy/env.example` 是公开 schema，真实值应该来自部署 secret manager 或本地安全环境变量。运维中常见错误是：开发环境用 `.env` 可以跑，容器环境忘了挂载 store 或忘了设置 gateway token，导致服务能启动但无法保存状态或无法通过认证。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+第三层是能力检查。模型能力看 model profile、provider、auth health、cooldown、fallback attempts；通道能力看 routes、plugin status、inbound/outbound records；MCP 能力看 server list、resource list、prompt list、tool names 和 runtime health；memory 能力看 provider lifecycle audit log；subagent 能力看 job status、budget、blocked reason、file leases；automation 能力看 trigger、retry、cooldown、dead-letter。每一类能力都应该有自己的轻量检查，不要用一次完整 benchmark 代替日常健康。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+第四层是证据检查。近期是否有 failed run？失败 run 是否有 final response、tool events、verification status、artifacts？是否有 blocked approval？是否有 dead-letter delivery？是否有 stale memory 或 unsafe skill 被忽略？如果系统不断失败但没有证据，说明可观察性本身有问题。SRE 里常说监控应该服务于排障，而不是只服务于图表；对 Omni Agent 也一样，检查点必须能指导下一步操作。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+### 35.4 故障分诊：从症状反推边界
 
-### 35.5 如何判断实现是否可靠
+排障时不要一上来改代码。先把症状归类，再沿着边界查。下面是几类高频症状。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，logs、operations 和 diagnostics 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果命令或文件操作被 blocked，先看 tool result 里的 approval class、risk tier、command rule id、reason 和 resolved path。`git reset --hard` 被拦截不是故障，而是安全策略生效；`run_command` 里有 shell wrapper 或 network-exec 被提升风险，也不是模型失败。只有当明确低风险操作被误判时，才需要调整 command-policy 或工具粒度。调整后必须重跑 `tests/approvals.test.ts`、`tests/tools.test.ts`、`tests/workspace.test.ts`。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+如果 checkpoint/rollback 不工作，先找 run timeline 中的 mutation checkpoint、pre-rollback-failure-evidence、runtime-final-failure-rollback artifact。确认 checkpoint id 是否来自 managed list，确认 rollback 是否在 workspace root 内，确认失败验证命令是什么。不要手动拿外部目录覆盖 workspace。恢复后要检查修改文件、创建文件、二进制文件和 artifact 是否符合预期，并运行 runtime/workspace/cli-chat 相关回归。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+如果 inbound message 被拒绝或 outbound delivery 失败，先看 `/routes` 和 channel plugin status。确认 route 的 `adapterType` 是否匹配插件，route secret 或签名是否正确，delivery 状态是否从 queued 到 sending、sent、acknowledged、retrying、failed 或 dead_letter。对 filesystem route，还要看 transcript retention 是否按配置清理旧 JSON。通道问题通常不是模型问题，而是 route 配置、签名、凭证、发送策略或外部平台限流。
 
-### 35.6 常见误区
+如果 MCP 不可用，先看 `/mcp/status`。确认 server command、transport、credential、health timestamp、server id、tool name 是否在 allowlist 内。对 subagent，默认应偏向只读 resource access，直到明确允许 tool。MCP 故障需要保留 provider、server、tool/resource id 和 error summary，否则很难区分 server 没启动、认证失败、tool 名称变化还是 runtime adapter 解析错误。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，upgrade、health 和 recovery 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果模型 provider 失败，先看 profile id、provider id、auth profile health、cooldown state、fallback attempts、Retry-After 和最终 provider。不要只看“模型调用失败”这句话。真实系统里失败可能来自缺 key、key 失效、额度不足、速率限制、base URL 配错、响应协议变化、streaming delta 解析错误、tool call argument 不符合预期。`npm run release:diagnostics` 的价值就在于给 release note 留下模型 profile 和 credential pool 健康摘要，同时不暴露 raw secret。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+如果 memory 或 skill 出问题，先看来源和生命周期。一个 recalled fact 是否带 source label？是否 stale？unsafe skill 为什么 materialize 失败？review history 是否存在？不要把 memory 当成真理库，它只是带来源的长期上下文。运维上要能解释一条记忆为何被采用或忽略。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+如果 subagent 或 automation 卡住，先看 parent run、subagent id、role、budget、status、blockedReason、blockedPaths、file leases、collected artifacts、retry count、cooldown 和 dead-letter。subagent 队列问题经常来自写目标冲突、预算耗尽、父子任务阻塞或 detached reattachment 失败；automation 问题经常来自触发器配置、连续失败阈值、外部通道不可达或任务 prompt 不完整。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+### 35.5 日志、trace 与 artifact：怎样留下可操作证据
 
-### 35.7 一个可操作的检查流程
+运维证据要能回答五个问题：发生了什么，影响了谁，系统做了什么，为什么这样做，下一步该做什么。普通日志只回答“发生了什么”；好的 run artifact 能把原因、动作和恢复路径都保存下来。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+一次 Agent run 至少应该能看到 task contract、tool events、approvals、diff、verification、summary 和 artifacts。task contract 说明任务目标和成功标准；tool events 说明模型请求了哪些动作；approvals 说明哪些动作被允许、拒绝或提示；diff 说明实际改了哪些文件；verification 说明检查是否通过；summary 说明最终给用户的结论；artifacts 保存可检查文件。缺任何一项，排障都会变难。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，operations、diagnostics 和 rollback 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+日志要注意两类质量问题。第一是太少。只有“failed”没有 error class、tool name、run id、route id、provider id，就无法定位。第二是太多。把完整 stdout、HTTP header、token、网页截图内容、未截断模型 payload 全塞进日志，会造成泄露和噪声。Omni Agent 的 redaction 和 outputPreview 限制就是为了让日志既可用又不过度暴露。
 
-### 35.8 与真实模型评测的关系
+trace 应该按时间顺序记录关键事件：run.started、tool.started、tool.blocked、tool.completed、tool.failed、tool.hook、verification.completed、run.completed。对运维来说，顺序很重要。比如 pre hook 先 blocked，审批后 blocked，工具执行失败，验证失败，rollback 成功，这四种失败结论完全不同。没有 timeline，维护者只能从最终回答猜测。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，health、recovery 和 logs 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+artifact 要有归属。浏览器截图、benchmark JSON、release diagnostics、rollback evidence、report markdown 都应该关联 run 或 release。不要把 artifact 当作随便写在某个目录里的文件。归属不清会导致两个问题：一个任务越权读取另一个任务的 artifact，或者 release note 引用了旧 artifact 却以为是本次结果。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+### 35.6 升级流程：先收敛风险，再扩大能力
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+升级 Omni Agent 不应该从“把依赖全更新”开始，而应该从“确定升级目标和回滚点”开始。升级目标可能是模型 adapter、gateway route、MCP runtime、memory provider、tool policy、checkpoint 机制、benchmark suite 或部署镜像。不同目标需要不同验证，不要用一个笼统的 `npm test` 覆盖所有风险。
 
-### 35.9 一个完整的小案例
+第一步是建立 baseline。记录当前 commit、package lock 状态、release diagnostics、benchmark 输出、maturity scorecard、关键 live test 是否开启、部署环境变量 schema。没有 baseline，升级后退步也不知道退在哪里。对于 benchmark，要记录 JSON 输出和失败原因；对于模型，要记录 provider health 和 fallback；对于通道，要记录 route 和 delivery 状态。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+第二步是小步升级。一次只升级一个能力面更容易排查。比如先改 Responses adapter，就重点跑 model-client/runtime/gateway 测试；先改 MCP OAuth，就重点跑 extensions/tools/workspace 测试；先改 channel route，就重点跑 channel-contracts/gateway-messages。大范围升级不是不能做，但必须接受更高排障成本。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+第三步是运行 gate。常规 release 用 `npm run release:check`。如果这一步失败，先按阶段拆解：typecheck 失败说明类型合同断了，build 失败说明产物不可发布，artifact smoke 失败说明打包有问题，release-local eval 失败说明 runtime 路径坏了，diagnostics 失败说明运维可见性不足，reference parity 失败说明能力声明和证据不一致，benchmark 失败说明 eval 合同受影响。
 
-这个案例强调的是工程诚实。 在本章语境中，diagnostics、rollback 和 upgrade 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第四步是准备回滚。回滚不是只在 Git 里 reset。部署回滚还包括容器镜像、数据库或 SQLite store、环境变量、credential pool、route config、automation 状态和外部 webhook。若升级涉及持久化 schema，一定要提前说明能否向后兼容，是否需要备份 store，失败后如何恢复。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+第五步是写 release note。release note 不应该只写“修复若干问题”。它应包含：本次升级改变了哪些能力面，运行了哪些 gate，benchmark 有何变化，已知风险是什么，是否需要重新配置环境变量，是否影响 live tests，是否需要人工操作。运维手册和 release note 结合，才能让下一位维护者接上上下文。
 
-### 35.10 排错时的分层问题表
+### 35.7 生产部署：配置、凭证、数据和健康检查
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+生产部署至少要明确四件事：配置从哪里来，凭证如何注入，数据如何持久化，健康检查如何定义。
 
-分层排错能减少无效尝试。 在本章语境中，recovery、logs 和 operations 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+配置层面，`deploy/env.example` 是公开模板。它列出 gateway、storage、workspace、model profiles、execution backends 和 channel secrets。公开模板里可以出现变量名，不能出现真实值。真实部署中，`OMNI_AGENT_GATEWAY_ACCESS_TOKEN`、model API key、channel token、webhook、cloud runner endpoint token 都应该来自 secret manager 或受控环境变量。不要把真实凭证提交到仓库，也不要把它们写进 route response。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+数据层面，`OMNI_AGENT_STORE_PATH` 和 workspace volume 必须持久化。生产 compose 把 `/data` 和 `/workspace` 放到 named volume，是为了让 session store 和 workspace 在容器重启后保留。没有持久卷，服务看似能跑，但 run history、thread、route、automation、artifact metadata 都可能丢失。运维中要定期确认 store 可写、容量充足、备份策略明确。
 
-### 35.11 如何把本章内容写进团队流程
+健康检查层面，`/health` 是最小活性检查。它不能替代完整能力检查，但它必须快速、稳定、不会触发外部副作用。容器 healthcheck 的 interval、timeout、retries、start_period 要避免过于激进，防止启动期误判。能力检查应该通过 diagnostics 或专门 smoke test 做，不要塞进 `/health` 里，否则健康检查本身会变慢、变贵、变不稳定。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+网络层面，gateway token 必须开启。`/health` 可以允许公开访问，但其他 route、agent、automation、diagnostics、channel 配置接口应受 token 保护。反向代理、TLS、CORS、日志脱敏和访问审计在生产里也要纳入部署手册。Omni Agent 是能执行本地任务的系统，不能像纯静态网页一样暴露管理接口。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，rollback、upgrade 和 health 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 35.8 值班记录和复盘
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+最后讲一个容易被忽略的运维习惯：记录值班事件。每次故障恢复后，至少写下时间、影响范围、触发症状、根因假设、实际修复、运行过的验证、残余风险和后续任务。这个记录可以放在 release note、issue、incident log 或 docs 中，形式不重要，关键是让未来排障有上下文。
 
-### 35.12 练习
+复盘不要只问“谁操作错了”。更有价值的问题是：为什么系统没有更早发现？为什么错误信息不够清楚？为什么恢复步骤没有写在 runbook？为什么测试没覆盖？为什么 dangerous command 没被分类？为什么 route secret 配错能进入生产？为什么 benchmark 没暴露退步？这些问题会把一次故障转化成系统改进。
 
-1. 围绕 `operations` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `health` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `diagnostics` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `recovery` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `rollback` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `logs` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+Google SRE 体系里有两个对本项目很有参考价值的观点：监控要面向用户可感知的可靠性，复盘要减少责备、增加系统学习。对 Omni Agent 来说，用户可感知的可靠性不是 CPU 使用率，而是任务能否被接收、工具能否被安全执行、验证证据是否存在、失败后是否能恢复、最终回答是否诚实。系统学习也不只是写一段总结，而是把新的故障模式变成测试、runbook、diagnostics 或 eval scenario。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+### 35.9 五张常用操作卡
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+运维手册最好能落到操作卡。操作卡不是完整教程，而是在故障现场给维护者的短路径。下面五张卡可以直接作为日常排障起点。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+第一张卡：gateway 不通。先确认服务进程或容器是否存在，再确认端口映射和 `OMNI_AGENT_GATEWAY_PORT`。如果容器健康检查失败，读取容器日志，优先找启动异常、store path 权限、workspace volume 挂载、环境变量缺失。接着用本机请求 `/health`，确认返回的 service、now 和 ok 字段。若 `/health` 正常但管理接口失败，检查 `OMNI_AGENT_GATEWAY_ACCESS_TOKEN` 是否配置一致。不要在这个阶段跑 benchmark，因为当前问题是服务活性，不是 Agent 能力。
 
-### 35.13 本章参考资料
+第二张卡：模型调用失败。先定位失败 run 的 model profile id 和 provider id，再看 auth profile health、credential pool 状态、cooldown、fallback attempts 和原始错误类别。若错误来自缺失 API key，修配置；若来自 rate limit，看 provider 是否返回 Retry-After，并确认 cooldown 是否采用 provider 指定窗口；若来自协议解析，查看 streaming delta、tool call argument 或 usage metadata 的规范化逻辑。恢复后运行 `npm run release:diagnostics`，并保留 modelDiagnostics 摘要。不要把 raw key、Authorization header 或完整请求体贴进 issue。
 
-- Omni Agent: [`docs/operations.md`](../../docs/operations.md)
-- Omni Agent: [`docs/live-testing.md`](../../docs/live-testing.md)
-- Omni Agent: [`packages/gateway/src/index.ts`](../../packages/gateway/src/index.ts)
-- Omni Agent: [`deploy/Dockerfile`](../../deploy/Dockerfile)
-- OpenTelemetry docs: [https://opentelemetry.io/docs/](https://opentelemetry.io/docs/)
-- Docker Compose documentation: [https://docs.docker.com/compose/](https://docs.docker.com/compose/)
-- Kubernetes documentation: [https://kubernetes.io/docs/home/](https://kubernetes.io/docs/home/)
+第三张卡：工具被拦截。先判断这是误拦还是正确拦截。查看 tool event 中的 approvalClass、riskTier、commandRiskRuleId、reason 和 args。若命令包含递归删除、download-and-execute、shell wrapper、权限提升或 git destructive 操作，默认按正确拦截处理，除非用户明确批准同一条具体命令。若低风险只读命令被识别为 unknown，可以考虑增加 readonly prefix 规则或拆成专用工具。修改策略后必须补测试，不要只在本地手动确认一次。
 
+第四张卡：通道收发异常。先看 route 是否存在、adapterType 是否匹配 channel plugin、secret reference 是否配置、签名或 route secret 是否通过。入站失败看 inbound message 记录，出站失败看 delivery 状态机。queued 表示尚未发送，sending 表示发送中，sent 表示已发出，acknowledged 表示外部确认，retrying 表示等待重试，failed 或 dead_letter 表示需要人工处理。若是 filesystem route，还要检查 transcript retention，避免旧 transcript 无限堆积。恢复后用 channel contract test 验证，不要直接拿真实群聊做第一轮试验。
+
+第五张卡：subagent 或 automation 卡住。先看 parent run，再看 subagent job 的 status、attempts、budget、depth、blockedReason、blockedPaths、file leases、changedFiles 和 completion。queued 不一定是故障，可能在等前置任务或文件锁；running 过久要看 timeout 和最近 progress event；paused 需要确认是否人工暂停；timed_out、failed、interrupted、cancelled 是终态，应保留 completion 和 error。automation 则看 trigger、retryDelaySeconds、maxConsecutiveFailures、cooldown 和 deliveryState。恢复时优先 resume、interrupt 或 cancel 受控 job，不要直接改数据库状态。
+
+操作卡还应该写清楚什么时候升级给人工维护者。连续失败达到自动化阈值、同一 provider 进入反复 cooldown、同一 route 反复 dead_letter、同一 workspace 出现多次 path containment 拒绝、rollback 失败、artifact 缺失、release:check 在同一阶段重复失败，都不应该继续让 Agent 自己尝试。升级时要带上 runId、threadId、workspaceId、routeId、provider id、toolCallId、artifact path、最后一次验证命令和失败摘要。缺这些字段，人工维护者只能重新翻日志；有这些字段，维护者可以直接定位到证据。
+
+交接记录也要区分临时状态和长期结论。比如“今天 DeepSeek key 额度不足”是临时状态，不应该写进长期 memory 当成模型能力判断；“某个 route 需要签名头”是配置规则，可以写进运维文档；“某个 benchmark 在真实模型下经常失败”需要进入 eval 历史和失败分类；“某条命令被错误归为 destructive”需要进入 command-policy 修复任务。把临时现象保存成长期规则，会污染未来排障；把长期规则只留在聊天里，下次还会重复踩坑。
+
+最后，操作卡要有退出条件。一个故障不能无限排查。比如 gateway 活性恢复并通过 `/health`，可以退出活性故障；模型调用恢复并有一次受控 smoke run，可以退出 provider 故障；通道 delivery 进入 acknowledged，可以退出发送故障；rollback 恢复 owned files 且验证失败证据保留，可以退出恢复故障；release gate 全部通过并记录 diagnostics，可以退出升级故障。退出条件能防止维护者在系统已经恢复后继续做高风险操作。
+
+这五张操作卡的共同原则是：先确认边界，再做恢复。gateway 是服务边界，模型是 provider 边界，工具是审批边界，通道是外部收发边界，subagent/automation 是任务控制边界。每一类边界都有自己的健康字段、失败状态和回归测试。把这些操作卡写进团队手册，比把所有问题都交给“看日志”更可靠，因为它能让不同维护者用相同顺序收集证据。
+
+### 35.10 本章小结
+
+运维手册的价值，是让 Omni Agent 在真实环境里保持可解释。健康检查告诉你服务是否活着，diagnostics 告诉你能力是否可用，tool events 告诉你系统做了什么，approval 和 policy 告诉你为什么拦截，artifact 告诉你证据在哪里，rollback 告诉你如何恢复，release gate 告诉你升级是否破坏合同。
+
+当你维护这个项目时，不要把运维看成发布后的杂事。每增加一个工具、一个通道、一个模型 provider、一个 MCP server、一个自动化入口，都应该同步增加观测面、恢复步骤和验证证据。下一章会继续从操作者视角出发，整理常见问题：当你看到某个错误现象时，应该怎样从症状反推真正原因。
+
+### 35.11 参考资料
+
+- 本项目文档：[`docs/operations.md`](../operations.md)
+- 本项目文档：[`docs/release-checklist.md`](../release-checklist.md)
+- 本项目文档：[`docs/live-testing.md`](../live-testing.md)
+- 本项目部署：[`deploy/env.example`](../../deploy/env.example)
+- 本项目部署：[`deploy/docker-compose.production.yml`](../../deploy/docker-compose.production.yml)
+- 本项目部署：[`deploy/Dockerfile`](../../deploy/Dockerfile)
+- 本项目源码：[`packages/gateway/src/index.ts`](../../packages/gateway/src/index.ts)
+- Google SRE 官方书籍：[Monitoring Distributed Systems](https://sre.google/sre-book/monitoring-distributed-systems/)
+- Google SRE 官方书籍：[Postmortem Culture](https://sre.google/sre-book/postmortem-culture/)
+- OpenTelemetry 官方文档：[Observability Primer](https://opentelemetry.io/docs/concepts/observability-primer/)
+- The Twelve-Factor App：[Logs](https://12factor.net/logs)
 ## 36. 常见问题：从错误现象反推原因
 
 
