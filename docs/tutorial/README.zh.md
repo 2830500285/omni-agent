@@ -9204,142 +9204,192 @@ Google SRE 体系里有两个对本项目很有参考价值的观点：监控要
 - The Twelve-Factor App：[Logs](https://12factor.net/logs)
 ## 36. 常见问题：从错误现象反推原因
 
+这一章不是普通 FAQ。普通 FAQ 往往只给一句答案，例如“重新安装依赖”“检查 API key”“再跑测试”。这种回答在真实 Agent 工程里不够用，因为同一个错误现象可能来自不同层级：CLI 参数、workspace 路径、工具审批、模型 provider、gateway route、MCP server、session store、benchmark manifest、release gate 都可能表现为“运行失败”。本章要训练的是一种排障方法：先把现象归类，再定位层级，然后找证据，最后做最小修复并验证。
 
-本章讨论的是：建立从错误现象到系统层级、检查命令、证据文件和修复动作的排错思路。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+你可以把本章当成 Omni Agent 的错误索引。遇到问题时，不要第一反应就改代码，也不要凭经验把锅甩给模型。先问五个问题：错误发生在哪个入口，是 CLI、gateway、eval、tool、model、workspace 还是 release？错误是否有 runId、threadId、toolCallId、routeId、provider id 或 artifact path？错误是确定性复现，还是只在真实模型或 live channel 下出现？错误是否涉及安全边界，例如路径逃逸、审批阻断、密钥脱敏、外部通道？修复后用什么命令证明它不再发生？
 
+下面的问答都采用同一种结构：现象、常见原因、检查入口、修复动作、验证方式。读者不需要一次背完，而应该在实际遇到问题时按层级查。
 
-### 36.1 本章先建立的心智模型
+### 36.1 为什么 `npm run typecheck` 或 `npm run build` 失败
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，FAQ、layer 和 command 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+现象：本地或 CI 中出现 TypeScript 编译失败、项目引用失败、找不到模块、导出类型不匹配、`tsc -b` 退出非零。Omni Agent 的 `build` 脚本先跑 `typecheck`，再执行 `scripts/build.mjs`，所以 build 失败的第一步是确认到底是类型阶段失败，还是打包阶段失败。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，symptom、diagnosis 和 evidence 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+常见原因有四类。第一，包之间的 public API 变了，但引用方还在使用旧类型。例如 `packages/context` 改了 `TaskContract` 字段，`packages/core-runtime` 没同步。第二，新增文件没有进入正确的 `tsconfig` 或 package export。第三，测试或脚本直接 import 源码路径，但文件被移动。第四，依赖版本或 Node/TypeScript 版本与 lockfile 不一致。
 
-本章反复出现的关键词包括：`FAQ`、`symptom`、`layer`、`diagnosis`、`command`、`evidence`、`fix`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+检查入口先看 `package.json` 的 scripts，确认 `typecheck` 实际是 `tsc -b --pretty false --force`。然后看失败输出中的第一个源码位置，不要先处理后续连锁错误。若错误涉及 workspace package，打开对应 `packages/*/src/index.ts` 和引用方。若错误只在 CI 出现，检查 Node 版本、npm 版本、lockfile 是否和本地一致。
 
-### 36.2 在仓库中找到入口
+修复动作应尽量小。类型字段变化就同步类型和调用点；导出缺失就补 export；脚本路径错就改路径；缺测试类型就补 import 或 tsconfig。不要为了消除一个类型错误重构整个包。修复后至少运行 `npm run typecheck`；如果涉及打包产物，再运行 `npm run build`；如果涉及 release，则进入 `npm run release:check`。
 
-阅读本章时，建议从下面这些文件开始：
+### 36.2 为什么测试在本地能过，GitHub Actions 却失败
 
-1. [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`package.json`](../../package.json)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`docs/operations.md`](../../docs/operations.md)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`docs/security.md`](../../docs/security.md)：用来观察本章在仓库中的实现、测试或运维入口。
+现象：本地 `npm test` 或 targeted test 通过，但 GitHub Actions 的 CI 失败。不要只说“CI 环境不一样”，要找出具体差异。CI 失败通常来自平台、路径、缓存、环境变量、时间、端口、权限或网络。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，layer、command 和 fix 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+常见原因包括：Windows 和 Linux 路径分隔符差异；测试依赖当前工作目录；临时文件没有清理；端口被占用；测试顺序隐含共享状态；环境变量在本地有、CI 没有；CI 没有真实 provider key；文件名大小写在 Windows 不敏感但 Linux 敏感；脚本使用 shell 特性但 workflow 运行在不同 shell。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+检查入口是 GitHub Actions 的失败 job 日志、本地 `package.json` scripts、`.github/workflows` 配置和失败测试文件。先找失败的第一个命令，例如 `npm run typecheck`、`npm test`、`npm run eval:smoke`。如果失败来自测试，使用 `node ./scripts/run-tests.mjs tests/xxx.test.ts` 在本地缩小范围。若本地无法复现，尝试模拟 CI 的环境变量和 shell。
 
-### 36.3 它在一次 Agent 任务中怎样出现
+修复动作要面向确定原因。路径问题用 `path.join`、`sep`、`resolve`，不要硬编码 `/` 或 `\`；时间问题用固定日期或 mock clock；端口问题用随机可用端口；环境变量问题在测试里明确 skip live tests，或提供 fake provider；大小写问题修正文件名和 import。修复后跑对应 targeted test，再跑 `npm test` 或相关分组。涉及 CI workflow 时，再观察下一次 CI，不需要每写一章文档都等 CI。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，diagnosis、evidence 和 FAQ 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 36.3 为什么 `eval:benchmark` 分数很高，却不能说明真实模型很强
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+现象：默认 benchmark 输出很高分，用户以为模型能力已经被证明。但前面章节已经讲过，默认 benchmark 可能使用 synthetic executor。它能证明 manifest、harness、判分逻辑和 fixture 合同没有坏，不能直接证明真实模型能完成所有任务。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+常见误解是把 benchmark 结果当成单一能力分。实际要分三层看。第一层是 harness 正确性：scenario 是否加载，expectation 是否执行，tool event 是否被识别。第二层是 runtime 路径：release-local 是否能通过 mock mode 跑真实 runtime。第三层是真实模型表现：OpenAI、Anthropic、DeepSeek 或本地模型是否在真实 executor 下完成任务、留下 trace、cost、duration 和失败原因。
 
-### 36.4 设计时最容易忽略的边界
+检查入口是 `scripts/eval-benchmark.ts`、`scripts/eval-release-local.ts`、`examples/evals/suite.json` 和 benchmark 输出。看 executor mode、model profile、observedRun、toolEvents、requiredSuccessfulToolNames、requiredVerificationEvidenceKinds。若只看到 synthetic 或 mock，不要宣传成真实模型能力。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，command、fix 和 symptom 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+修复动作不是降低 benchmark 价值，而是给它分层命名。默认 benchmark 继续作为工程回归；真实模型 benchmark 需要单独 mode、model profile、成本记录、trace 保存和失败 taxonomy。修复后验证方式是：跑默认 benchmark 看 harness 是否稳定，再跑真实 executor 的小型 smoke，最后才扩大到完整任务集。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+### 36.4 为什么真实模型测试失败，是模型太弱吗
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+现象：使用 DeepSeek Flash、DeepSeek Pro 或其他模型跑真实任务失败，用户问是否模型太弱。答案不能直接是“是”或“不是”。真实模型失败至少可能来自模型能力、prompt 合同、工具合同、编辑工具、迭代预算、验证反馈、上下文压缩和任务难度。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+本项目的 DeepSeek 系统测试就是很好的例子。[`docs/deepseek-system-test-2026-04-30.md`](../deepseek-system-test-2026-04-30.md) 记录了三次运行：Flash 能读取、编辑、验证，但 broad replacement 破坏了源码；Pro 能部分修复，但单轮预算耗尽；Pro continuation 最终通过。这说明 provider integration 和工具执行是可用的，失败不只是“模型完全不能用”，而是编辑保护、迭代预算、失败恢复和模型能力共同作用。
 
-### 36.5 如何判断实现是否可靠
+检查入口包括 run summary、changedFiles、verification status、tool call 成功/失败数量、失败工具类型、最终验证输出、是否有 continuation run。先判断模型有没有读代码、有没有跑验证、有没有按失败反馈修复、有没有破坏文件结构。再判断是否需要更强模型、更多迭代、更小编辑工具、更明确 prompt 或自动恢复。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，evidence、FAQ 和 layer 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+修复动作可以分层。若模型总是选错工具，改 tool description；若 broad edit 破坏文件，加入语法检查或改用更小 edit；若预算耗尽，允许 progress-based iteration extension；若验证输出不可读，提供 safe artifact read；若任务本身太硬，拆任务或增加 fixture。修复后用同一 fixture 重跑，比较 runId、turns、tool calls、verification 和 changedFiles。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+### 36.5 为什么工具明明执行了，eval 仍然判失败
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+现象：trace 中有工具调用，甚至命令也成功了，但 eval expectation 仍然失败。最常见原因是工具语义和判分合同不一致。
 
-### 36.6 常见误区
+例如模型用 `run_command` 跑了测试，但 expectation 要求 `requiredSuccessfulToolNames` 包含 `run_verification`。从人类角度看，测试确实跑了；从 verification-native 合同看，它没有留下指定证据。再例如 final response 包含“verified”，但 observedRun 没有 `verificationEvidence`，也没有成功的 `run_verification` tool event。如果 suite 启用 completionRequiresEvidence，就会失败。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，fix、symptom 和 diagnosis 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+检查入口是 `packages/evals/src/index.ts` 的 expectation 判断、`examples/evals/suite.json` 的 required fields、observedRun 中的 toolEvents 和 verificationEvidence。看失败 reason，不要只看总分。确认 requiredToolNames、requiredSuccessfulToolNames、requiredFinalResponseIncludes、requiredVerificationEvidenceKinds 分别要求什么。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+修复动作有两种方向。若工具合同错误，就让模型使用正确工具，例如把验证动作放到 `run_verification`。若 expectation 设计过窄，就调整 suite，使它识别等价证据，但不要放宽到只看 final response。修复后跑对应 eval scenario，而不是只跑完整 benchmark。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+### 36.6 为什么命令被拒绝或需要审批
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+现象：Agent 想运行命令，但 runtime 返回 blocked、prompt 或 deny。不要马上把它当成 bug。命令被拒绝可能是安全策略正确工作。
 
-### 36.7 一个可操作的检查流程
+常见原因包括：命令会修改 git 状态；会递归删除；会通过 PowerShell 或 cmd shell wrapper 执行；会下载并执行远程脚本；会修改依赖或 lockfile；会请求提升权限；会包含管道、命令分隔符或重定向。Omni Agent 的 command policy 会给出 rule id 和 reason，例如 `git.reset_hard`、`network.download_execute`、`cmd.rmdir_recursive`。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+检查入口是 tool event payload、approval class、risk tier、commandRiskRuleId、`tests/approvals.test.ts` 和 [`packages/approvals/src/command-policy.ts`](../../packages/approvals/src/command-policy.ts)。如果命令风险高，保持阻断，除非用户明确批准同一条具体操作。如果是误判，添加更具体的只读规则或拆成专用工具。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，FAQ、layer 和 command 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+修复后验证要跑 approvals 相关测试。不要因为某个命令常用就把整个 shell 放宽。更好的做法是把 `git status`、`git diff`、`list_directory`、`read_file` 这类常用只读动作做成低风险工具，把任意 shell 保持在受控路径。
 
-### 36.8 与真实模型评测的关系
+### 36.7 为什么文件读取或写入提示 path escape
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，symptom、diagnosis 和 evidence 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+现象：工具返回 `Path escapes workspace root`、`outside managed root`、`outside managed root via symbolic link`。这通常不是 bug，而是 workspace containment 在保护本地文件系统。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+常见原因包括：路径里有 `..`；当前 cwd 指向符号链接；工具要读取 artifact 但 artifact 不在 workspace root；checkpoint 路径来自外部目录；模型把绝对路径传给 workspace 文件工具；Windows junction 或目录链接指向仓库外。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+检查入口是 tool args、resolved path、workspace root、artifact path 和 [`tests/workspace.test.ts`](../../tests/workspace.test.ts)。如果要读取 run-owned artifact，不应该绕过 workspace read_file，而应该使用专门 artifact 工具或让 runtime inline 相关摘要。DeepSeek 系统测试里就出现过模型尝试用 `read_file` 读取 workspace 外验证 artifact，被路径保护正确拒绝。
 
-### 36.9 一个完整的小案例
+修复动作是选择正确工具和正确边界。源码文件走 workspace 文件工具，run artifact 走 artifact 工具，外部目录需要用户明确提供并通过单独策略处理。修复后运行 workspace containment 测试，确保没有为了一个场景放开整个路径边界。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+### 36.8 为什么 gateway `/health` 正常，但任务仍然不能跑
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+现象：`GET /health` 返回 ok，但用户任务、通道消息或模型调用失败。原因是 `/health` 只证明 gateway 活着，不证明所有能力可用。
 
-这个案例强调的是工程诚实。 在本章语境中，layer、command 和 fix 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+常见原因包括：gateway token 配置错误；workspace root 不可写；session store 路径不可写；model API key 缺失；route secret 错误；MCP server 不可用；channel plugin 没配置；execution backend endpoint 缺失；automation paused；subagent job 卡住。`/health` 是活性检查，不是能力检查。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+检查入口按能力面分开：routes 看 `/routes` 和 channel plugin status；MCP 看 `/mcp/status`；模型看 auth profile health 和 release diagnostics；memory 看 provider lifecycle audit；automation 看 schedule、status、retry 和 dead-letter；subagent 看 job status、budget 和 blocked reason。
 
-### 36.10 排错时的分层问题表
+修复动作要针对能力面。不要因为 `/health` 正常就忽略配置，也不要因为某个 channel 失败就重启整个服务。修复后用对应 smoke test 或 contract test 证明能力恢复。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+### 36.9 为什么 release:check 失败
 
-分层排错能减少无效尝试。 在本章语境中，diagnosis、evidence 和 FAQ 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+现象：`npm run release:check` 失败。这个命令是总 gate，失败原因可能来自多个阶段。第一步必须找出是哪一个子命令失败。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+release gate 通常包括 typecheck、build、artifact smoke、release-local eval、diagnostics、reference evidence smoke、reference parity、full test、eval smoke、benchmark、maturity check 和安全/能力回归。每个阶段代表不同合同。typecheck 失败是类型合同；artifact smoke 失败是发布产物；release-local eval 失败是 runtime 路径；diagnostics 失败是运维可见性；reference parity 失败是能力声明；benchmark 失败是 eval 合同；maturity check 失败是证据和状态不一致。
 
-### 36.11 如何把本章内容写进团队流程
+检查入口是 `scripts/release-check.ts`、[`docs/release-checklist.md`](../release-checklist.md)、失败输出和相关脚本。不要直接跳到最后一个错误；总 gate 经常在第一个失败处停止。修复时先让失败阶段单独通过，再回到 release:check。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+修复后要保留 release diagnostics 和 benchmark JSON，尤其是公开发布前。发布失败不是只要“重新跑到绿”就结束，还要判断是否暴露出文档、测试或 scorecard 的不一致。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，command、fix 和 symptom 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 36.10 为什么 README 或教程链接在 GitHub 上不对
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+现象：本地 Markdown 看起来没问题，但 GitHub 上链接 404，或相对路径跳错。原因通常是相对路径按当前文档位置解析，而不是按仓库根解析。
 
-### 36.12 练习
+本教程文件在 `docs/tutorial/README.zh.md`。链接到 `docs/security.md` 应该写 `../security.md`，链接到 `packages/context/src/index.ts` 应该写 `../../packages/context/src/index.ts`，链接到同目录英文教程可以写 `README.en.md`。如果写成从仓库根开始的相对路径，GitHub 渲染时可能跳错。
 
-1. 围绕 `FAQ` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `symptom` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `layer` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `diagnosis` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `command` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `evidence` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+检查入口是本地链接检查脚本、GitHub 预览和 `git diff --check`。本轮写教程时一直使用本地链接检查：扫描 Markdown 链接，跳过 `http`、`#`、`mailto`，把相对路径和 `docs/tutorial` 拼接，再用 `Test-Path` 验证。这个方法能提前发现绝大多数本地链接错误。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+修复动作是按文档实际位置重写相对路径。修复后跑本地链接检查，不需要靠肉眼逐个点。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 36.11 为什么最终回答说完成，但仓库里没有证据
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+现象：Agent 最终回答写得很完整，但 git diff、tool event、artifact 或 verification 里找不到对应证据。这是严重问题，因为它说明输出合同和运行证据脱节。
 
-### 36.13 本章参考资料
+常见原因包括：模型只生成文字没有调用工具；工具调用失败但模型忽略；验证没有跑；artifact 写入失败；session store 没记录；最终回答引用了旧结果；context summary 把未完成状态压缩成完成状态。修复前不要继续宣传该能力。
 
-- Omni Agent: [`docs/tutorial/README.zh.md`](../../docs/tutorial/README.zh.md)
-- Omni Agent: [`package.json`](../../package.json)
-- Omni Agent: [`docs/operations.md`](../../docs/operations.md)
-- Omni Agent: [`docs/security.md`](../../docs/security.md)
-- OpenAI function calling guide: [https://platform.openai.com/docs/guides/function-calling](https://platform.openai.com/docs/guides/function-calling)
-- OpenAI evaluation best practices: [https://platform.openai.com/docs/guides/evaluation-best-practices](https://platform.openai.com/docs/guides/evaluation-best-practices)
-- OWASP LLM Top 10: [https://genai.owasp.org/owasp-top-10-for-llm-applications/](https://genai.owasp.org/owasp-top-10-for-llm-applications/)
+检查入口是 run summary、toolEvents、changedFiles、verificationStatus、artifacts、session-store artifact 和 finalResponse。确认最终回答中的每个主张是否能在证据里找到对应项。比如“parser tests passed”应该对应验证命令，“changed src/parser.ts”应该对应 diff，“published to GitHub”应该对应 commit 或 API 响应。
 
+修复动作包括：加强 verification required；最终回答模板要求列出实际命令；session store 保存 agent-run artifact；eval 要求 verification evidence；模型失败时保持 blocked 或 failed 状态。修复后用一个故障 fixture 验证系统不会无证据完成。
+
+### 36.12 为什么 MCP 工具或资源突然不可用
+
+现象：模型计划调用 MCP 工具，但工具列表里没有对应名称；`/mcp/status` 看不到 server；resource 或 prompt template 为空；工具调用返回 server 不可达、认证失败或 transport error。MCP 问题最容易被误判为模型问题，其实多数时候是外部工具边界问题。
+
+常见原因包括：server command 配错；运行环境里缺少 MCP server 依赖；OAuth token 失效；server id 不在 allowlist；tool name 改变；transport 从 stdio 改成 HTTP 但配置没同步；subagent 只允许 read-only resource access，不能调用写工具；extension registry 加载失败；工具名前缀不是 `mcp__<server>__<tool>`，导致 policy 无法匹配。
+
+检查入口先看 gateway 的 `/mcp/status`，再看 extension registry 的 server、resources、prompts、tools 和 runtimes。确认 server id、命令、传输方式、凭证来源、最后健康时间和错误摘要。不要直接让模型重试十次；如果 server 没启动，重试只会制造噪声。如果涉及 OAuth，确认 redirect origin、scope 和 allowlist 是否匹配。
+
+修复动作要按边界处理。配置错就修配置；凭证过期就刷新受控 token；server 依赖缺失就修部署镜像或本地环境；allowlist 缺项就走安全审查；tool name 改变就更新 policy 和测试。修复后运行 MCP contract test 或 live MCP test。live test 必须显式设置 `OMNI_LIVE_MCP_TESTS=1`，不要让普通测试默认访问外部账号。
+
+### 36.13 为什么 memory 看起来“记错了”
+
+现象：Agent 引用了过期事实、错误偏好、旧路径、旧命令或已经失效的用户要求。很多人会把这种问题叫做“记忆能力差”，但排查时要具体看：是召回错了，写入错了，来源不清，还是当前任务没有覆盖旧信息。
+
+常见原因包括：临时状态被保存成长期记忆；失败运行的中间结论被当成成功经验；thread summary 压缩时丢掉了否定条件；workspace memory、profile fact、daily note 和 user preference 权威混淆；没有 freshness 标签；召回结果没有 source label；用户后来改变要求，但旧 memory 没有被降权。
+
+检查入口是 session store 的 memory/profile/thread summary、workspace memory 文件、taskContract 和当前用户最新指令。先看被引用的信息来自哪里，再看它是什么时间写入、由哪个 run 写入、是否带 tags、是否有后续更正。不要把 memory 输出直接当事实，尤其不要让旧 memory 覆盖当前明确指令。
+
+修复动作包括：把临时状态保留在 run summary，不写长期 memory；写入 memory 时带来源和标签；召回时显示 source label；对 stale memory 增加忽略理由；用户明确更正时让新事实覆盖旧事实；安全相关信息不要写入长期偏好。修复后用 context/session-store 测试验证：过期或不安全条目会被忽略，新的明确指令会优先。
+
+### 36.14 为什么 subagent 卡住、互相阻塞或没有返回有用结果
+
+现象：父任务派生 subagent 后，子任务长期 queued 或 running；多个 subagent 修改同一文件；返回结果只有泛泛总结；父任务无法继续；文件 lease 没释放；detached subagent 无法重新接上。这个问题通常不是“子模型不努力”，而是任务拆分和治理边界不清。
+
+常见原因包括：父任务把阻塞关键路径交给 subagent，自己又等待结果；多个子任务写同一文件，形成 write conflict；没有给 subagent 明确 role、authority、targetPaths 和 verificationCommands；budget 太小或 timeout 太短；parent/child depth 限制触发；子任务结束后 artifact 没被收集；终态 job 又被发送新消息。
+
+检查入口是 parent run、subagent job record、status、budget、depth、blockedReason、blockedPaths、file leases、completion、changedFiles、verificationStatus 和 finalResponse。先判断 job 是否终态：completed、failed、cancelled、interrupted、timed_out 都不应继续接收普通执行消息。queued 要看是否等待锁或前置 job；running 要看 progress event 和 timeout；paused 要看是否人工暂停。
+
+修复动作是重新定义任务边界。把急需结果的关键步骤留给主 agent；把可并行的只读调查或互不重叠的文件修改交给 subagent；为每个子任务指定写入范围、验证命令和返回格式；结束后释放 file lease；失败时保留 error 和 artifact。修复后用 runtime/tools/session-store 测试验证 subagent 状态转换、lease 释放和 completion 记录。
+
+### 36.15 为什么 live test 或真实通道测试不应该默认运行
+
+现象：有人希望把所有测试都放进 CI，包括真实模型、真实 MCP、真实 Slack/Telegram/Feishu 通道。这个想法看起来能提高可信度，但如果不加开关，会带来费用、外部副作用、凭证泄露和不稳定失败。
+
+Omni Agent 把 live tests 设计成 opt-in。`OMNI_LIVE_CHANNEL_TESTS=1` 才跑真实通道，`OMNI_LIVE_MCP_TESTS=1` 才跑真实 MCP，`OMNI_LIVE_MODEL_TESTS=1` 才跑真实模型。这不是偷懒，而是把 contract test 和 live test 分层。普通 CI 应该稳定、便宜、可重复；live test 应该在有凭证、有预算、有明确目标时运行。
+
+检查入口是 [`docs/live-testing.md`](../live-testing.md)。确认 live test 需要哪些环境变量、会触发哪些外部动作、是否可能发送消息、是否消耗模型额度、失败后是否有可解释日志。不要把 live key 写进仓库，也不要在公开 PR 上默认跑真实通道。
+
+修复动作是增加 mock/contract coverage，把真实外部依赖隔离到显式开关。对于模型，可以用 mock client 验证协议，再用少量 live smoke 验证 provider；对于通道，可以用 filesystem 或 fake adapter 验证状态机，再用 live test 验证真实发送；对于 MCP，可以用本地 fake server 验证 registry，再用 live test 验证账号。修复后分别保留 contract 结果和 live 结果，不要混成一个分数。
+
+### 36.16 为什么状态是 completed_with_warnings
+
+现象：最终验证已经通过，但 run 状态不是干净的 completed，而是 completed_with_warnings。这个状态不应该被简单当成失败，也不应该被当成完全无风险成功。它通常表示任务最终达到成功标准，但运行过程中出现过失败工具、被阻断动作、恢复路径、重试或其他需要操作者注意的事件。
+
+常见原因包括：前面某次 tool call 失败，后续修复成功；验证先失败后通过；模型尝试读取 workspace 外 artifact，被路径保护拒绝；某个非关键 hook 报 warning；fallback provider 最终成功，但主 provider 曾失败。DeepSeek 系统测试里就有 continuation run 最终通过，但早期失败工具仍然应该被保留为 warning。这种状态的价值是诚实：它告诉用户“结果可用，但过程不干净”。
+
+检查入口是 run summary、toolEvents、blockedApprovals、verificationStatus、artifact 和 finalResponse。重点看 warning 是否影响最终交付。如果 warning 来自已恢复的中间失败，可以在最终回答中简要说明；如果 warning 来自安全边界、数据缺失或未验证步骤，就不能轻描淡写。修复后不一定要追求所有 warning 消失，但要保证 warning 可解释、可追踪、不会掩盖真实失败。
+
+### 36.17 本章小结
+
+排障的关键不是记住所有错误，而是建立从现象到层级的路径。TypeScript 错误看类型合同，CI 错误看环境差异，benchmark 分数看 executor 和 evidence，真实模型失败看模型、工具、预算和验证反馈，工具拒绝看 approval，路径拒绝看 workspace containment，gateway 正常但能力失败看能力面，release gate 失败看子阶段，链接错误看文档相对路径，最终回答无证据看 trace 和 artifact。
+
+当你能把每个错误都问成“它属于哪一层、证据在哪里、修复后怎样验证”，Omni Agent 就不再是一堆复杂功能，而是一套可以排查、可以恢复、可以持续改进的工程系统。下一章进入附录，会把前面内容整理成课堂式学习计划，帮助读者按周或按课时学习。
+
+实际维护时，还要把排障结论写回合适位置：临时故障写 run note，重复故障写 operations runbook，评测退步写 benchmark history，安全边界问题写 security review。这样 FAQ 才会随着项目一起变厚，而不是停留在一次性的问答。
+
+### 36.18 参考资料
+
+- 本项目配置：[`package.json`](../../package.json)
+- 本项目文档：[`docs/operations.md`](../operations.md)
+- 本项目文档：[`docs/release-checklist.md`](../release-checklist.md)
+- 本项目文档：[`docs/live-testing.md`](../live-testing.md)
+- 本项目文档：[`docs/deepseek-system-test-2026-04-30.md`](../deepseek-system-test-2026-04-30.md)
+- 本项目源码：[`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
+- 本项目源码：[`packages/approvals/src/command-policy.ts`](../../packages/approvals/src/command-policy.ts)
+- 本项目测试：[`tests/workspace.test.ts`](../../tests/workspace.test.ts)
+- 本项目测试：[`tests/approvals.test.ts`](../../tests/approvals.test.ts)
+- GitHub 官方文档：[Troubleshooting workflows](https://docs.github.com/en/actions/how-tos/monitor-workflows/troubleshoot-workflows)
+- npm 官方文档：[Scripts](https://docs.npmjs.com/cli/v11/using-npm/scripts)
+- TypeScript 官方文档：[Project References](https://www.typescriptlang.org/docs/handbook/project-references.html)
 ## 37. 附录一：课堂讲义式学习计划
 
 
