@@ -8111,142 +8111,211 @@ Eval 贡献最容易犯的错误，是只新增 scenario，却不说明它证明
 - Anthropic: Building effective agents: [https://www.anthropic.com/engineering/building-effective-agents](https://www.anthropic.com/engineering/building-effective-agents)
 ## 31. 源码阅读路线：第一次读代码应该从哪里开始
 
+第一次读 Omni Agent 源码，不要从“把所有文件从上到下读完”开始。这个仓库不是一篇线性文章，而是一个 runtime 系统：CLI 接收命令，runtime 组织任务，model client 调模型，tools 执行动作，workspace 管理文件，approvals 控制风险，session store 保存证据，evals 把行为变成可验证报告。你如果没有路线，读到一半就会被类型、脚本、examples 和测试淹没。
 
-本章讨论的是：给读者一条从 CLI 到 runtime、context、tools、workspace、session store、evals 的阅读路径。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章给你一条实用路线：先从用户能执行的命令出发，再找到命令背后的入口，然后沿着一次任务的执行链路读下去，最后用测试和 eval 反向确认自己的理解。源码阅读不是为了背文件名，而是为了建立一张可用地图。以后你遇到 bug、想加功能、想写 eval 或想 review PR，都能知道应该先看哪里。
 
+### 31.1 阅读前先定目标
 
-### 31.1 本章先建立的心智模型
+读源码前，先问自己要解决什么问题。不同目标对应不同路线。
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，source reading、call graph 和 package 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果你只是想知道 CLI 怎么启动，就从 `package.json`、`apps/cli/src/index.ts` 和 build 输出开始。你要关心命令名、参数解析、子命令分发和错误输出，不需要马上读完整 runtime。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，entrypoint、runtime 和 test 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果你想知道一次任务怎样执行，就从 CLI 的 task 或 eval 入口进入 `packages/core-runtime`。你要关心输入对象怎样被构造，模型上下文怎样生成，工具怎样注册，verification 怎样触发，final result 怎样保存。
 
-本章反复出现的关键词包括：`source reading`、`entrypoint`、`call graph`、`runtime`、`package`、`test`、`trace`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+如果你想修 workspace 或文件编辑问题，就先看 `packages/workspace` 和相关测试。你要关心路径解析、读写限制、checkpoint、rollback、patch 应用和用户工作区边界。
 
-### 31.2 在仓库中找到入口
+如果你想改 benchmark，就从 `packages/evals`、`examples/evals` 和 `scripts/eval-benchmark.ts` 开始。你要关心 suite schema、scenario、step、expectation、observed run、quality report 和 artifact。
 
-阅读本章时，建议从下面这些文件开始：
+如果你想处理发布失败，就先看 `scripts/release-check.ts`、`scripts/release-diagnostics.ts`、`.github/workflows/ci.yml` 和 `docs/release-checklist.md`。你要关心 gate 顺序、required files、CI 矩阵、dist marker 和 release artifact。
 
-1. [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`packages/context/src/index.ts`](../../packages/context/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
+目标越清楚，阅读越快。源码阅读最大的错误，是带着“我要理解整个系统”的空泛目标打开编辑器。更好的目标是：“我要解释 `npm run eval:benchmark` 怎样生成 `trend.json`”；“我要找出 `run_verification` 的工具事件在哪里进入 observed run”；“我要知道 rollback 失败时有哪些证据”。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，call graph、package 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 31.2 第一条路线：从 `package.json` 到 CLI
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+任何 Node 项目的源码阅读，都应该先看 `package.json`。这里的 scripts 是项目的操作地图。你可以看到 `typecheck`、`build`、`test`、`eval:smoke`、`eval:benchmark`、`eval:release-local`、`release:check`、`maturity:check` 等命令。读 scripts 的目的不是记住每一条，而是知道项目维护者把哪些动作变成了稳定入口。
 
-### 31.3 它在一次 Agent 任务中怎样出现
+接着看 `apps/cli/src/index.ts`。CLI 是用户和 runtime 的第一层接触面。你要看它如何解析命令，如何处理 `--cwd`、`--storage-root`、`--model-profile`、`--mode`、`--manifest`、`--output` 这类参数，如何调用 runtime 或 eval runner。不要一开始钻进每个 helper。第一遍只画出命令分发图：哪个命令进入哪段代码，哪段代码构造输入，哪段代码输出结果。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，runtime、test 和 source reading 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+然后选一条命令做跟踪。比如选择 `npm run eval:smoke`，你可以从 package script 找到对应脚本，再看脚本如何调用 CLI evals 或 eval package。再比如选择 `npm run dev -- doctor`，你可以看 doctor 命令怎样检查 workspace、model profile、storage 和配置。每次只跟一条命令，阅读负担会小很多。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+读 CLI 时要注意错误处理。一个成熟的 CLI 不只是 happy path，它还要告诉用户缺少什么参数、哪个文件不存在、哪个 mode 不支持、哪个路径不安全。错误信息往往比成功路径更能体现项目边界。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+### 31.3 第二条路线：从一次任务看 runtime
 
-### 31.4 设计时最容易忽略的边界
+理解 runtime 时，可以用一条简单任务作为主线：用户给出目标，runtime 建立上下文，模型决定下一步，工具执行动作，系统记录结果，verification 判断是否完成，最后生成 final response 和 artifact。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，package、trace 和 entrypoint 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一步是找输入类型。Runtime 通常不会直接处理自然语言字符串，而是处理结构化 input：目标、工作目录、模型 profile、approval policy、execution domain、verification mode、最大迭代次数、可用工具、storage root 等。读输入类型可以帮你知道 runtime 需要哪些条件才能工作。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+第二步是看上下文构造。Agent 不是凭空行动，它需要系统提示、项目指令、workspace 状态、历史摘要、工具列表、任务目标和安全策略。你要看这些信息在哪里被拼成模型请求，哪些内容来自用户，哪些来自仓库，哪些来自持久存储，哪些必须被过滤或标注来源。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+第三步是看工具解析和执行。模型输出工具调用后，runtime 要把它变成真实动作：校验参数，检查审批，调用 tool implementation，记录 tool event，处理成功或失败。这里要特别注意两个边界：模型提出工具调用不等于工具已经执行，工具执行成功不等于任务已经完成。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+第四步是看 verification。Omni Agent 的核心品味是 verification-native。Runtime 不应该只相信模型说“我完成了”，而要运行验证命令、检查工具证据或读取 eval expectation。源码里凡是出现 verification status、run_verification、requiredSuccessfulToolNames、quality report 的地方，都值得重点读。
 
-### 31.5 如何判断实现是否可靠
+第五步是看 artifact。一次运行结束后，哪些内容被保存？run id、thread id、final response、tool events、duration、turn count、verification status、failure reason、trace 或 summary 是否存在？这些字段决定了失败能否复盘，也决定 eval 是否可信。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，test、source reading 和 call graph 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 31.4 第三条路线：从 tests 反向读实现
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+如果你不知道一个模块怎么读，先看测试。测试比实现更像需求文档。它告诉你维护者认为哪些行为重要，哪些边界不能破坏，哪些失败路径必须保留。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+读测试时，先看文件名。`tests/evals.test.ts` 说明 eval schema、expectation、report 或 benchmark 相关行为在那里；`tests/workspace.test.ts` 说明文件系统、checkpoint、rollback 或路径边界在那里；`tests/tools.test.ts` 说明工具注册、执行、生命周期或安全相关逻辑在那里；`tests/model-client.test.ts` 说明模型 profile、provider、fallback 或 cost 估算在那里。
 
-### 31.6 常见误区
+然后看测试名称。好的测试名称通常已经说明行为：应该拒绝路径逃逸，应该记录成功工具事件，应该在缺少 verification command 时失败，应该在 benchmark mode 不支持时报错。你可以把测试名称抄成一张行为清单，再去实现里找对应函数。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，trace、entrypoint 和 runtime 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第三步是看测试 fixture。Fixture 往往比正式代码更容易读。它会构造最小输入，调用一个函数，检查输出字段。你可以从 fixture 推断这个函数的责任边界。比如一个 eval test 如果只构造 scenario 和 observed run，就说明它在测判分逻辑，不是在测真实 CLI。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+第四步是故意制造失败。把某个 expectation 改错、把某个 required tool 删除、把某个路径改成逃逸路径，看看测试如何失败。这个方法能帮你理解错误信息和边界。不要把测试只当成绿色结果，红色结果也能教学。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+### 31.5 第四条路线：从 examples 读产品意图
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+`examples/evals` 是理解项目意图的关键目录。很多读者会先看 runtime 代码，却忽略 examples。实际上，examples 告诉你项目真正想证明什么。
 
-### 31.7 一个可操作的检查流程
+`examples/evals/suite.json` 是默认 benchmark 的核心。你要看 scenario 分类、任务目标、约束、verification command、expectation 和失败样本。它能告诉你 Omni Agent 当前认为哪些能力重要：workspace、tools、approval、memory、subagent、gateway、model fallback、verification repair 等。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+`examples/evals/release-local.json` 是发布前 runtime 证据。它不只是任务集合，而是 release gate 的一部分。你要看它如何要求 observed run、thread id、tool events、verification pass、checkpoint、rollback 和 subagent evidence。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，source reading、call graph 和 package 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`examples/evals/capability-scorecard.json` 是能力声明地图。它告诉你哪些能力被列出，成熟标准是什么，阻塞项是什么，测试证据在哪里。如果 README 声称某项能力成熟，而 scorecard 里没有证据，这就是文档和实现不一致。
 
-### 31.8 与真实模型评测的关系
+读 examples 时，不要只看 JSON 字段。你要问：这个 scenario 为什么存在？它防止什么回归？它能证明真实模型能力吗，还是只证明 synthetic 或 mock path？它的 expectation 是否足够具体？它是否有失败样本？这些问题比字段名更重要。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，entrypoint、runtime 和 test 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 31.6 第五条路线：从 artifact 反推源码
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+当你手上有一个失败 artifact 时，最有效的读源码方法是反向追踪。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+先看 artifact 里的字段。比如 `summary.json` 里有 `failureSummary`，其中包含 scenario id、step id、reasons、verification status 和 failed tools。你可以拿这些字段名去搜索源码，找到它们在哪里生成。这样比从目录树盲读更快。
 
-### 31.9 一个完整的小案例
+再看 run id 和 output path。`scripts/eval-benchmark.ts` 会把 result、quality、summary、history、trend、latest 和 report 写到具体路径。你可以从文件名反推 persist 函数，再从 persist 函数反推数据结构，再从数据结构反推 eval runner。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+接着看错误信息。错误信息通常是搜索入口。比如 “Runtime benchmark did not produce an eval result” 会带你到读取 runtime result 的函数；“Unsupported benchmark mode” 会带你到 mode parsing；“missing required release artifact” 会带你到 release diagnostics 或 release check。搜索错误字符串，是读陌生代码最快的方法之一。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+最后看测试是否覆盖这个失败。找到生成错误的源码后，搜索对应测试。如果没有测试，这可能就是一个贡献机会；如果有测试，先读测试再改实现。
 
-这个案例强调的是工程诚实。 在本章语境中，call graph、package 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 31.7 不要按目录深度读
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+很多人读源码会按目录深度：先读 `apps`，再读 `packages`，再读 `scripts`，最后读 `tests`。这种方法很容易失败，因为你会在没有任务目标的情况下读大量类型和 helper。
 
-### 31.10 排错时的分层问题表
+更好的方法是按行为读。选择一个行为，例如“运行 benchmark 并生成 trend”，然后横向穿过多个目录：package script、benchmark script、eval package、examples suite、artifact writer、report renderer、tests。这样你读到的每个文件都服务同一个问题。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+再选择第二个行为，例如“release-local 验证 rollback evidence”，再横向读：release-local manifest、eval-release-local script、CLI eval runner、runtime observed run、tool events、tests。每次只读一条行为链路，你就能逐步建立系统地图。
 
-分层排错能减少无效尝试。 在本章语境中，runtime、test 和 source reading 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+读到 helper 时，不要急着深入。先记录它的输入输出，继续主线。等主线跑通，再回头读 helper 的细节。源码阅读不是递归到底，而是先建立骨架，再补肌肉。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+### 31.8 一张推荐源码地图
 
-### 31.11 如何把本章内容写进团队流程
+第一次读代码，可以按下面顺序：
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+1. `package.json`：命令入口和维护者工作流。
+2. `CONTRIBUTING.md`：贡献边界和证据要求。
+3. `apps/cli/src/index.ts`：CLI 命令分发。
+4. `packages/core-runtime`：一次任务如何执行。
+5. `packages/workspace`：本地文件和 checkpoint 边界。
+6. `packages/tools`：工具注册、调用和结果结构。
+7. `packages/model-client`：model profile、provider、cost 和 fallback。
+8. `packages/evals`：scenario、expectation、quality report 和 benchmark。
+9. `examples/evals`：项目实际评测什么。
+10. `scripts`：把 runtime、eval、release 和 diagnostics 串起来的操作层。
+11. `tests`：项目真正保护的行为边界。
+12. `docs`：对外声明和使用者说明。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，package、trace 和 entrypoint 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这个顺序不是唯一答案，但它适合第一次进入项目。它从操作入口开始，到核心 runtime，再到评测和发布，最后回到测试和文档。这样读，比较不容易陷入细节。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+### 31.9 如何做源码阅读笔记
 
-### 31.12 练习
+读源码时，不要只在脑子里觉得“我懂了”。你应该写阅读笔记。好的阅读笔记不需要长，但必须能帮助未来的自己复现理解过程。
 
-1. 围绕 `source reading` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `entrypoint` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `call graph` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `runtime` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `package` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `test` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+第一种笔记是入口笔记。记录某条命令从哪里进入，例如“`npm run eval:benchmark` 进入 `scripts/eval-benchmark.ts`，默认 artifact 目录是 `.artifacts/benchmarks`，默认 mode 是 synthetic”。入口笔记解决的是“下次我从哪里开始读”的问题。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+第二种笔记是数据流笔记。记录一个对象从哪里来，到哪里去，哪些字段被保留，哪些字段被转换。比如 `EvalSuiteResult` 怎样变成 `BenchmarkQualityReport`，再怎样被写入 `quality.json` 和 `summary.json`。数据流笔记能帮你避免只看函数名、不理解证据怎么传递。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+第三种笔记是边界笔记。记录系统在哪些地方拒绝动作，在哪些地方保存失败，哪些错误是用户输入问题，哪些错误是 runtime 问题。比如 workspace path escape、unsupported benchmark mode、missing release artifact、verification command 缺失，都应该进入边界笔记。边界笔记对修 bug 特别有用。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+第四种笔记是测试笔记。记录某个测试保护什么行为，而不是只记录测试文件名。比如“这个测试证明 requiredSuccessfulToolNames 必须来自成功工具事件”；“这个测试证明 release-local rollback 必须包含 checkpoint 和 rollback 工具事件”。测试笔记能帮助你在改代码前知道哪些行为不能破坏。
 
-### 31.13 本章参考资料
+第五种笔记是疑问笔记。读源码时遇到暂时看不懂的 helper，不要马上深挖。先写下问题：这个函数为什么需要这个参数，哪个测试覆盖它，失败时会影响哪个 artifact。等主线读完，再集中处理疑问。这样不会被细节打断阅读节奏。
 
+### 31.10 如何从 PR review 读代码
+
+除了自己读源码，贡献者还应该学会从 PR review 读代码。Review 视角和学习视角不同。学习时你关心系统怎么运行；review 时你关心改动是否破坏已有边界。
+
+第一步看改动范围。一个 PR 如果同时改 CLI、runtime、workspace、eval、docs 和 release gate，你要先问它是否真的需要这么大范围。如果目标只是修一个 eval 字段，却改了多个无关模块，review 成本会变高，也更容易引入隐藏回归。
+
+第二步看行为入口。不要从 diff 第一行开始机械读。先问这个改动会被哪个命令触发，哪个用户路径会经过它，哪个测试应该覆盖它。比如一个 benchmark 改动应该能从 `eval:benchmark` 触发；一个 release diagnostics 改动应该能从 `release:diagnostics` 触发；一个 CLI 参数改动应该能从具体子命令触发。
+
+第三步看证据是否跟着改。源码改了，测试是否改了？公开文档改了，scorecard 是否需要改？eval expectation 改了，benchmark 历史是否需要说明不可比？安全边界改了，security 文档和 diagnostics 是否同步？Review 时要特别警惕“只改实现，不改证据”和“只改声明，不改证据”。
+
+第四步看失败路径。很多 bug 不在成功路径，而在失败路径：文件不存在、模型 profile 缺失、工具失败、验证失败、审批拒绝、路径越界、输出 JSON 不合法。一个 PR 如果只展示 happy path，你应该要求作者补失败样本或说明为什么不需要。
+
+第五步看输出给谁用。CLI 输出给用户看，JSON artifact 给机器和 reviewer 看，README 给外部读者看，release notes 给未来维护者看。不同输出对象需要不同精度。源码阅读时理解这一点，能帮助你判断一个字段应该放在 final response、summary、trace 还是 report。
+
+### 31.11 如何避免错误阅读顺序
+
+错误阅读顺序之一，是先读抽象层。比如一开始就读通用类型、工具基类、provider interface，却不知道它们被谁调用。这样会觉得每个抽象都重要，但不知道真实路径。更好的顺序是先读一次具体运行，再回头读抽象。
+
+错误阅读顺序之二，是只读实现不读测试。实现告诉你代码现在怎么写，测试告诉你维护者不希望什么行为被破坏。没有测试视角，你会误删看似多余的分支，也会低估失败路径。
+
+错误阅读顺序之三，是只读 README 不读脚本。README 可能解释意图，但脚本定义真实操作。比如 release checklist 文档说需要 Docker health check，而 `release:check` 脚本并不自动执行 Docker build。只有同时读文档和脚本，才能知道哪些是自动门禁，哪些是人工发布步骤。
+
+错误阅读顺序之四，是只读当前章节不读相关 artifact。Agent runtime 的很多行为只有运行后才清楚。你应该配合阅读实际输出：eval result、summary、quality、trend、release-local summary、diagnostics output。Artifact 能把源码里的抽象字段变成真实证据。
+
+错误阅读顺序之五，是追求一次读完。大型 runtime 不是一次读完的。你应该每次围绕一个问题读，留下笔记和链接，下一次继续。源码阅读是长期积累，不是一次考试。
+
+### 31.12 一个具体阅读案例
+
+假设你看到一个问题：`eval:benchmark` 运行成功，但报告里的失败原因不够清楚。不要先全仓搜索“失败原因”然后随便读。按照行为链路读，会更稳。
+
+第一步，从命令入口开始。`package.json` 告诉你 `eval:benchmark` 会运行 `scripts/eval-benchmark.ts`。打开脚本，先找输出位置和主流程。你会看到它读取 suite，选择 executor，运行 synthetic 或 runtime benchmark，构建 quality report，总结 usage 和 failure summary，然后保存 artifact。
+
+第二步，找失败原因生成位置。搜索 `failureSummary`，你会找到 `summarizeBenchmarkFailures()`。这个函数从 scenario results 里筛选没有通过的 step，记录 scenario id、step id、reasons、verification status 和 failed tools。现在你知道报告里的失败摘要不是模型随口写的，而是从 step result 和 observed run 中整理出来的。
+
+第三步，继续追 `reasons` 从哪里来。它通常来自 eval 判分逻辑，也就是 `packages/evals/src/index.ts`。你要看 expectation 如何被检查，哪些条件会产生 reason：verification status 不匹配、required tool 缺失、successful tool 缺失、final response 不包含目标文本、metrics 没达到要求。这样你就能判断失败原因是否足够具体。
+
+第四步，看报告渲染。`renderMarkdownReport()` 目前在 Markdown 里只列出 failed scenario id，而不是完整 reason。如果用户抱怨报告不清楚，可能不是 eval 判分没有 reason，而是 Markdown report 没展示 reason。这个判断会让你的改动范围变小：你可能只需要改报告渲染，或者给 report 增加 failure details，而不是重写 eval engine。
+
+第五步，看测试。搜索 benchmark report 或 failure summary 的测试。如果已有测试覆盖 summary 字段，就新增一个测试证明 Markdown report 展示失败原因；如果没有，就先给 failure summary 补测试。最后再运行 targeted test 和 `npm run eval:benchmark`，打开生成的 `report.md` 检查输出。
+
+这个案例说明：好的源码阅读会不断缩小问题。你从命令入口开始，沿着数据流找到 failure summary，再沿着字段来源找到 eval 判分，最后落到 report renderer。读完之后，你不只是知道文件在哪里，还知道应该改哪里、不应该改哪里、用什么命令验证。
+
+### 31.13 如何确认自己真的读懂了
+
+读懂源码，不是能复述一段函数，而是能用它解决问题。你可以用四个标准自测。
+
+第一，你能否从一个用户命令说出它经过哪些主要文件。比如从 `npm run eval:benchmark` 到 benchmark script、eval package、examples suite、artifact writer 和 report。能画出这条链路，说明你理解了入口和主线。
+
+第二，你能否解释一个字段的来源。比如 `overallScoreDelta` 来自 latest report 和 baseline report 的差值；`failedTools` 来自 observed run 中状态为 failed 的 tool events；`modelProfileId` 来自 benchmark options。字段来源清楚，说明你理解了数据流。
+
+第三，你能否指出一个失败应该在哪一层修。比如 report 不展示 reason，可能修 renderer；reason 本身不具体，可能修 eval judging；observed run 没有 tool events，可能修 runtime；artifact 没写入，可能修 persist。能分层定位，说明你没有被表面现象带偏。
+
+第四，你能否写出最小验证命令。读完一段代码后，如果你不知道怎么验证它，就说明理解还不完整。源码阅读最终要回到工程动作：跑哪个 test，跑哪个 eval，打开哪个 artifact，看哪个字段。
+
+如果这四个问题都能回答，就可以开始做小改动。否则，先不要急着写代码。继续沿着命令、数据、失败和验证四条线读，直到你能把行为解释给另一个贡献者听。
+
+源码阅读的最后一步，是把理解写回项目。如果你发现某条链路很难读，可以补文档；如果你发现某个失败没有测试，可以补负例；如果你发现 artifact 字段不好追，可以改报告或注释。读代码不是旁观，读懂之后把下一位读者的路径变短，就是很有价值的贡献。长期维护一个 Agent runtime，靠的不是少数人记住所有细节，而是每次阅读都能沉淀成更好的地图，让后来者少走弯路，也让问题更快定位、修复和验证，形成稳定的工程知识和共同语言，减少团队沟通成本和排错成本，提升协作效率和阅读质量，方便长期演进和新人上手参与维护工作与复盘改进流程建设。
+
+### 31.14 练习
+
+1. 从 `package.json` 选择一条命令，画出它调用的脚本或源码入口。
+2. 从 `apps/cli/src/index.ts` 找一个子命令，写出它接收哪些关键参数。
+3. 从 `tests/evals.test.ts` 找一个测试，反向定位它保护的实现函数。
+4. 从 `examples/evals/suite.json` 找一个 scenario，解释它证明的能力和不能证明的能力。
+5. 从 `scripts/eval-benchmark.ts` 找到 `history.json` 的写入位置，解释为什么要保留历史。
+6. 从一个错误信息开始搜索源码，写出你找到的函数和测试。
+7. 选择一个模块，写出“输入、输出、失败路径、证据字段”四项。
+8. 写一段源码阅读记录，说明你读了哪条行为链路，而不是读了哪些零散文件。
+
+完成这些练习后，你应该能用“行为链路”而不是“目录列表”解释源码。读代码的目标不是记住每个函数，而是在需要修改时知道从哪里进入、在哪里验证、在哪里留下证据。
+
+### 31.15 本章参考资料
+
+- Omni Agent: [`package.json`](../../package.json)
 - Omni Agent: [`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)
-- Omni Agent: [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)
-- Omni Agent: [`packages/context/src/index.ts`](../../packages/context/src/index.ts)
-- Omni Agent: [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
-- OpenTelemetry semantic conventions for GenAI: [https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/)
-- Model Context Protocol specification: [https://modelcontextprotocol.io/specification](https://modelcontextprotocol.io/specification)
-- OpenAI function calling guide: [https://platform.openai.com/docs/guides/function-calling](https://platform.openai.com/docs/guides/function-calling)
-
+- Omni Agent: [`packages/core-runtime`](../../packages/core-runtime)
+- Omni Agent: [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
+- Omni Agent: [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
+- Omni Agent: [`examples/evals/suite.json`](../../examples/evals/suite.json)
+- Omni Agent: [`tests`](../../tests)
+- GitHub Docs: [Searching code](https://docs.github.com/en/search-github/searching-on-github/searching-code)
+- GitHub Docs: [Navigating code on GitHub](https://docs.github.com/en/repositories/working-with-files/using-files/navigating-code-on-github)
 ## 32. 命令手册：把常用命令变成稳定工作流
 
 
