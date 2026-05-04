@@ -5565,140 +5565,237 @@ pnpm eval:benchmark -- --mode synthetic --run-id feature-check-synthetic
 ## 20. 失败案例复盘：如何从 trace 找根因
 
 
-本章讨论的是：把失败拆成模型、工具、环境、审批、验证和评测解释六个层级。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章只做一件事：教你用一次真实失败复盘来判断 Agent 到底坏在哪里。前面几章已经讲过 benchmark、真实模型和安全边界，但真正做工程时，最难的往往不是“跑出一个失败”，而是把失败拆清楚。失败可能来自模型没有理解任务，也可能来自工具调用参数错误、文件编辑策略危险、工作区权限拦截、验证命令选择不当、上下文预算耗尽，或者 eval 把结果解释错了。如果你只说“模型太弱”，就会错过 runtime 需要修的地方；如果你只说“runtime 有 bug”，也可能错怪模型。
 
+本章使用仓库里的真实材料：[`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)。这份记录不是一个美化后的 demo，而是三次 DeepSeek 真实运行的复盘：Flash 版本破坏了源码结构，Pro 版本修了一部分但迭代预算耗尽，Continuation 版本最终通过验证但仍有 warning。我们会用这三个 run 讲清楚四个词：`trace` 是运行过程的时间线，`artifact` 是可保存和复查的证据，`failure taxonomy` 是失败分类表，`retry` 是基于证据的继续策略。它们不是口号，而是排查失败时真正要读、要写、要保存的东西。
 
-### 20.1 本章先建立的心智模型
+### 20.1 本章案例：同一个任务，三种失败形态
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，trace、failure taxonomy 和 retry 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+测试任务很具体：在 fixture workspace `.tmp/deepseek-system-test` 中检查订单结算测试，修复 `src/settlement.mjs`，保留测试，并运行 `npm test`。模型通过 OpenAI-compatible 协议接入 DeepSeek，profile 分别是 `deepseek-v4-flash` 和 `deepseek-v4-pro`，API key 来自 `DEEPSEEK_API_KEY`。这个任务适合作为教学案例，因为它不是问答题，而是一个真实编码任务：模型要读代码、读测试、改文件、跑命令、根据失败继续修。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，root cause、artifact 和 regression 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一次运行是 `deepseek-v4-flash`，Run ID 是 `04393fc4-9324-48a6-b245-0f0e5b389450`。结果是 `failed`。它确实做了很多正确动作：检查 package、读取源码和测试、运行 verification、编辑实现。表面看，它不是完全不会工作。但关键失败点是：它在 broad range replacement 之后留下了重复代码，破坏了 `src/settlement.mjs` 的语法结构。独立验证发现 syntax error 并返回失败。所以这次失败不能简单写成“模型不会做业务逻辑”。更准确的根因是：模型选择了危险的编辑方式，runtime 没有在 broad replacement 后提供足够的结构保护，最终 verification 捕获了语法破坏。
 
-本章反复出现的关键词包括：`trace`、`root cause`、`failure taxonomy`、`artifact`、`retry`、`regression`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+第二次运行是 `deepseek-v4-pro`，Run ID 是 `902f546d-1eab-4ce7-a1db-4cde17bd505d`。结果仍然是 `failed`。但它和 Flash 的失败不同。Pro 没有明显破坏源码结构，它修复了 inventory reservation release 的一部分，却没有在 run 结束前完成 invoice `paidAmount`、`creditBalance` 和 `customer_credit` ledger 逻辑。也就是说，这次失败更像“部分正确但迭代预算不够”。如果把它归类成“模型编辑破坏源码”，就会误导后续修复。它需要的可能是更好的计划拆分、更明确的失败断言摘录、更长或更智能的 continuation，而不是单纯禁止 broad replacement。
 
-### 20.2 在仓库中找到入口
+第三次运行是 `deepseek-v4-pro continuation`，Run ID 是 `14ac39c7-3b05-4d8d-a7b8-5eaac19f9479`。结果是 `completed_with_warnings`，verification `passed`。它从失败的 partial state 继续，补上 invoice 和 overpayment ledger 行为，`npm test` 通过，独立验证也通过。但它仍然带 warning，因为运行中有早期失败工具调用。这个结果说明一个成熟 runtime 不应该只用二元状态描述任务。`completed`、`failed`、`completed_with_warnings` 分别承载不同意义：最终目标是否达成、过程中是否有风险、证据是否足够干净。
 
-阅读本章时，建议从下面这些文件开始：
+### 20.2 trace 到底是什么
 
-1. [`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`docs/operations.md`](../../docs/operations.md)：用来观察本章在仓库中的实现、测试或运维入口。
+在本章语境中，trace 不是一段日志，也不是最终回答的摘要。trace 是一次 agent run 的事件时间线。它应该回答：run 从哪个任务合同开始，模型做了哪些推理轮次，调用了哪些工具，工具参数和风险等级是什么，工具结果成功还是失败，哪些文件被修改，哪条验证命令失败，失败后系统是重试、继续、回滚还是停止。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，failure taxonomy、retry 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+OpenAI Agents SDK 文档把 tracing 解释为记录 agent run 中的 LLM generation、tool call、handoff、guardrail 等事件，并用 trace 与 span 组织一次 workflow。Omni Agent 的实现不是简单复制这个格式，但思想相同：你要能把一次运行拆成可观察的步骤，而不是只看最后一句“我完成了”。本仓库里与 trace 最直接相关的材料有 [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md) 和 [`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)。前者说明 agent-run artifact 的结构，后者负责在 runtime 中记录 runId、tool events、failure reason、verification artifact、rollback artifact 等。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+如果把一次失败看成一部电影，final response 只是最后一帧，trace 才是完整胶片。没有 trace，你只能猜模型为什么失败；有 trace，你可以按时间顺序问：第一处偏离目标在哪里，哪次工具调用造成不可逆变化，哪个 verification 命令首次暴露问题，系统有没有把失败反馈给下一轮模型。
 
-### 20.3 它在一次 Agent 任务中怎样出现
+### 20.3 artifact 到底是什么
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，artifact、regression 和 root cause 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+artifact 是可以离开聊天窗口、被保存、被复查、被引用的证据。它可以是 JSON，也可以是 patch、verification output、截图、报告、运行摘要或工具输出摘录。[`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md) 定义的 agent-run payload 包括 `taskContract`、`toolTrace`、`approvals`、`diff`、`verification` 和 `summary`。这几个字段正好对应一次失败复盘需要的证据。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+`taskContract` 说明任务原本要求什么，例如目标、执行域、根目录、成功标准和约束。没有它，你无法判断模型是否偏题。`toolTrace` 记录工具调用 id、工具名、风险等级、状态、摘要、输出预览、stored output reference、presentation 和时间戳。没有它，你无法判断失败是工具没调用、工具失败、工具调用顺序错误，还是工具成功但模型没有理解结果。`approvals` 记录哪些动作被允许或拒绝。没有它，你会把审批阻断误判成模型不作为。`diff` 记录 changed files 和 patch。没有它，你无法确认模型到底改了什么。`verification` 记录命令、状态和摘要。没有它，你只能相信模型自称通过。`summary` 记录最终回答和下一步建议，但它的证明力最低，必须依附前面那些证据。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+DeepSeek Flash 的失败就可以用 artifact 读出来。`changedFiles` 指向 `src\settlement.mjs`，verification 是 failed，测试记录说 broad range replacement 后留下 duplicate code。真正该保存的不是“Flash failed”这句话，而是出错 runId、修改文件、失败命令、语法错误摘录、pre-rollback diff 或最终 diff。如果这些 artifact 保存完整，维护者就能复盘编辑工具和 runtime guard，而不是重新跑一次昂贵的真实模型。
 
-### 20.4 设计时最容易忽略的边界
+### 20.4 failure taxonomy 到底是什么
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，retry、trace 和 failure taxonomy 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+failure taxonomy 是失败分类表。它的作用不是给失败贴标签好看，而是让修复动作不跑偏。对于本地 coding agent，至少可以分六类。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+第一类是模型理解失败。表现是模型没有抓住目标、忽略成功标准、误解业务规则、把测试断言解释错。修复方向通常是 prompt、上下文组织、任务拆分、示例或更强模型。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+第二类是工具使用失败。表现是模型选错工具、参数错、编辑范围过大、读错路径、没有在写文件后验证。DeepSeek Flash 的 broad replacement 破坏源码，就属于模型与编辑工具交界处的失败：模型使用工具的策略危险，runtime 也可以增加 guard。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+第三类是环境失败。表现是依赖没安装、命令不存在、工作目录错、Windows 路径转义出错、权限不足、网络或 provider 失败。环境失败不能拿来评价模型能力，除非模型的任务本来就是修环境。
 
-### 20.5 如何判断实现是否可靠
+第四类是审批或安全边界失败。表现是高风险命令被拒绝、路径越界被挡、artifact 位于 workspace 外无法直接 read_file。DeepSeek system findings 中提到，失败验证 artifact 存在 workspace root 外，模型尝试通过 `read_file` 读取时被 path protection 阻止。这是正确的安全行为，不应该被算成模型不努力；真正的改进是增加安全 artifact read tool 或 inline 关键失败摘录。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，regression、root cause 和 artifact 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第五类是验证失败。表现是测试没过、独立验证没过、语法错误、业务断言失败、最终 verification 与模型自述不一致。验证失败是最硬的证据，但也要继续拆：是因为模型没修完，还是因为测试命令错了，还是因为测试本身 flaky。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+第六类是评测解释失败。表现是 synthetic 分数被当成真实模型能力，mock runtime 被当成生产稳定性，`completed_with_warnings` 被当成完全成功，或者只看 completedCount 不看 reasons。评测解释失败很危险，因为它会让项目在公开声明上过度自信。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+### 20.5 用六层分类复盘 Flash 失败
 
-### 20.6 常见误区
+现在把 `deepseek-v4-flash` 放进这张分类表。它不是环境失败，因为 provider integration 工作了，工具执行也工作了。它不是审批失败，因为关键编辑和验证都发生了。它也不是纯粹的 eval 解释失败，因为 verification 确实 failed。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，trace、failure taxonomy 和 retry 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+它最核心的失败在工具使用层和验证层之间：模型选择了 broad range replacement，产生重复代码，语法结构被破坏；verification 捕获 syntax error，独立验证也返回失败。这里的 root cause 不是一句“Flash 太弱”可以覆盖的。更精确的复盘应该写成：
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+```text
+Root cause:
+The model used a broad replacement on src/settlement.mjs and left duplicate code.
+The runtime allowed the edit, then verification correctly caught the syntax error.
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+Primary layer:
+tool-use failure with insufficient edit guard.
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+Secondary layer:
+model capability risk on structure-preserving edits.
 
-### 20.7 一个可操作的检查流程
+Recommended fix:
+Prefer smaller edits, add syntax validation after broad replacements, and preserve pre-failure diff artifacts.
+```
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+这个写法的好处是，它直接导向工程动作。你可以改工具说明，让模型优先使用小范围 edit；可以在 `replace_file_range` 后对 `.js`、`.ts`、`.mjs` 做 parse 或 syntax check；可以在 final verification failure 前保存 patch artifact；可以加 eval scenario 捕获“broad edit corrupts syntax”。如果只写“Flash 不行”，这些动作都不会自然出现。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，root cause、artifact 和 regression 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 20.6 用六层分类复盘 Pro 失败
 
-### 20.8 与真实模型评测的关系
+`deepseek-v4-pro` 的第一次运行不是同一种失败。它检查了源码和测试，识别并部分修复 inventory reservation release，但没有在一次 run 内完成 invoice 和 ledger 逻辑。这里的关键证据是：changed file 仍然是 `src\settlement.mjs`，verification failed，usage 和 turns 都很高，说明模型不是没动，而是在迭代预算内没收敛。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，failure taxonomy、retry 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这类失败的 root cause 可以写成：
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+```text
+Root cause:
+The model made partial progress but exhausted the run budget before satisfying all failing assertions.
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+Primary layer:
+iteration budget and task decomposition failure.
 
-### 20.9 一个完整的小案例
+Secondary layer:
+model needed clearer remaining-failure feedback after partial repair.
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+Recommended fix:
+Expose concise failing assertion excerpts, allow continuation when progress is detected, and split settlement bugs into smaller eval steps.
+```
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+注意这里不应该建议“禁止 broad replacement”。Pro 的失败证据没有显示它破坏源码结构。也不应该只建议“换更强模型”，因为 continuation 已经证明同一模型在继续运行后能完成。更合理的修复是让 runtime 更会判断“已经有进展但还没完成”，并提供受控 continuation。
 
-这个案例强调的是工程诚实。 在本章语境中，artifact、regression 和 root cause 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 20.7 复盘 continuation：成功也要保留 warning
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+第三次 run 最容易被误读。它通过了 `npm test` 和独立验证，所以很多项目会直接写 “passed”。但仓库记录为 `completed_with_warnings`，这是更诚实的状态。原因是运行过程中仍有失败工具调用，只是最终验证通过了。
 
-### 20.10 排错时的分层问题表
+为什么这个区别重要？因为 agent 的风险不仅来自最终结果，还来自过程。如果一个 run 先多次失败、读不到 artifact、尝试了被拒绝的路径，最后侥幸通过，那么 operator 应该知道它不是一条干净路径。对于个人使用，这个 warning 可以提醒你检查 diff；对于 benchmark，它可以影响质量评分；对于 release gate，它可以提示某些能力仍不成熟。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+`completed_with_warnings` 不是失败，也不是完全成功。它表达的是：最终目标达成，但运行过程存在需要记录的异常。这个状态尤其适合真实模型评测，因为真实模型经常走弯路。如果 eval 只记录二元通过，就会把“高成本、高风险、靠 continuation 才通过”的任务和“一次稳定通过”的任务混在一起。
 
-分层排错能减少无效尝试。 在本章语境中，retry、trace 和 failure taxonomy 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 20.8 从 trace 找根因的阅读顺序
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+读 trace 时不要从最终回答开始。推荐顺序如下。
 
-### 20.11 如何把本章内容写进团队流程
+第一步，看 task contract。确认任务目标、成功标准、约束和 workspace。DeepSeek 案例的目标是修订单结算测试，成功标准是 `npm test` 通过。任何与这个目标无关的漂亮回答都不算成功。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+第二步，看 run summary。记录 runId、status、model profile、duration、turns、tool calls、successful tool calls、failed tool calls、changed files、verification status、usage。这个摘要帮你判断失败规模。如果 tool calls 为 0，问题可能在模型没调用工具；如果 failed tool calls 很多，问题可能在工具协议或权限；如果 usage 很高但没完成，问题可能在预算或任务拆分。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，regression、root cause 和 artifact 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第三步，看 first failure。不要只看最后失败。第一次偏离常常是根因。比如 Flash 的最终失败是 syntax error，但更早的根因是 broad replacement 产生重复代码。找到 first failure 后，再看系统有没有把这个失败反馈给下一轮。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+第四步，看 diff。对 coding agent 来说，diff 是事实中心。模型解释自己改了什么不可靠，diff 才可靠。检查改动是否集中、是否删除无关代码、是否留下重复块、是否破坏格式、是否绕过测试。
 
-### 20.12 练习
+第五步，看 verification。验证命令、退出状态、stdout/stderr 摘录、artifact path 都要看。一个失败测试的断言比模型的总结更有证明力。验证失败后，还要看 runtime 是否保存 failure evidence，是否触发 rollback 或 continuation。
 
-1. 围绕 `trace` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `root cause` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `failure taxonomy` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `artifact` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `retry` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `regression` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+第六步，看 eval result。eval result 告诉你 scenario 为什么通过或失败，例如 missing tool event、missing changed file、verification status mismatch、final response missing snippet。它不是根因本身，而是判分层对 evidence 的解释。判分层解释错了，也要单独修。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+### 20.9 retry 应该基于证据，不应该基于焦虑
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+retry 不是“再跑一次试试”。对 Agent 来说，盲目 retry 很危险，因为它可能重复消耗 token、扩大错误 diff、覆盖有价值的失败证据。好的 retry 至少要回答三个问题：是否有进展，失败是否可恢复，下一次运行需要改变什么。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+DeepSeek Pro continuation 是合理 retry，因为第一次 Pro run 已经有部分进展，没有破坏源码结构，剩余失败集中在 invoice 和 ledger 逻辑，继续运行有明确目标。相反，如果 Flash run 已经把源码改到语法损坏，直接 retry 可能不是最好选择。更稳妥的做法是先保存 diff、恢复到安全状态或让模型基于失败摘录做小范围修复。
 
-### 20.13 本章参考资料
+retry 也要区分“同 run 继续”和“新 run 重跑”。同 run 继续保留上下文，但可能带着错误假设；新 run 重跑更干净，但会丢失部分推理历史。Omni Agent 应该根据 trace 做选择：如果错误来自上下文混乱，重跑更好；如果错误来自预算耗尽但方向正确，continuation 更好；如果错误来自工具安全边界，应该先修工具或暴露安全 artifact，而不是重复让模型撞墙。
 
-- Omni Agent: [`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)
-- Omni Agent: [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)
-- Omni Agent: [`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
-- Omni Agent: [`docs/operations.md`](../../docs/operations.md)
-- OpenAI evaluation best practices: [https://platform.openai.com/docs/guides/evaluation-best-practices](https://platform.openai.com/docs/guides/evaluation-best-practices)
-- OpenAI Agents SDK tracing: [https://openai.github.io/openai-agents-python/tracing/](https://openai.github.io/openai-agents-python/tracing/)
-- LangSmith evaluation concepts: [https://docs.smith.langchain.com/evaluation/concepts](https://docs.smith.langchain.com/evaluation/concepts)
+### 20.10 把失败变成 regression
+
+一次失败如果只写进聊天记录，很快就会消失。成熟做法是把它变成 regression。DeepSeek Flash 的失败可以转成一个 eval 或测试目标：模型或 synthetic executor 进行 broad replacement 后，runtime 必须捕获语法错误、保存 pre-rollback diff、把 failure reason 写入 artifact，并拒绝把任务标记为 clean completion。
+
+可以把 regression 设计成三个层级。第一层是工具层测试：对 `replace_file_range` 或写文件工具增加结构保护，至少确保危险替换后有可运行的 verification 或 syntax check。第二层是 runtime 测试：final verification failed 时保存 `pre-rollback-failure-evidence` 和 patch artifact。第三层是 eval scenario：真实模型或 mock executor 复现“编辑后验证失败，然后修复或回滚”的行为，并要求报告包含失败分类。
+
+OpenAI 的 eval best practices 强调 eval-driven development、记录日志、设计 task-specific eval、持续评估。放到 Omni Agent 里，就是不要让真实失败只成为一次抱怨，而要把它沉淀成 suite、fixture、artifact 和 release gate。失败样本越具体，benchmark 越有说服力。
+
+### 20.11 一份根因报告应该长什么样
+
+根因报告可以用固定结构，但内容必须具体。
+
+```text
+Run:
+- runId:
+- modelProfile:
+- mode:
+- task:
+- workspace:
+
+Outcome:
+- status:
+- verification:
+- changedFiles:
+- turns:
+- toolCalls:
+- failedToolCalls:
+- usage:
+
+First failure:
+- event:
+- tool:
+- file:
+- evidence:
+
+Root cause:
+- primary layer:
+- secondary layer:
+- why not the other layers:
+
+Recovery:
+- retry strategy:
+- rollback or continuation:
+- artifact paths:
+
+Regression:
+- test or eval to add:
+- command to verify:
+- remaining risk:
+```
+
+这份报告的重点是“why not the other layers”。例如 Flash 失败时，要说明为什么不是 provider integration 失败：因为模型成功调用了工具并消耗了 token；为什么不是验证系统坏了：因为 verification 捕获了真实 syntax error；为什么不是单纯业务逻辑未完成：因为源码结构已经破坏。排除项能提高报告可信度。
+
+### 20.12 团队流程中的失败复盘
+
+如果一个项目想公开说自己有 Agent Eval benchmark，就必须保留失败样本。只展示成功分数会让项目像 demo。失败样本能证明系统知道自己什么时候不可靠，也能证明修复方向不是拍脑袋。
+
+团队可以规定：每次真实模型失败都要至少保存 runId、model profile、executor mode、任务描述、changed files、verification summary、failure layer、root cause、retry decision 和 regression plan。对于安全相关失败，还要保存审批状态和 path boundary。对于成本相关失败，还要保存 usage 和 duration。对于 benchmark 解释失败，还要保存 suite version、run id 和 report path。
+
+这不是为了增加流程负担，而是为了避免重复踩坑。一个没有 failure taxonomy 的团队，会在每次失败后重新争论“是不是模型不行”。一个有 trace 和 artifact 的团队，可以直接问：这次失败和上次 Flash broad replacement 是否同类？上次修复有没有覆盖？如果没有，为什么？
+
+### 20.13 手把手读一次 trace
+
+假设你拿到一个失败 run，不要先读最终回答，而是先建一张纸面表。第一列写时间顺序，第二列写事件类型，第三列写证据，第四列写你暂时的判断。你可以把事件类型分成 `model_turn`、`tool_call`、`tool_result`、`file_diff`、`verification`、`artifact`、`policy`、`summary`。这样做的目的，是强迫自己把“感觉”变成“证据”。如果你写不出证据，就不要下结论。
+
+第一行通常是 task contract。你要抄下 objective、success criteria、constraints 和 workspace root。DeepSeek 案例中，objective 是修订单结算测试，success criteria 是保留测试并让 `npm test` 通过。这个目标很重要，因为后面每个动作都要拿它校准。模型读了很多文件不等于有进展；模型写了很多代码也不等于接近成功。只有和 success criteria 相关的动作才算有效进展。
+
+第二阶段看工具调用。每一个工具事件至少要问四个问题：它为什么被调用，它的输入是否指向正确文件，它的输出是否被模型使用，它的失败是否改变了后续计划。比如 `read_file src/settlement.mjs` 成功后，模型是否真的根据源码结构编辑？`run_verification npm test` 失败后，模型是否读取了失败断言？`replace_file_range` 改了大段内容后，系统是否做了语法或测试检查？这些问题会把 trace 从流水账变成诊断工具。
+
+第三阶段看 diff。对 coding agent 来说，diff 是最不能跳过的部分。你要看新增、删除、移动和重复。Flash 失败的关键就在这里：如果只看模型回答，它会说自己在修 settlement；如果看 diff，就能发现源码结构被 broad replacement 破坏。diff 还可以帮你区分“业务逻辑没修完”和“文件结构已损坏”。前者适合 continuation，后者往往需要回滚或更小范围修复。
+
+第四阶段看 verification。verification 不是一个布尔值，而是一组证据：命令是什么，退出码是什么，失败摘要是什么，失败第一次出现在哪个断言，stdout/stderr 是否被截断，artifact 是否保存。很多 Agent 失败复盘写不清，就是因为只写“测试失败”，没有写哪个测试、哪个断言、哪个文件、哪个行为。DeepSeek Pro 的失败如果只写“npm test failed”，就无法看出它其实已经修了一部分；必须写清剩余失败集中在 invoice 和 ledger 逻辑，才知道 continuation 有价值。
+
+第五阶段看状态转换。失败 run 应该从 running 进入 failed，或者进入 completed_with_warnings；verification failed 后是否触发 rollback，是否保存 pre-rollback evidence，是否把 recentFailureReason 放回下一轮上下文，这些都决定 runtime 是否能从失败中学习。一个 run 失败不可怕，可怕的是失败没有进入下一轮决策。没有状态转换，retry 就只是重新赌博。
+
+最后再读 final response。最终回答只能作为摘要，不能作为证据源。它可以告诉你模型以为自己做了什么，但不能替代 toolTrace、diff 和 verification。复盘时如果发现 final response 与 artifact 冲突，应该相信 artifact。例如模型说“tests pass”，但 verification artifact 显示 failed，那结论必须是 failed。
+
+### 20.14 常见误判与修正
+
+第一种误判是“工具失败，所以模型弱”。工具失败可能由模型参数错误导致，也可能由权限策略、路径边界、环境依赖或工具自身 bug 导致。修正方法是看 tool result 的错误类别和输入参数。如果路径越界被拦截，这是安全边界正常工作；如果模型反复给错路径，才更偏向模型使用失败。
+
+第二种误判是“最终通过，所以没有问题”。第三次 DeepSeek continuation 就提醒我们，最终通过仍然可能带 warning。高质量报告应该同时写 outcome 和 process quality。outcome 说明任务完成没有，process quality 说明完成方式是否干净、是否高成本、是否有安全或稳定性风险。
+
+第三种误判是“真实模型失败，所以 benchmark 没意义”。恰恰相反，真实失败样本是 benchmark 最有价值的材料。只要 trace 保存完整，失败就能变成 regression。没有失败样本的 benchmark 往往只是在证明 happy path。
+
+第四种误判是“retry 成功，所以原问题解决了”。retry 成功只能说明某种继续策略可行，不一定说明根因已修。比如 Pro continuation 成功，说明更多迭代能完成这个任务，但它没有自动证明单次运行已经稳定。要宣称修复，必须把 continuation 策略、预算判断、失败摘录和 regression 都补上。
+
+第五种误判是“artifact 越多越好”。artifact 的价值在于可复查，不在于数量。保存一堆没有索引、没有摘要、没有 runId 关联的文件，只会增加排查负担。好的 artifact 应该能从 runId 找到，从 step 找到，从 failure reason 找到，并且敏感信息已经脱敏。
+
+### 20.15 本章练习
+
+1. 阅读 [`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)，把三个 run 分别归类到模型理解、工具使用、环境、审批、安全边界、验证、评测解释中的一类或多类。
+2. 根据 Flash run 写一份 root cause report，必须包含 first failure、primary layer、secondary layer 和 recommended fix。
+3. 根据 Pro run 设计一个 continuation 策略，说明什么时候继续、什么时候回滚、什么时候重跑。
+4. 阅读 [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)，解释 `toolTrace`、`diff`、`verification` 三个字段各自证明什么。
+5. 阅读 [`docs/operations.md`](../../docs/operations.md) 的 checkpoint、model runtime、subagents 部分，写出这些 runbook 如何帮助定位失败层级。
+6. 设计一个新的 eval scenario，用来防止 broad replacement 再次破坏源码后被误判为完成。
+
+### 20.16 本章参考资料
+
+- Omni Agent DeepSeek system test：[`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)
+- Omni Agent agent-run artifacts：[`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)
+- Omni Agent core runtime：[`packages/core-runtime/src/index.ts`](../../packages/core-runtime/src/index.ts)
+- Omni Agent eval package：[`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
+- Omni Agent operations runbook：[`docs/operations.md`](../../docs/operations.md)
+- OpenAI Docs：[Evaluation best practices](https://platform.openai.com/docs/guides/evaluation-best-practices)
+- OpenAI Agents SDK：[Tracing](https://openai.github.io/openai-agents-python/tracing/)
+- LangSmith Docs：[Evaluation concepts](https://docs.smith.langchain.com/evaluation/concepts)
 
 ## 21. 学习路线与练习题
 
