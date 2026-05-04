@@ -4603,140 +4603,241 @@ LLM judge 也需要校准。校准不是一次性写 rubric，而是拿一批人
 ## 16. Benchmark 三种模式：synthetic、mock、openai
 
 
-本章讨论的是：区分自证 harness、验证 runtime 路径和真实模型评测，避免把分数解释错。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章只解决一个问题：当你看到 Omni Agent 的 benchmark 分数时，应该怎样判断它到底证明了什么。`synthetic`、`mock` 和 `openai` 不是三个随便取的运行标签，而是三种证据强度不同的测量方式。`synthetic` 证明 eval harness、manifest、指标和报告代码能正确工作；`mock` 证明 CLI runtime、session store、工具事件、verification 和 artifact 记录路径能跑通；`openai` 才开始接近真实模型能力评测，因为它会把任务交给一个 OpenAI-compatible 或 Anthropic profile 里的真实模型来完成。
 
+这一章尤其重要，因为 benchmark 最容易被误读。一个高分如果来自 `synthetic`，它不能说明模型会写代码，只能说明评分器看到了一组预先构造的 observed run 并正确给分。一个高分如果来自 `mock`，它也不能说明 DeepSeek、OpenAI 或 Claude 在这 45 个任务上都表现良好，它说明 mock model 与 runtime 协议、工具调用、验证命令、状态保存和报告生成没有明显断裂。只有当你固定模型、固定 profile、固定 suite、保存 trace、保存 cost、保存失败原因，并且重复运行后仍然稳定，才可以开始写“真实模型在这个 benchmark 上的表现”。
 
-### 16.1 本章先建立的心智模型
+### 16.1 先分清三种模式各自回答的问题
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，synthetic、openai 和 baseline 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`synthetic` 模式回答的问题是：“这套 eval 机器本身有没有坏？”在 [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts) 里，synthetic executor 被写成 `{ mode: "synthetic", implementation: "scripted-observed-run" }`。脚本不会启动真正的 agent loop，也不会调用真实模型。它会遍历 [`examples/evals/suite.json`](../../examples/evals/suite.json) 中的 scenario，然后根据 scenario 的 category 和 expectation 生成一份看起来像真实运行结果的 `observedRun`：里面有 `runId`、`threadId`、`verificationStatus`、`finalResponse`、`changedFiles`、`toolEvents`、`toolCallCount`、`turnCount` 和 `durationMs`。如果 scenario 要求工具名，synthetic 就填入 expected tools；如果 scenario 属于 memory recall，就把 `memoryUseful` 填成 true；如果 scenario 属于 model fallback，就把 `fallbackRecovered` 填成 true。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，mock、executor 和 repeatability 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+因此，synthetic 的价值是快、稳定、便宜。它适合放进基础 CI，用来防止 eval suite 的 JSON 结构、normalize 逻辑、质量阈值、scorecard 和报告生成被改坏。它不适合拿来宣传真实能力。如果 synthetic 得到 97% 或 100%，正确表述应该是：“默认 benchmark harness 和判分逻辑通过了回归检查。”错误表述是：“Omni Agent 已经能真实完成 45 个任务。”
 
-本章反复出现的关键词包括：`synthetic`、`mock`、`openai`、`executor`、`baseline`、`repeatability`、`cost`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+`mock` 模式回答的问题是：“真实 runtime 路径有没有跑通？”它和 synthetic 的区别非常大。`mock` 不再直接手写 observed run，而是由 benchmark 脚本调用 CLI：`node --import tsx apps/cli/src/index.ts evals ... --mode mock`。CLI 会加载 eval manifest，逐个 scenario 创建 runtime options，把任务交给 `AgentRuntime`，再从运行摘要里提取 `observedRun`。此时 session store、workspace、approval policy、execution domain、verification mode、runtime tools、tool events、final response、thread id 和 artifacts 都会进入实际路径。唯一仍然被替换掉的是模型本身：`apps/cli/src/index.ts` 在 `mode === "openai"` 时创建真实 model client，否则使用 `MockModelClient`。
 
-### 16.2 在仓库中找到入口
+所以 `mock` 的高分可以证明 runtime wiring 更可信，但仍然不能证明模型能力。它适合 release-local gate。例如 [`scripts/eval-release-local.ts`](../../scripts/eval-release-local.ts) 固定使用 `--mode mock --verification-mode required --auto-approve-risky`，并且检查至少三类 release scenario：状态延续、rollback recovery、subagent orchestration。它还会确认每个 observed run 有 `runId`、`threadId`、正数 `durationMs`、正数 `turnCount`、成功的 `run_verification` 工具事件，以及至少一个非验证工具事件。这些检查的重点不是“模型聪明”，而是“runtime 真正执行了任务并留下证据”。
 
-阅读本章时，建议从下面这些文件开始：
+`openai` 模式回答的问题是：“接入真实模型后，agent 在同一套 suite 上表现如何？”这里的 `openai` 是 Omni Agent CLI 的运行模式名，不只限于 OpenAI 官方模型。只要 profile 通过 OpenAI-compatible 协议配置，例如 DeepSeek、OpenRouter、本地兼容端点，或者通过 Anthropic protocol 配置 Claude，benchmark 脚本都可以通过 `--model-profile <id>` 把运行交给真实 client。`scripts/eval-benchmark.ts` 有一个很关键的规则：如果没有显式传 `--mode`，但传了 `--model-profile`，`parseMode` 会自动把模式设为 `openai`。这可以减少误操作，但报告里仍然必须写清具体 profile 和模型名称。
 
-1. [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`scripts/eval-release-local.ts`](../../scripts/eval-release-local.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`examples/evals/suite.json`](../../examples/evals/suite.json)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`README.zh.md`](../../README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
+### 16.2 三种模式的推荐运行顺序
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，openai、baseline 和 cost 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+新读者不要一上来就跑真实模型完整 benchmark。正确顺序应该从低成本证据开始，再逐层提高真实性。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+第一步，跑 smoke 或 synthetic benchmark。smoke 脚本 [`scripts/eval-smoke.ts`](../../scripts/eval-smoke.ts) 也是 scripted observed run，但输出更轻，适合检查 eval package 和 suite 的基本通路。默认 benchmark 在没有参数时也是 synthetic：
 
-### 16.3 它在一次 Agent 任务中怎样出现
+```powershell
+pnpm eval:smoke
+pnpm eval:benchmark
+```
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，executor、repeatability 和 synthetic 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这一步如果失败，先不要怀疑模型，因为这里根本没有模型参与。你应该检查 `examples/evals/suite.json` 是否 JSON 格式错误，scenario id 是否被误删，required category 是否缺失，qualityThresholds 是否与 metrics 不匹配，或者 `packages/evals/src/index.ts` 的 normalize、judge、report 逻辑是否被改坏。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+第二步，跑 mock benchmark。mock 会经过 CLI runtime，所以它比 synthetic 慢，但证据更接近真实 agent：
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+```powershell
+pnpm eval:benchmark -- --mode mock --run-id local-mock-001
+```
 
-### 16.4 设计时最容易忽略的边界
+这一步如果失败，要看 `.artifacts/benchmarks/runs/local-mock-001/cli-stderr.log`、`cli-stdout.log`、`cli-command.json` 和 `eval-result.json`。如果 CLI 本身退出码非零，优先看 stderr 和 command；如果 CLI 正常退出但 quality failed，优先看 `quality.json`、`summary.json` 和 `failureSummary`。mock 失败通常说明 runtime、工具协议、verification、approval、workspace 路径或 scenario expectation 有问题。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，baseline、cost 和 mock 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第三步，确认模型 profile，再跑 openai 模式。真实模型运行前至少要先确认 profile 能被 CLI 识别，并且密钥环境变量存在：
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+```powershell
+pnpm dev -- models
+pnpm dev -- doctor --mode openai
+pnpm eval:benchmark -- --model-profile deepseek-flash --run-id deepseek-flash-001
+```
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+如果你显式写模式，也可以这样：
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+```powershell
+pnpm eval:benchmark -- --mode openai --model-profile deepseek-flash --run-id deepseek-flash-001
+```
 
-### 16.5 如何判断实现是否可靠
+真实模型运行应该固定 run id 或把 run id 记录到报告中。不要只复制终端最后一行分数，因为 benchmark 脚本默认会把产物写到 `.artifacts/benchmarks`，其中 `history.json`、`trend.json`、`latest.json` 和 `report.md` 才是后续比较的基础。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，repeatability、synthetic 和 openai 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 16.3 `scripts/eval-benchmark.ts` 内部到底做了什么
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+这个脚本可以分成七段读。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+第一段是参数解析。`BenchmarkOptions` 包括 `mode`、`manifestPath`、`artifactsDir`、`runId`、`storageRoot`、`modelProfileId`、`approvalPolicy`、`executionDomain`、`verificationMode`、`maxIterations`、`verificationCommands`、`autoApproveRisky` 和 `saveArtifacts`。这些字段不是装饰参数，它们会决定 benchmark 是否可复现。比如同一个模型，在 `verificationMode=required` 和 `best-effort` 下可能得到不同结果；同一个任务，在 `executionDomain=workspace` 和 sandbox/worktree 运行策略下也可能暴露不同失败。
 
-### 16.6 常见误区
+第二段是 suite 和 scorecard 加载。默认 manifest 是 `examples/evals/suite.json`，默认 scorecard 是 `examples/evals/capability-scorecard.json`。当使用默认 suite 时，脚本会检查 required categories 和 required failure samples。required categories 包括 coding bugfix、verification repair、memory recall、skill creation、subagent delegation、MCP tool use、gateway route delivery、model fallback、long context、automation 等；required failure samples 包括 destructive command blocked、path escape blocked、stale memory ignored、bad skill rejected、fallback recovered、subagent budget handled 和 gateway delivery。这个检查很重要：它防止 benchmark 慢慢退化成只覆盖容易通过的 happy path。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，cost、mock 和 executor 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第三段是 executor 描述。输出 JSON 里的 `executor` 会显示本次运行到底是 `synthetic` 还是 `cli-runtime-evals`。读报告时应该先看这个字段。只要看到 `implementation: "scripted-observed-run"`，就知道这不是模型实测；只要看到 `implementation: "cli-runtime-evals"`，就知道它至少走了 CLI runtime，但还需要继续看 `mode` 是 `mock` 还是 `openai`。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+第四段是执行。synthetic 走 `runSyntheticBenchmark()`，非 synthetic 走 `runRuntimeBenchmark()`。runtime benchmark 会启动一个新的 Node 进程，传入 `--import tsx`、CLI 入口、`evals` 子命令、workspace cwd、manifest、output、mode 以及用户提供的 profile、approval、verification 和 iteration 参数。脚本还会设置 `TSX_TSCONFIG_PATH=tsconfig.base.json` 和 `TSX_DISABLE_CACHE=1`，这是为了让 TypeScript runtime 在 CI 和本地更稳定。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+第五段是读取结果。synthetic 会直接得到 `EvalSuiteResult`；runtime 模式会从 run dir 里的 `eval-result.json` 读取结果。如果 runtime 没有写出这个文件，脚本会抛出 “Runtime benchmark did not produce an eval result”。这个错误通常说明 CLI 在生成结果前就崩了，不能按普通 benchmark 失败处理，而应该先修 CLI 或环境。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+第六段是质量报告和成熟度报告。`buildBenchmarkQualityReport` 根据 suite 里的 thresholds 计算是否通过。默认 suite 还会通过 scorecard 生成 capability maturity report，检查成熟能力是否有通过 scenario 支撑。也就是说，benchmark 不只是一个总分，它还把能力声明和 scenario evidence 绑定起来。
 
-### 16.7 一个可操作的检查流程
+第七段是持久化。默认 `saveArtifacts` 为 true，除非显式传 `--no-save`。脚本会写 `eval-result.json`、`quality.json`、`summary.json`、`history.json`、`trend.json`、`latest.json` 和 `report.md`。这一步让 benchmark 从“一次终端输出”变成“可追踪历史”。如果团队要比较不同模型或不同 commit，这些文件比终端分数可靠得多。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+### 16.4 如何读产物目录
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，synthetic、openai 和 baseline 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+一次 benchmark 结束后，最重要的目录通常是：
 
-### 16.8 与真实模型评测的关系
+```text
+.artifacts/benchmarks/
+  runs/
+    <run-id>/
+      eval-result.json
+      quality.json
+      summary.json
+      cli-command.json
+      cli-stdout.log
+      cli-stderr.log
+  history.json
+  trend.json
+  latest.json
+  report.md
+```
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，mock、executor 和 repeatability 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`eval-result.json` 是最完整的原始评分结果。它包含 scenarioResults、stepResults、observedRun、metrics 和 qualityThresholds。排查具体失败时先打开它，因为 failure reason、tool events、verification status、changed files 和 final response 都在这里。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+`quality.json` 是质量门禁报告。它回答“这次是否通过 release gate”。如果只想判断能不能发布，先看它；如果想知道为什么没过，再回到 `eval-result.json`。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+`summary.json` 是 benchmark run 的摘要。它会保存 run id、completedAt、mode、implementation、manifestPath、modelProfileId、metrics、usage、failureSummary 和 artifact path。写公开报告时不要重新猜这些字段，直接从 summary 取。
 
-### 16.9 一个完整的小案例
+`cli-command.json` 只在 runtime 模式里有意义。它记录 Node 命令、args、cwd、exitCode、signal 和 error。真实模型 benchmark 出问题时，这个文件能证明当时到底传了什么参数，避免事后靠记忆还原。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+`cli-stdout.log` 和 `cli-stderr.log` 保存 CLI 子进程输出。stdout 常用于看 eval suite summary，stderr 常用于看运行时异常、profile 缺失、权限问题、TypeScript 加载问题或验证命令报错。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+`history.json` 最多保留最近 50 次 run。`trend.json` 由 `buildLongitudinalBenchmarkReport` 生成，用来比较 baseline、latest、score delta 和 regressions。`report.md` 是面向人读的报告，适合贴到 release note、issue 或 README，但它不是唯一证据，真正排查还要回到 JSON。
 
-这个案例强调的是工程诚实。 在本章语境中，openai、baseline 和 cost 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 16.5 分数应该怎样解释
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+Benchmark 输出里的 metrics 通常包括 completion rate、verification pass rate、first pass rate、repair rate、tool reliability rate、safety rate、state retention、fallback recovery 等。读这些指标时要把“模式”和“指标”一起看。
 
-### 16.10 排错时的分层问题表
+在 synthetic 模式下，completion rate 高，说明 suite expectation 与 scripted observed run 对得上；verification pass rate 高，说明 synthetic 填入的 verification status 被正确统计；tool reliability 高，说明 expected tools 被构造成成功事件。它不说明真实工具真的执行成功。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+在 mock 模式下，completion rate 高，说明 mock runtime 能按 scenario 走完；verification pass rate 高，说明 runtime 中的 verification 事件和结果能被记录；tool reliability 高，说明工具注册、工具调用和事件摘要没有明显断裂。它仍然不说明真实模型会主动选择正确工具，因为模型选择被 MockModelClient 替代了。
 
-分层排错能减少无效尝试。 在本章语境中，executor、repeatability 和 synthetic 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+在 openai 模式下，指标才开始体现模型、prompt、工具 schema、上下文、审批策略和 runtime 的综合表现。即便如此，也不能把一次 openai run 当成最终结论。真实模型有采样、网络、速率限制、上下文窗口、工具调用格式、供应商兼容性和成本限制等变量。更好的做法是固定 suite 和 profile，至少重复几次，保留每次 run 的 artifact，然后在报告里写通过率、失败类型、平均成本、平均时长、重复失败 scenario 和偶发失败 scenario。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+### 16.6 如何判断“是模型弱”还是“系统问题”
 
-### 16.11 如何把本章内容写进团队流程
+用户经常会问：真实 benchmark 失败是不是模型太弱？答案不能只看总分。至少要按下面顺序排查。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+先看模式。如果失败来自 synthetic，和模型无关。如果失败来自 mock，通常也不是模型能力问题，而是 runtime 或 expectation 问题。如果失败来自 openai，才进入模型能力分析。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，baseline、cost 和 mock 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+再看失败 reason。如果 reason 是 missing required tool event，说明模型可能没有调用目标工具，也可能是工具事件没有被 runtime 正确记录。需要打开 observedRun 的 `toolEvents`，看是否完全没有调用、调用了错误工具、调用失败，还是状态映射出了问题。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+再看 verification status。如果 final response 看起来正确，但 `verificationStatus` 是 failed，说明模型表达能力不是核心问题，实际代码、文件或验证命令没有通过。Agent benchmark 应该以可验证结果为准，而不是以回答语气为准。
 
-### 16.12 练习
+再看 changed files。如果 scenario 要求修改 `src/parser.ts`，但 changedFiles 为空或改了别的文件，问题可能是 workspace 定位、工具参数、路径约束或模型理解偏差。此时不要只调 prompt，要检查工具 schema 有没有说明目标路径、workspace cwd 是否正确、approval 是否阻止了写入。
 
-1. 围绕 `synthetic` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `mock` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `openai` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `executor` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `baseline` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `repeatability` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+再看 token、duration 和 cost。如果 totalTokens 极低，可能模型根本没有得到足够上下文；如果 duration 很短且失败集中在工具调用前，可能 profile 或模型工具能力配置不对；如果 cost unknown，说明 profile 或 usage 记录不足，公开报告里不能声称成本表现。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+最后看失败是否可重复。同一个 scenario 连续失败，才更像稳定能力缺口；某次失败、某次成功，则可能是采样、rate limit、上下文裁剪或外部服务波动。真实 benchmark 报告应把这两类失败分开写。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+### 16.7 release-local 和完整 benchmark 的区别
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+`eval-release-local` 不是完整公开 benchmark，它是 release gate。它固定使用 `examples/evals/release-local.json`，场景少，但检查更贴近发布前最容易断的 runtime 能力：状态是否能延续，rollback 是否能留下失败前证据，subagent 是否真的有 spawn、list 和 verification 事件。它的目标是防止“刚改完代码，主流程坏了还不知道”。
 
-### 16.13 本章参考资料
+完整 `eval:benchmark` 使用默认 suite 时覆盖范围更大，还会检查 benchmark manifest 是否包含 required categories 和 failure samples。它适合比较 runtime 改动、prompt 改动、工具 schema 改动和模型 profile 的整体影响。简单说，release-local 是门口安检，完整 benchmark 是系统体检。前者不追求覆盖所有能力，后者也不能替代 release-local 对具体 runtime 证据的硬检查。
 
-- Omni Agent: [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
-- Omni Agent: [`scripts/eval-release-local.ts`](../../scripts/eval-release-local.ts)
-- Omni Agent: [`examples/evals/suite.json`](../../examples/evals/suite.json)
-- Omni Agent: [`README.zh.md`](../../README.zh.md)
-- OpenAI evals guide: [https://platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
-- Promptfoo documentation: [https://www.promptfoo.dev/docs/intro/](https://www.promptfoo.dev/docs/intro/)
-- SWE-bench Verified: [https://www.swebench.com/](https://www.swebench.com/)
+如果你在维护项目，建议本地开发时这样安排：小改动先跑相关单测和 `eval:smoke`；涉及 runtime、tools、session store、subagents、gateway 的改动跑 `eval:release-local`；准备发布或改动 benchmark suite 时跑 `eval:benchmark -- --mode mock`；要写真实模型表现时，再跑 `eval:benchmark -- --mode openai --model-profile <id>`。
+
+### 16.8 写公开 benchmark 报告时必须包含哪些字段
+
+一份可信报告至少要包含下面字段：
+
+| 字段 | 为什么必须写 |
+| --- | --- |
+| `runId` | 让读者能找到对应 artifact，而不是只看到截图 |
+| `mode` | 区分 synthetic、mock 和 openai，防止把自测分数当真实能力 |
+| `implementation` | 区分 scripted observed run 和 CLI runtime evals |
+| `manifestPath` | 说明使用哪套任务集，避免不同 suite 分数混比 |
+| `modelProfileId` | 真实模型评测必须说明模型来源和配置 |
+| `approvalPolicy`、`executionDomain`、`verificationMode` | 这些运行边界会影响结果 |
+| `metrics` | 给出 completion、verification、safety、fallback 等指标 |
+| `usage` | 写清 token、duration、estimated cost 或 unknown 原因 |
+| `failureSummary` | 不能只报总分，要列出失败 scenario、step、reason 和 failed tools |
+| artifact 路径 | 让别人能复盘 `eval-result.json`、logs、report 和 trend |
+
+如果报告来自 synthetic，结论应该写成“harness regression passed”。如果报告来自 mock，结论应该写成“runtime eval path passed under mock model”。如果报告来自 openai，结论才可以写“profile X 在 suite Y 的 run Z 上达到某指标”，并且要注明这是一次或多次实测，不要扩大成所有 agent 能力。
+
+### 16.9 一个具体阅读案例：为什么默认高分不能直接宣传
+
+假设你运行：
+
+```powershell
+pnpm eval:benchmark
+```
+
+因为没有传 `--mode`，`parseMode` 会选择 `synthetic`。脚本会创建 executor `{ mode: "synthetic", implementation: "scripted-observed-run" }`，然后 `runSyntheticBenchmark()` 遍历 suite，按规则填充 observed run。输出里可能出现很漂亮的 completion rate 和 verification pass rate。这个结果当然有价值：它说明 eval suite 的结构、required expectation、quality thresholds、capability maturity 和报告持久化基本可用。
+
+但它没有启动 `apps/cli/src/index.ts evals` 的 runtime 子进程，也没有创建 `MockModelClient` 或 `OpenAiCompatibleModelClient`，没有真实读取模型响应，没有经历真实工具选择，更没有让 DeepSeek 或 OpenAI 模型在仓库里修任务。因此默认高分只能放在“工程回归”语境里，不能放在“模型能力榜单”语境里。
+
+再运行：
+
+```powershell
+pnpm eval:benchmark -- --mode mock --run-id local-mock-compare
+```
+
+这次 benchmark 会调用 CLI runtime。你可以打开 `cli-command.json`，确认命令里有 `apps/cli/src/index.ts evals --mode mock`；打开 `eval-result.json`，确认 observedRun 来自 runtime summary；打开 `summary.json`，确认 implementation 是 `cli-runtime-evals`。如果 mock 通过，说明真实 runtime 证据链比 synthetic 更强。
+
+最后运行真实 profile：
+
+```powershell
+pnpm eval:benchmark -- --model-profile deepseek-flash --run-id deepseek-flash-compare
+```
+
+此时才开始观察真实模型。报告应重点写失败 scenario，而不是只看 overall score。例如某些失败可能是模型没有调用 `run_verification`，某些失败可能是调用了工具但改错文件，某些失败可能是 final response 没有引用 required evidence，某些失败可能是 fallback 没有恢复。不同失败对应不同修复方向：调 prompt、改工具描述、补 workspace context、降低任务难度、提高 max iterations、修 profile tool support，或者承认该模型在当前任务集上能力不足。
+
+### 16.10 练习
+
+1. 运行 `pnpm eval:benchmark -- --run-id synthetic-reading`，打开 `.artifacts/benchmarks/runs/synthetic-reading/summary.json`，写下 `mode`、`implementation`、`metrics` 和 `failureSummary`。说明这次结果能证明什么，不能证明什么。
+2. 运行 `pnpm eval:benchmark -- --mode mock --run-id mock-reading`，对比 `synthetic-reading` 的 `summary.json`。重点观察 runtime 模式是否多出 `cli-command.json`、`cli-stdout.log` 和 `cli-stderr.log`。
+3. 在不泄露密钥的前提下，配置一个真实 model profile，运行 `pnpm dev -- doctor --mode openai`。如果 doctor 报错，把错误归类为 profile 缺失、key 缺失、协议配置错误还是模型能力问题。
+4. 选择一个失败 scenario，打开它的 `observedRun.toolEvents`、`verificationStatus`、`changedFiles` 和 `finalResponse`。写一段复盘，说明失败发生在模型决策、工具执行、验证命令、证据记录还是 expectation 设计。
+5. 手动比较 `history.json` 和 `trend.json`。找出 baseline run、latest run、score delta 和 regressions，并解释为什么长期历史比单次分数更适合做 release 判断。
+
+### 16.11 把 benchmark 变成长期制度
+
+如果 benchmark 只在某一次演示前运行，它的价值非常有限。Omni Agent 的 benchmark 设计已经有 `history.json`、`trend.json`、`latest.json` 和 `report.md`，说明它不是只想输出一次分数，而是想把多次运行放在同一个时间轴上。维护者应该把三种模式分别放进不同的制度位置。
+
+`synthetic` 应该成为最基础的回归检查。任何修改 eval 类型、suite manifest、scorecard、报告生成、指标计算、quality threshold 的 PR，都应该至少能通过 synthetic。它运行快，失败原因也比较集中，因此适合在早期发现“评测框架自己坏了”。如果 synthetic 失败，团队不应该讨论模型强弱，而应该先检查 JSON 结构、scenario id、expected tool、required final response、quality threshold 和 report builder。
+
+`mock` 应该成为 runtime 发布前的必跑检查。只要修改了 CLI runtime、tool registry、session store、workspace、approval、subagent、gateway、verification 或 artifact 记录，就应该跑 mock。mock 的意义是把 runtime 路径压一遍：能不能创建线程，能不能执行工具，能不能记录 tool events，能不能保存 run artifact，能不能从 runtime summary 还原 observed run，能不能通过 deterministic 或 heuristic judge。mock 通过以后，才能说“本地 runtime 证据链没有明显断裂”。
+
+`openai` 应该被当作成本更高、结论更强、也更需要说明条件的评测。它不适合每个小改动都跑完整 45 项，因为真实模型会产生费用，也会受到供应商状态、速率限制和上下文波动影响。更合理的制度是：合并 prompt、tool schema、model profile、上下文压缩、真实模型调用、任务分发策略这类改动时，跑一次固定 profile 的 openai benchmark；准备发版或写公开 README 能力声明时，连续跑几次同一 profile，把稳定失败和偶发失败分开记录。
+
+选择 baseline 时，不要随便拿“最早一次运行”当基准。一个好的 baseline 应满足四个条件：第一，它使用的 suite 是当前团队认可的版本；第二，它的 mode 和 model profile 与后续比较一致；第三，它的 artifact 完整，包括 summary、quality、eval result、logs 和 trend；第四，它的失败原因已经被人工看过，没有把明显环境故障误当成模型能力。比如一次 openai benchmark 如果因为密钥过期导致半数任务失败，它不能作为模型能力 baseline；一次 mock benchmark 如果因为工作目录错误失败，也不能作为 runtime 能力 baseline。
+
+长期比较时要避免跨模式比较。synthetic 97% 不能和 openai 70% 直接比较，因为前者没有模型参与，后者包含真实模型决策。mock 90% 也不能直接压过 openai 80%，因为 mock 的目标是 runtime path，而 openai 的目标是模型加 runtime 的整体表现。正确比较方式是同模式、同 suite、同 profile、同 verification policy、同 execution domain。只要其中一个条件变了，报告里就必须写出来。
+
+团队还应该维护一份失败分类表。最低限度可以分成八类：`manifest_error` 表示 suite 或 expectation 写错；`runtime_error` 表示 CLI、session store、workspace 或工具注册出错；`profile_error` 表示模型 profile、密钥、base url 或协议配置出错；`model_decision_error` 表示真实模型没有选择正确动作；`tool_execution_error` 表示工具被调用但执行失败；`verification_failed` 表示任务做了但验证没过；`evidence_missing` 表示结果可能正确但 trace 不足以证明；`judge_gap` 表示 judge 规则太松或太严。这样分类以后，失败就不会被粗暴归因成“模型太弱”。
+
+写 release note 时，可以把三种模式写成三行结论：
+
+```text
+Synthetic benchmark: passed, proves eval harness regression only.
+Mock runtime benchmark: passed, proves CLI runtime eval path under mock model.
+OpenAI-compatible benchmark: ran with <profile>, proves measured behavior for that profile under this suite.
+```
+
+如果 openai 没有跑，也要诚实写出 “not run”。这比留空更好，因为留空会让读者以为项目隐藏了结果。一个还没跑真实模型 benchmark 的项目并不丢人；真正损害可信度的是把 synthetic 或 mock 的结果包装成真实模型能力。对外发布时越清楚地区分证据级别，读者越容易相信项目后续给出的能力声明。
+
+发布报告前可以按下面这张清单做最后审核。第一，确认报告标题没有夸大范围，例如不要把 “Omni Agent Benchmark Report” 写成 “Agent 能力排行榜”，除非它确实包含真实模型、公开任务、重复运行和人工抽检。第二，确认正文第一段就写出 mode。如果读者必须翻到附录才能知道是 synthetic 还是 openai，这份报告就不合格。第三，确认 profile 信息足够具体：只写 “DeepSeek” 不够，应该写 profile id、base url 来源、模型名、是否支持 tool call，以及运行当天使用的 verification policy。第四，确认失败项没有被省略。公开报告可以摘要失败，不一定贴完整 JSON，但必须说明失败集中在哪些 scenario，失败是验证没过、工具没调、路径错误、证据缺失，还是模型回答偏题。第五，确认 cost 和 duration 的状态没有被伪装。如果 usage 里 token 是 null、costStatus 是 unknown，就应该写 unknown，而不是估一个看起来好看的数字。第六，确认报告能复现：至少给出 run id、manifest、命令和 artifact 路径。第七，确认结论只覆盖本次证据支持的范围。一次 mock 通过可以支持“runtime 路径可用”，不能支持“真实模型能力成熟”；一次 openai 通过可以支持“某 profile 在某 suite 上通过”，不能支持“所有兼容模型都通过”。
+
+这份审核清单看起来有些严格，但它能保护项目不被自己的数字误导。Agent benchmark 的难点不在于生成一个分数，而在于让分数的来源、边界和失败都可被复盘。只要报告能经得起这张清单，哪怕分数暂时不高，也比一个漂亮但说不清来源的数字更有工程价值。低分加清楚失败原因，能指导下一轮修复；高分但模式不明，只会让维护者在错误信心里继续叠功能。
+
+真正成熟的 benchmark 文化，是允许坏消息出现，并且要求坏消息说清楚。某个模型失败、某个工具不稳、某个 suite 设计过浅，都不是问题；问题是报告把这些差异磨平，只留下一个容易传播却无法复查的百分比。
+
+### 16.12 本章参考资料
+
+- Omni Agent benchmark 脚本：[`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
+- Omni Agent release-local gate：[`scripts/eval-release-local.ts`](../../scripts/eval-release-local.ts)
+- Omni Agent smoke eval：[`scripts/eval-smoke.ts`](../../scripts/eval-smoke.ts)
+- Omni Agent eval suite：[`examples/evals/suite.json`](../../examples/evals/suite.json)
+- Omni Agent eval 类型和报告逻辑：[`packages/evals/src/index.ts`](../../packages/evals/src/index.ts)
+- Omni Agent CLI runtime 入口：[`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)
+- OpenAI: [Working with evals](https://platform.openai.com/docs/guides/evals)
+- OpenAI: [Evaluate agent workflows](https://platform.openai.com/docs/guides/agent-evals)
+- SWE-bench: [Official leaderboards and SWE-bench Verified](https://www.swebench.com/)
 
 ## 17. 真实模型评测：如何接入 DeepSeek、OpenAI 或兼容端点
 
