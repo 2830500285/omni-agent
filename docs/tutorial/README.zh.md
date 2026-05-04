@@ -4842,140 +4842,277 @@ OpenAI-compatible benchmark: ran with <profile>, proves measured behavior for th
 ## 17. 真实模型评测：如何接入 DeepSeek、OpenAI 或兼容端点
 
 
-本章讨论的是：把兼容接口、模型配置、工具能力、密钥安全和真实运行报告连接起来。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章讲真实模型接入。第 16 章已经说明，`openai` mode 才开始接近真实模型评测；但“能连上一个模型”与“能做可信 benchmark”之间还有很多工程细节。Omni Agent 的模型层不是把 API key 塞进 prompt，而是用 `ModelProfile` 描述 provider、协议、base URL、model id、密钥来源、工具能力、streaming 能力、上下文上限、成本提示和自定义请求字段。只有 profile 配对正确，runtime 才知道应该用哪个 client、怎样构造请求、怎样解析工具调用、怎样记录 usage、怎样把失败归类。
 
+在这个项目里，`openai` 是 CLI mode 名称，不等于只能使用 OpenAI 官方模型。`protocol: "openai"` 表示走 OpenAI-compatible chat completions 形状；DeepSeek、OpenRouter、本地兼容服务通常都放在这一类。`protocol: "anthropic"` 表示走 Anthropic Messages API。`protocol: "responses"` 表示走 OpenAI Responses API，但当前 `setup` 命令主要暴露 `openai` 和 `anthropic`，需要通过环境变量或 JSON profile 配置 responses。读者要先分清“CLI mode”“profile protocol”“provider brand”“model id”这四个层级，否则很容易把配置问题误判成模型能力问题。
 
-### 17.1 本章先建立的心智模型
+### 17.1 先读懂 `ModelProfile`
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，provider、model id 和 streaming 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+本章最重要的源码入口是 [`packages/model-client/src/index.ts`](../../packages/model-client/src/index.ts)。文件开头定义的 `ModelProfile` 是真实模型接入的合同。它的字段可以这样理解：
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，base URL、tool calling 和 cost 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+| 字段 | 含义 | 常见错误 |
+| --- | --- | --- |
+| `id` | 本地 profile 名称，CLI 用 `--model-profile` 选择它 | 把 id 写成模型名，导致报告无法区分同一模型的不同配置 |
+| `protocol` | 请求协议，常见为 `openai`、`anthropic`、`responses` | provider 是 DeepSeek 却误写 `anthropic` |
+| `baseUrl` | provider API 根地址 | 多写或少写 `/v1`，导致最终 URL 不对 |
+| `apiPath` | 可选请求路径；为空时按协议默认拼接 | provider 使用非标准路径但没有显式配置 |
+| `apiKeyEnv` | 从哪个环境变量读取 key | key 放在 `DEEPSEEK_API_KEY`，profile 却读 `OMNI_AGENT_API_KEY` |
+| `model` | provider 识别的模型 id | 用 profile id 当 model id |
+| `supportsTools` | 是否使用原生 tool calling | provider 或模型不支持工具，却强制打开 |
+| `supportsStreaming` | 是否请求 SSE streaming | provider streaming 兼容性不完整，导致解析失败 |
+| `maxInputTokens` | 供路由和诊断参考的上下文上限 | 不写上限，长上下文失败时很难判断 |
+| `headers`、`requestBody` | provider 需要的额外请求头或请求体 | 把密钥写进 JSON 或文档，造成泄露 |
+| `credentials` | 多 key 池，可配合 round-robin 或 least-used | 多个 key 健康状态没有区分 |
 
-本章反复出现的关键词包括：`provider`、`base URL`、`model id`、`tool calling`、`streaming`、`cost`、`rate limit`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+`OpenAiCompatibleModelClient` 会用 `resolveModelRequestUrl(profile)` 拼接请求地址。默认路径规则是：Anthropic 使用 `v1/messages`，Responses 使用 `responses`，其他 openai-compatible 使用 `chat/completions`。如果 `baseUrl` 是 `https://api.deepseek.com/v1`，最终请求会落到 `https://api.deepseek.com/v1/chat/completions`。如果 provider 要求不同路径，就用 `apiPath` 明确覆盖，而不是靠反复试错。
 
-### 17.2 在仓库中找到入口
+模型调用不是只返回文本。`ModelTurnResult` 里有 `assistantText`、`toolCalls`、`usage`、`metadata`、`provider` 和 `raw`。真实 benchmark 能不能解释失败，很大程度取决于这些字段是否被保存进 run summary。比如 `usage` 里有 input/output/total tokens，`metadata.rateLimit` 里可能有请求和 token 的 limit、remaining、reset，`provider` 能说明本轮到底是哪一个 profile 响应，`raw` 可以在排查兼容性时看到 provider 原始返回。
 
-阅读本章时，建议从下面这些文件开始：
+### 17.2 用 `setup` 创建单个 profile
 
-1. [`packages/model-client/src/index.ts`](../../packages/model-client/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`docs/live-testing.md`](../../docs/live-testing.md)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)：用来观察本章在仓库中的实现、测试或运维入口。
+最简单的方式是用 CLI 的 `setup` 命令持久化一个 profile。OpenAI 官方模型可以这样配置：
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，model id、streaming 和 rate limit 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+```powershell
+$env:OPENAI_API_KEY = "<your-openai-key>"
+pnpm dev -- setup `
+  --storage-root "$env:USERPROFILE\\.omni-agent" `
+  --default-workspace "E:\\repo" `
+  --profile-id openai-mini `
+  --profile-name "OpenAI Mini" `
+  --protocol openai `
+  --base-url "https://api.openai.com/v1" `
+  --api-key-env OPENAI_API_KEY `
+  --model "gpt-4.1-mini" `
+  --supports-tools true `
+  --supports-streaming true
+```
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+DeepSeek 或其他 OpenAI-compatible provider 的形状类似。下面的 profile id 叫 `deepseek-flash`，只是本地名字；真正的 model id 必须按 provider 文档填写。仓库里的 DeepSeek 系统测试文档使用了 `https://api.deepseek.com/v1` 和 `DEEPSEEK_API_KEY`，并把 profile 命名为 `deepseek-v4-flash`、`deepseek-v4-pro`。
 
-### 17.3 它在一次 Agent 任务中怎样出现
+```powershell
+$env:DEEPSEEK_API_KEY = "<your-deepseek-key>"
+pnpm dev -- setup `
+  --storage-root "$env:USERPROFILE\\.omni-agent" `
+  --default-workspace "E:\\repo" `
+  --profile-id deepseek-flash `
+  --profile-name "DeepSeek Flash" `
+  --protocol openai `
+  --base-url "https://api.deepseek.com/v1" `
+  --api-key-env DEEPSEEK_API_KEY `
+  --model "<deepseek-model-id>" `
+  --supports-tools true `
+  --supports-streaming false
+```
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，tool calling、cost 和 provider 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+为什么这里建议先把 streaming 设成 false？因为真实模型接入应该先验证非流式返回、工具调用和 usage 记录，再打开 streaming。streaming 会引入 SSE 解析、增量 tool call 拼接、provider content-type 判断等额外变量。如果非流式都没跑通，直接开 streaming 会增加排错难度。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+Anthropic profile 使用 `protocol anthropic`：
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+```powershell
+$env:ANTHROPIC_API_KEY = "<your-anthropic-key>"
+pnpm dev -- setup `
+  --storage-root "$env:USERPROFILE\\.omni-agent" `
+  --default-workspace "E:\\repo" `
+  --profile-id claude-sonnet `
+  --profile-name "Claude Sonnet" `
+  --protocol anthropic `
+  --base-url "https://api.anthropic.com" `
+  --api-key-env ANTHROPIC_API_KEY `
+  --model "<anthropic-model-id>" `
+  --supports-tools true `
+  --supports-streaming true
+```
 
-### 17.4 设计时最容易忽略的边界
+不要把真实 key 写进 README、issue、commit、benchmark artifact 或 `OMNI_AGENT_MODEL_PROFILES_JSON`。profile 里应该保存 `apiKeyEnv`，真实 key 保存在本机环境变量或 CI secret 中。`doctor` 和 `models` 会显示 key 是否配置，但不会打印完整密钥。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，streaming、rate limit 和 base URL 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 17.3 用 JSON 配置多个 profile 和 failover
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+单 profile 适合初学。做真实 benchmark 时，经常要比较多个 provider，或者给主模型配置 fallback。Omni Agent 支持 `OMNI_AGENT_MODEL_PROFILES_JSON`，可以放一个数组：
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+```powershell
+$env:OMNI_AGENT_MODEL_PROFILES_JSON='[
+  {
+    "id": "deepseek-flash",
+    "name": "DeepSeek Flash",
+    "protocol": "openai",
+    "baseUrl": "https://api.deepseek.com/v1",
+    "apiKeyEnv": "DEEPSEEK_API_KEY",
+    "model": "<deepseek-model-id>",
+    "supportsTools": true,
+    "supportsStreaming": false,
+    "costHint": "low"
+  },
+  {
+    "id": "openai-mini",
+    "name": "OpenAI Mini",
+    "protocol": "openai",
+    "baseUrl": "https://api.openai.com/v1",
+    "apiKeyEnv": "OPENAI_API_KEY",
+    "model": "gpt-4.1-mini",
+    "supportsTools": true,
+    "supportsStreaming": true,
+    "costHint": "medium"
+  }
+]'
+```
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+如果不传 `--model-profile`，`createOpenAiRuntimeClient` 会把选中的 profiles 交给 `FailoverModelClient`。failover 的价值是：主模型 rate limit、server error、network error 或 timeout 时，runtime 可以尝试备用 profile。但做 benchmark 时要小心。自动 failover 会让一次 run 里可能出现多个 `modelProfiles`，这会影响成本估算和结果解释。比较单个模型能力时，最好显式传 `--model-profile deepseek-flash`，让这次 run 只代表一个 profile。
 
-### 17.5 如何判断实现是否可靠
+JSON profile 也支持 `credentials` 和 `credentialStrategy`。这适合一个 provider 多个 key 的情况。`round-robin` 关注轮转，`least-used` 关注使用次数较少的 key。做公开报告时要说明是否使用 key pool，因为它会影响 rate limit 行为和失败复现。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，cost、provider 和 model id 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 17.4 先跑 `models` 和 `doctor`
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+真实 benchmark 前不要直接跑 45 项。先跑：
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+```powershell
+pnpm dev -- models
+pnpm dev -- doctor --cwd "E:\\repo" --mode openai
+```
 
-### 17.6 常见误区
+`models` 用来查看 profile 是否被加载、协议是什么、baseUrl 是否被红acted 后展示、apiKeyEnv 是否配置、supportsTools 和 supportsStreaming 是否符合预期。`doctor --mode openai` 会检查模型配置和缺失 key。源码里的 `diagnoseModel` 在 mock mode 下会直接返回 “mock mode does not require remote credentials”，在 openai mode 下会检查 configured profile 数量、缺失密钥、profile issue，并给出 “Run setup” 或 “Export API key” 这类建议。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，rate limit、base URL 和 tool calling 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+如果 `doctor` 失败，先修配置，不要跑 benchmark。常见失败有四类。第一，profile 不存在：`--model-profile` 写了 `deepseek-flash`，但 `models` 里没有这个 id。第二，密钥环境变量没有导出：profile 读 `DEEPSEEK_API_KEY`，当前 shell 没有这个变量。第三，base URL 或 apiPath 错误：请求实际拼出来不是 provider 的 chat completions endpoint。第四，协议选错：Anthropic profile 用了 openai protocol，或者 OpenAI-compatible provider 被配置成 anthropic。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+### 17.5 最小真实运行：先证明能完成一件小事
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+在完整 benchmark 前，先跑一个非常小的真实任务：
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+```powershell
+pnpm dev -- run `
+  --cwd "E:\\repo" `
+  --mode openai `
+  --model-profile deepseek-flash `
+  --verification-mode required `
+  --max-iterations 4 `
+  --task "Inspect package metadata and summarize the test command. Do not edit files."
+```
 
-### 17.7 一个可操作的检查流程
+这个任务故意要求“不改文件”，目的是先检查模型连通、上下文构造、工具选择、final response 和 run record。如果这个都失败，完整 benchmark 没有意义。成功后再跑一个低风险写入任务，比如只更新一个临时 fixture 文件，并用 `--verify` 指定最小验证命令。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+最小运行结束后，用 CLI 的 run/thread 命令查看证据。你要确认：run 有 id，thread 有 id，模型 profile 记录正确，token usage 不为空，tool calls 数量合理，失败工具事件没有被隐藏，final response 没有泄露密钥。如果 provider 不返回 usage，成本估算可能是 unknown，报告就必须写 unknown。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，provider、model id 和 streaming 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 17.6 再跑 openai-mode benchmark
 
-### 17.8 与真实模型评测的关系
+完成 profile、doctor、最小真实 run 后，才跑 benchmark：
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，base URL、tool calling 和 cost 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+```powershell
+pnpm eval:benchmark -- `
+  --mode openai `
+  --model-profile deepseek-flash `
+  --run-id deepseek-flash-001 `
+  --verification-mode required `
+  --max-iterations 8
+```
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+如果只是传 `--model-profile deepseek-flash`，`scripts/eval-benchmark.ts` 也会自动选择 `openai` mode；但教程里建议显式写 `--mode openai`，因为报告和命令更容易读。跑完以后检查 `.artifacts/benchmarks/runs/deepseek-flash-001/summary.json`。这里应该能看到 `mode: "openai"`、`implementation: "cli-runtime-evals"`、`modelProfileId: "deepseek-flash"`、metrics、usage 和 failureSummary。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+真实模型 benchmark 的重点不是一次通过所有任务，而是让失败可解释。仓库的 [`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md) 就是一个好例子：DeepSeek integration 工作，工具执行工作，verification 工作，但 `deepseek-v4-flash` 在一次业务 bugfix 中留下了重复代码导致语法错误；`deepseek-v4-pro` 第一次没有在 iteration budget 内完成所有断言；continuation run 最终让测试通过。这个结论比一句“模型弱”更有价值，因为它说明了真实失败发生在 broad file replacement、iteration budget、artifact read 和 recovery policy 这些具体位置。
 
-### 17.9 一个完整的小案例
+### 17.7 工具调用：原生 tool call 与 JSON fallback
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+`OpenAiCompatibleModelClient` 会根据 `profile.supportsTools` 和 `availableTools.length` 决定 tool mode。如果支持工具，就在请求体里放 OpenAI-style `tools` 和 `tool_choice: "auto"`，然后优先解析 response 里的 `message.tool_calls`。如果没有原生 tool call，或者 provider 把工具调用写进文本，runtime 会尝试解析 JSON envelope、`tool_calls`、`function_call` 等嵌入格式。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+这就是为什么 `supportsTools` 不能乱填。设为 true 的好处是模型可以用原生工具协议，结构更稳定；坏处是 provider 如果兼容不完整，可能返回格式不符合预期，导致 malformed tool call。设为 false 的好处是走文本 JSON fallback，兼容更多普通 chat model；坏处是模型更容易把 JSON 写错、漏字段，或者把工具调用和解释文字混在一起。
 
-这个案例强调的是工程诚实。 在本章语境中，model id、streaming 和 rate limit 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+真实 benchmark 如果大量失败在 “missing required tool event” 或 “malformed tool call”，不要立刻改任务。先用同一 profile 分别跑 `supportsTools=true` 和 `supportsTools=false` 的小样本，对比 toolEvents。对于某些便宜模型，JSON fallback 反而更稳定；对于成熟 tool calling 模型，原生工具调用通常更好。结论要写在报告里，而不是藏在配置里。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+### 17.8 Streaming、rate limit 和 cost
 
-### 17.10 排错时的分层问题表
+Streaming 只改变响应传输方式，不应该改变任务语义。Omni Agent 通过 `isEventStreamResponse` 检查 content-type 是否包含 `text/event-stream`，然后分别解析 chat completions、responses 或 Anthropic streaming events。开 streaming 前先跑非 streaming，是为了减少变量。如果 streaming 失败但非 streaming 成功，问题通常在 SSE 格式、chunk 拼接、工具调用增量合并或 provider content-type，而不是模型能力。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+Rate limit 会影响真实 benchmark 的稳定性。模型层有 `ModelErrorKind`，会把错误分成 `auth_failed`、`context_overflow`、`malformed_tool_call`、`network_error`、`rate_limit`、`server_error`、`timeout` 和 `unknown`。如果 `failureSummary` 里看不出原因，就去看 CLI stderr、raw provider error 和 run artifact。rate limit 失败不应该记成模型不会做题；auth_failed 不应该记成 runtime bug；context_overflow 通常说明 suite、workspace context 或 maxInputTokens 需要调整。
 
-分层排错能减少无效尝试。 在本章语境中，tool calling、cost 和 provider 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Cost 也要谨慎。`estimateModelUsageCost` 只有在模型价格快照里存在对应模型、且 usage token 可用时，才会给 estimated cost。否则 `costStatus` 是 unknown。真实报告必须尊重这个状态。不要为了让报告好看而手工填一个未验证价格。模型供应商价格会变化，公开文档应链接到官方 pricing 页面，并在报告中说明本次估算来自哪个 snapshot 或为什么 unknown。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+### 17.9 把密钥安全写进流程
 
-### 17.11 如何把本章内容写进团队流程
+真实模型评测会接触 API key、provider base URL、可能的组织信息和运行 artifact。安全流程至少包括四条。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+第一，密钥只放环境变量或 secret store。profile 只保存 `apiKeyEnv`，不要保存实际 key。第二，artifact 可以保存 profile id、model id、usage、duration 和错误分类，但不能保存 Authorization header、完整 key、带 token 的 URL。第三，提交前检查 `git diff`，确认 README、docs、JSON、logs 中没有真实 key。第四，公开 issue 或 benchmark 报告时，只贴必要字段，原始 `raw` response 如果含有敏感内容，要先 redaction。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，streaming、rate limit 和 base URL 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`buildModelProfileDiagnostics` 会 redacted base URL 中的用户名、密码，也会 redacted headers；但这不等于所有 artifact 都天然安全。写教程、报告和 README 时仍然要遵守“只暴露复现所需的非敏感信息”。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+### 17.10 常见失败与处理
 
-### 17.12 练习
+| 现象 | 更可能的原因 | 处理方式 |
+| --- | --- | --- |
+| `missing API key` | `apiKeyEnv` 与当前 shell 不一致 | 导出正确环境变量，重新跑 `models` |
+| `401` 或 `403` | key 无效、权限不足、provider auth 方式不同 | 用 provider 控制台或最小 curl 验证 key |
+| `404` | base URL、apiPath 或 model id 错 | 打印最终 endpoint，核对 provider 文档 |
+| `429` | rate limit 或 quota | 降低并发、换 key、等待 reset、记录为 rate limit |
+| `context_overflow` | workspace 上下文太长或 maxInputTokens 太小 | 减少任务上下文、提高 profile 上限、分步跑 |
+| 工具事件缺失 | 模型没调用工具或 tool call 解析失败 | 对比 supportsTools true/false，检查 raw response |
+| 验证失败 | 代码没改对或验证命令环境错 | 以 verification output 为准，不看 final response 语气 |
+| cost unknown | provider usage 缺失或 pricing snapshot 没有该模型 | 报告写 unknown，链接官方价格页 |
 
-1. 围绕 `provider` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `base URL` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `model id` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `tool calling` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `streaming` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `cost` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+### 17.11 怎样写真实模型评测报告
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+真实模型评测报告不能只写“跑了 DeepSeek，分数是多少”。一份能被别人复查的报告，应该先写运行边界，再写结果，再写失败。运行边界包括仓库 commit、benchmark suite、run id、mode、implementation、model profile、model id、base URL 来源、verification mode、max iterations、是否启用 streaming、是否启用原生工具调用、是否启用 failover。结果部分包括 completion rate、verification pass rate、tool reliability、fallback recovery、state retention、duration、token usage、cost status。失败部分包括失败 scenario、失败 step、失败原因、失败工具、verification output 摘要和是否可重复。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+报告开头最好用一段非常克制的结论。例如：“本次运行使用 `deepseek-flash` profile，在 `examples/evals/suite.json` 上以 `openai` mode 执行。它证明该 profile 可以接入 Omni Agent runtime，并在本次 suite 上得到某些指标；它不证明 DeepSeek 所有模型都适合所有代码任务，也不证明其他 provider 具有相同表现。”这类写法看起来保守，但它能防止读者误读。Agent benchmark 的可信度来自边界清楚，而不是形容词强烈。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+报告中还应该有“失败解释优先级”。第一优先级是系统性失败：例如所有任务都 auth_failed，说明不是模型能力，而是 key 或权限问题；所有任务都 missing tool event，说明工具协议或 profile 配置可能错了；所有任务都 context_overflow，说明上下文预算或 workspace 输入过大。第二优先级是能力失败：例如模型能读文件但不运行验证，能修改文件但不修测试，能通过第一轮但无法从失败输出中恢复。第三优先级是偶发失败：例如 rate limit、网络 timeout、某一次 streaming chunk 不完整。报告如果不区分这些层级，就会把完全不同的问题混成一个分数。
 
-### 17.13 本章参考资料
+真实模型报告还要避免“只展示成功样本”。如果完整 benchmark 有 45 个任务，报告至少要列出失败任务的 id 和失败类别。失败不是坏事，隐藏失败才是坏事。读者看到失败样本，才知道系统在哪些能力上还需要改进；贡献者看到失败样本，才知道下一步该写什么 eval、改什么工具、补什么文档。一个公开项目如果能诚实地写出“Flash 模型在 broad replacement 上风险较高，Pro 模型需要 continuation 才能完成复杂任务”，反而比只贴成功截图更可信。
 
-- Omni Agent: [`packages/model-client/src/index.ts`](../../packages/model-client/src/index.ts)
-- Omni Agent: [`docs/live-testing.md`](../../docs/live-testing.md)
-- Omni Agent: [`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)
-- Omni Agent: [`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
-- DeepSeek API docs: [https://api-docs.deepseek.com/](https://api-docs.deepseek.com/)
-- OpenAI API reference: [https://platform.openai.com/docs/api-reference](https://platform.openai.com/docs/api-reference)
-- OpenAI function calling guide: [https://platform.openai.com/docs/guides/function-calling](https://platform.openai.com/docs/guides/function-calling)
+### 17.12 DeepSeek 案例应该怎样读
+
+仓库里的 DeepSeek 系统测试记录不是宣传文案，而是一次真实失败和恢复的复盘。它告诉读者三件事。第一，provider integration 可以工作：profile 使用 OpenAI-compatible 协议、DeepSeek base URL、`DEEPSEEK_API_KEY`，模型能够读取仓库、调用工具、编辑文件、运行验证。第二，真实模型能力不是二元判断：Flash 不是“完全不能用”，它能完成一部分观察和修改，但在大范围替换时破坏了源码结构；Pro 也不是“一次就能解决”，它第一次推进了修复但耗尽迭代预算。第三，runtime 的价值在于留下失败证据：语法错误、失败验证、工具调用统计、token usage、turn count、changed files 和 continuation run 都被记录下来，所以维护者能判断下一步应该加强 edit guard、artifact read、iteration extension，而不是泛泛地说模型差。
+
+读这个案例时，不要只看最终是否 passed。更重要的是看“失败发生在哪里”。Flash 运行失败，说明弱模型在本地编码任务中可能做出破坏性编辑，因此 runtime 需要更强的修改粒度控制，例如优先小范围 edit、替换后立刻做语法检查、对 broad range replacement 增加安全网。Pro 第一次失败，说明复杂业务 bugfix 可能需要更高 max iterations 或自动 continuation 策略。Pro continuation 成功，说明 session store 和任务延续有价值，因为第二次运行不是从零开始，而是基于失败后的部分状态继续修复。
+
+把这个案例写进教程，是为了训练读者用工程眼光看模型。真实模型 benchmark 的结论通常不是“某模型强”或“某模型弱”，而是“某模型在某配置下，对某类任务、某类工具协议、某个迭代预算、某种验证策略的表现”。这种结论更长，但更可用。它能指导实际改进：如果失败集中在工具调用，就改工具 schema 或 supportsTools；如果失败集中在验证后不修复，就改 prompt 和 repair loop；如果失败集中在超长上下文，就改 context 压缩；如果失败集中在文件损坏，就改 workspace edit tool。
+
+### 17.13 真实评测前的检查清单
+
+跑真实模型前，先确认十件事。第一，当前 shell 里有正确 key，而且 key 不会被写入 git。第二，`pnpm dev -- models` 能看到 profile，并且 profile id 与 benchmark 命令一致。第三，`pnpm dev -- doctor --mode openai` 没有 blocking error。第四，base URL 和 model id 来自 provider 官方文档或团队配置记录，不是从旧截图里猜的。第五，`supportsTools` 的设置经过小样本验证，而不是默认相信兼容。第六，streaming 只有在非 streaming 通过后再打开。第七，benchmark run id 带有模型和日期含义，例如 `deepseek-flash-2026-05-04-001`，方便未来查找。第八，`--max-iterations` 与任务难度匹配，过低会把未完成误判成模型不会，过高会让成本不可控。第九，运行前确认 `.artifacts` 不会被误提交到公开仓库。第十，运行后先看 failureSummary，再写结论，不要先写结论再找证据。
+
+这张清单的核心是减少不必要的混淆。真实模型评测已经包含很多变量：模型、provider、网络、密钥、价格、速率限制、工具协议、上下文、workspace、验证命令、随机性和 runtime bug。每减少一个不确定变量，失败解释就更可靠。反过来，如果你一开始就打开 streaming、启用 failover、使用多个 key、跑完整 suite、不给 run id、也不检查 doctor，那么任何失败都很难定位。
+
+### 17.14 从一次失败落到一次工程改动
+
+真实模型 benchmark 的最终目的不是给模型打标签，而是推动系统变好。拿到失败报告后，可以按“证据、分类、修复、复测”的顺序处理。第一步，把失败证据固定下来：run id、scenario id、step id、toolEvents、changedFiles、verification output、finalResponse、usage 和 stderr 都要保留。没有这些证据，后面的讨论会变成印象判断。第二步，把失败归类。比如模型没有调用工具，是 tool schema 问题、prompt 问题还是模型不支持工具；模型调用了写文件工具但改坏源码，是 edit tool 太粗、缺少语法检查，还是 workspace diff 反馈不足；模型修了一半就结束，是 max iterations 太低、repair loop 没有继续，还是失败输出没有进入下一轮上下文。
+
+第三步，选择最小修复。不要因为一次模型失败就重写整个 runtime。若失败是 broad replacement 造成语法损坏，最小修复可能是给大范围替换后增加 parse check，或者在工具描述里要求优先小范围编辑。若失败是缺少 artifact read，最小修复可能是增加 run-owned artifact 的只读工具，而不是放开 workspace path 保护。若失败是 profile tool call 不稳定，最小修复可能是为该 profile 关闭 `supportsTools`，改用 JSON fallback，并把这个决策写入模型配置文档。若失败是 context overflow，最小修复可能是减少 workspace 摘要、调整 maxInputTokens 或把 scenario 拆成两步。
+
+第四步，把修复变成 regression。真实模型失败如果只被人工记住，很快会再次出现。你可以把失败转成 eval scenario、release-local case、model-live test 或文档检查项。比如 DeepSeek Flash 破坏源码结构，可以新增一个 fixture，要求 agent 修改单文件后必须通过语法检查；DeepSeek Pro 需要 continuation，可以新增一个长任务 scenario，检查失败后状态是否能延续；artifact read 被路径保护拦住，可以新增一个安全测试，确认模型不能越界读文件，但能通过专门工具读取 run-owned evidence。这样，真实模型评测就不只是一次消耗 token 的实验，而会反过来强化 runtime。
+
+第五步，复测时必须使用同一条证据链。修复后先跑相关单测，再跑 mock runtime gate，最后才跑同一个 model profile 的小样本或 benchmark。不要跳过 mock 直接跑真实模型，因为那会把 runtime bug 和模型变量重新混在一起。复测报告要写清“修复前失败是什么，修复后哪条证据改变了”。例如以前 `changedFiles` 有目标文件但 verification failed，现在 verification passed；以前没有 `run_verification` tool event，现在有成功事件；以前 cost unknown，现在仍然 unknown，但这不影响本次修复，因为本次目标是工具调用稳定性，不是成本估算。
+
+这种处理方式会让真实模型评测形成闭环：模型失败暴露系统问题，系统问题被拆成小修复，小修复被测试保护，下一次 benchmark 又验证修复是否有效。长期看，项目真正提升的不是某一次分数，而是处理失败的速度和准确度。
+
+还要知道什么时候停止评测。真实模型 benchmark 会消耗费用和时间，不能因为一次分数不好就反复重跑到出现好看的结果。如果连续两三次失败集中在同一类原因，就应该停止重跑，转入修复阶段；如果失败分布完全随机，就应该先检查 provider 稳定性、采样参数、rate limit 和 streaming，而不是继续扩大样本；如果某个便宜模型反复破坏文件结构，就应该降低它在 coding benchmark 中的声明范围，或者把它定位为轻量阅读、摘要、分类模型。评测不是抽奖，重复运行必须服务于诊断。
+
+相反，如果一次修复后同一失败类别明显减少，哪怕总分只提升一点，也应该记录为有效进展。Agent 系统的改进往往不是一次跨越，而是把“不可解释的失败”逐步变成“可定位、可修复、可防回归的失败”。这正是真实模型评测比普通聊天测试更有价值的地方。
+
+因此，本章的重点不是教你追求最高分，而是教你让每一分钱、每一次失败、每一条 trace 都能变成后续工程判断的材料。
+
+能做到这一点，真实模型接入才不是一次临时试用，而会成为项目长期进化的测量仪表。
+
+否则，再多模型名也只是配置列表，不是可信能力。
+
+这一点需要反复执行，不能只停留在口头承诺。
+
+### 17.15 本章练习
+
+1. 配置一个只用于本地测试的 DeepSeek 或 OpenAI-compatible profile。运行 `pnpm dev -- models`，记录 profile id、protocol、baseUrl、model、supportsTools、supportsStreaming 和 key configured 状态。
+2. 故意把 `apiKeyEnv` 写错一次，运行 `pnpm dev -- doctor --mode openai`，观察它怎样提示缺失 key。然后恢复正确配置。
+3. 运行一个不改文件的最小真实任务，确认 run artifact 中有 model profile、token usage、tool call 和 final response。
+4. 用同一模型分别测试 `supportsTools=true` 和 `supportsTools=false`。比较 toolEvents，判断该 provider 更适合原生工具还是 JSON fallback。
+5. 跑一次 `pnpm eval:benchmark -- --mode openai --model-profile <id> --run-id <id>`，写一份不超过一页的报告，必须包含 mode、profile、manifest、run id、metrics、usage、failureSummary 和 artifact 路径。
+
+### 17.16 本章参考资料
+
+- Omni Agent model client：[`packages/model-client/src/index.ts`](../../packages/model-client/src/index.ts)
+- Omni Agent CLI 入口和 `setup/models/doctor/evals`：[`apps/cli/src/index.ts`](../../apps/cli/src/index.ts)
+- Omni Agent live testing：[`docs/live-testing.md`](../../docs/live-testing.md)
+- Omni Agent DeepSeek 系统测试记录：[`docs/deepseek-system-test-2026-04-30.md`](../../docs/deepseek-system-test-2026-04-30.md)
+- Omni Agent benchmark 脚本：[`scripts/eval-benchmark.ts`](../../scripts/eval-benchmark.ts)
+- DeepSeek API 文档：[https://api-docs.deepseek.com/](https://api-docs.deepseek.com/)
+- OpenAI API 文档：[Text generation and tool calling](https://platform.openai.com/docs/guides/text)
+- OpenAI 价格页：[https://platform.openai.com/docs/pricing](https://platform.openai.com/docs/pricing)
+- Anthropic Messages API：[https://docs.anthropic.com/en/api/messages](https://docs.anthropic.com/en/api/messages)
+- Anthropic tool use：[https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)
 
 ## 18. 安全、密钥与发布边界
 
