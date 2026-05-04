@@ -54,15 +54,193 @@
 
 ## 1. 写在前面：这本教程解决什么问题
 
-很多人第一次看到“Agent”这个词，会以为它只是一个更会聊天的模型。你给它一句话，它回答一句话；你让它写代码，它输出一段代码；你问它为什么失败，它再解释几句。这种理解适合普通聊天产品，却不适合真实的编码系统。一个能在仓库里工作的 Agent，不能只会说话。它必须知道当前项目在哪里，必须知道能读哪些文件，能运行哪些命令，什么时候应该停止，什么时候应该请求审批，什么时候应该把结果写成证据，什么时候应该承认失败。
+### 1.1 为什么先写这一章
 
-Omni Agent 的核心价值不是“让模型显得更聪明”，而是把模型放进一个可验证的工程运行时里。这里的“可验证”有两层意思。第一层是任务级验证：Agent 做完一件事以后，应该能运行测试、类型检查、lint、benchmark 或其他命令，证明结果是否成立。第二层是系统级验证：我们对外声称 Omni Agent 具备某项能力时，应该能指向测试、eval scenario、run artifact、maturity check 或 release gate，而不是只用 README 里的几句话支撑。
+很多开发者第一次看到 Agent 项目时，会自然地把它理解成“一个更会聊天的模型”。这种理解并不奇怪，因为大多数人接触大模型的入口就是聊天框：输入一句需求，模型输出一段回答；输入一个 bug，模型给出几段代码；输入一段报错，模型解释可能原因。聊天框让模型的语言能力变得很直观，但它也容易制造一种误解：好像只要模型回答得流畅、推理过程看起来完整、代码块看起来像样，它就已经具备了“做工程任务”的能力。
 
-这本教程会从一个初学者的角度出发。你不需要一开始就熟悉所有源码，也不需要已经写过 Agent framework。你需要具备的基础只有三类：第一，能在命令行里运行 `npm` 命令；第二，知道 TypeScript/Node.js 项目大概怎么组织；第三，愿意把 Agent 当作一个工程系统，而不是魔法。后面每一章都会把抽象概念落到具体目录、具体命令、具体文件和具体输出上。
+本教程首先要解决的，就是这个误解。
 
-教程里的命令默认在仓库根目录运行，也就是包含 `package.json`、`apps/`、`packages/`、`scripts/`、`examples/` 的目录。Windows PowerShell 用户可以直接复制多数命令；macOS 或 Linux 用户只需要把路径写法改成自己的路径。凡是涉及 API key 的地方，本教程只使用环境变量名，不会要求你把真实密钥写进仓库。
+一个真正能在仓库里工作的本地编码 Agent，不能只会生成回答。它必须知道自己在哪个 workspace 里工作，必须知道哪些文件可以读、哪些文件可以写、哪些命令可以运行、哪些动作需要审批、哪些动作必须拒绝。它还必须知道自己做完以后如何验证，如何记录证据，如何把失败原因保存下来，如何让后来的人复盘这次运行。否则，它就只是一个会输出文本的模型外壳，而不是一个工程运行系统。
 
-读这本教程时，最重要的不是背命令，而是形成判断力。你要能判断：一个 benchmark 到底证明了什么；一个模型失败到底是模型弱、prompt 不清楚、工具契约不够强，还是 eval 设计不合理；一个 run artifact 是否足以支撑公开能力声明；一个自动化动作是否应该被 approval policy 拦住。只有具备这些判断力，你才真正理解了 Omni Agent。
+Omni Agent 的项目主张写在仓库 README 和 `docs/omni-agent-paradigms.md` 里：它不是单纯追求“功能看起来很多”，而是把任务、子 Agent、记忆、能力声明和运行记录都围绕可复现证据设计。换句话说，Omni Agent 想解决的不是“如何让模型说自己完成了任务”，而是“如何让一次 Agent 运行能被检查、被验证、被追踪、被复盘”。这个差别非常重要。前者是对话产品思路，后者是工程系统思路。
+
+这本教程会按工程系统的方式来讲 Omni Agent。我们不会从“如何写一个漂亮 prompt”开始，也不会先讲“哪个模型最强”。这些问题当然重要，但它们不是第一层问题。第一层问题是：模型如何被放进一个受控的 runtime；runtime 如何把用户任务转成一系列模型回合、工具调用和验证动作；工具调用如何被审批策略约束；上下文和记忆如何被加载但不被盲信；eval 和 benchmark 如何证明系统没有退化；run artifact 如何保存证据。只有先理解这些，你才能真正判断一个 Agent 项目是否可靠。
+
+### 1.2 这本教程不是命令清单
+
+如果你只是想快速跑起来，README 里的 quickstart 命令已经够用。比如安装依赖、跑类型检查、查看模型 profile、运行 doctor、执行一个最小任务，这些命令都可以直接复制：
+
+```bash
+npm install
+npm run typecheck
+npm run dev -- models
+npm run dev -- doctor --cwd "."
+npm run dev -- run --cwd "." --task "Summarize this repository"
+```
+
+但这本教程不是为了把这些命令排成清单。命令清单只能告诉你“怎么按按钮”，不能告诉你“按钮背后发生了什么”。当命令成功时，你可能只知道它成功了；当命令失败时，你可能不知道该看 model profile、workspace、tool contract、approval policy、session store、eval manifest，还是网络和 API key。
+
+本教程要补上的，是命令背后的解释能力。比如：
+
+- `npm run dev -- models` 不只是列出模型名称，它是在让你检查 model profile 是否完整，provider 协议是否正确，API key 环境变量是否存在，工具调用和 streaming 能力是否被声明。
+- `npm run dev -- doctor --cwd "."` 不只是健康检查，它是在把 workspace、存储、git、memory files、gateway daemon、routes、automations 和 extensions 的状态显式暴露出来。
+- `npm run dev -- run --cwd "." --task "..."` 不只是在问模型问题，它会进入 runtime 主循环，加载上下文，选择模型，生成或解析 tool call，执行工具，收集事件，运行验证，并把结果写入可复盘记录。
+- `npm run eval:benchmark` 不只是给出一个分数，它还要告诉你这次是 synthetic、mock 还是真实模型执行；不同模式证明的东西完全不同。
+
+所以，本教程的写法会更像一本工程书：先讲概念，再讲代码位置，再讲命令，再讲证据，再讲常见误区。每章都会把抽象词落到仓库里的具体文件和命令上。你读完以后，不应该只是会复制命令，而应该能解释命令为什么存在、验证了什么、没有验证什么。
+
+### 1.3 Omni Agent 真正要解决的核心问题
+
+Omni Agent 可以被概括为一个“verification-native local coding agent runtime”。这句话里有三个关键词。
+
+第一个关键词是 `local coding agent`。它说明 Omni Agent 的主要场景是本地仓库，而不是一个远端黑盒聊天服务。它要面对的任务不是“写一首诗”或“总结一段文本”，而是仓库里的真实工程任务：读项目结构、理解代码、修改文件、运行测试、处理失败、写出总结。仓库任务天然比普通问答复杂，因为它们有状态、有文件、有命令、有副作用、有失败恢复，还有安全边界。
+
+第二个关键词是 `runtime`。Runtime 不是模型，也不是 prompt，而是包在模型外面的执行系统。一个 runtime 至少要处理这些事情：接收任务、准备上下文、选择模型、声明工具、解析工具调用、执行工具、拦截危险动作、运行验证、保存运行记录、返回结果。模型在这个系统里很重要，但它不是全部。一个强模型放在弱 runtime 里，可能会因为工具定义不清、上下文混乱、审批缺失、验证不足而表现很差。一个一般模型放在更清晰的 runtime 里，也可能因为工具和验证闭环更好而更稳定。
+
+第三个关键词是 `verification-native`。它表示系统从设计上就把“验证”当作一等公民，而不是最后补一个测试命令。任务完成不能只看最终回答是否自信，而要看是否有可检查的验证证据。项目能力不能只看 README 有没有写，而要看是否能对应到 scorecard、eval scenario、maturity check、release gate 或 run artifact。这个思想贯穿 Omni Agent 的文档和源码：`docs/verification-native-runtime.md` 说明任务完成需要 verification evidence；`docs/capability-backed-claims.md` 要求公开能力声明映射到 scorecard 和 eval；`examples/evals/` 里有默认 suite；`.artifacts/benchmarks/` 的设计用于保存 benchmark runs、history、trend、latest 和 report。
+
+因此，Omni Agent 解决的核心问题不是“如何调用一个大模型”。调用模型只是最低层能力。它真正解决的是：如何把模型接入本地仓库，让它在受控边界内使用工具，让每一步都能留下证据，让失败可以复盘，让能力声明可以被评测，让开发者知道什么时候可以相信结果、什么时候不应该相信结果。
+
+### 1.4 为什么不能把 benchmark 分数直接当成模型能力
+
+很多 Agent 项目最容易让人误解的地方，是 benchmark 分数。一个页面上写着 97%、98%、100%，看起来很有说服力。但如果你不知道 benchmark 是怎么跑的，这个分数可能只证明了很小的一件事。
+
+在 Omni Agent 里，benchmark 至少要区分三种模式：`synthetic`、`mock`、`openai`。
+
+`synthetic` 是脚本化的模拟执行。它不调用真实模型，而是构造 observed run，验证 harness、manifest、评分规则、能力门禁有没有坏。它非常有价值，因为它跑得快、稳定、便宜，适合作为回归测试。比如当你改了 eval schema、score 逻辑、report 生成、capability gate，synthetic benchmark 可以快速告诉你这些工程路径是否仍然成立。但是 synthetic 高分不等于真实模型真的完成了任务。它证明的是“评测系统没坏”，不是“模型会做题”。
+
+`mock` 会比 synthetic 更接近真实 runtime。它会走 CLI/runtime 的路径，能验证一些运行时集成行为，比如参数传递、任务构造、session store、artifact 写入、部分工具路径是否通畅。它适合验证 runtime wiring，但仍然不等于真实模型表现。因为 mock 模式没有面对真实模型的不确定性：模型可能不会按工具 schema 输出参数，可能会误读报错，可能会循环，可能会过早声称完成，也可能在长上下文里丢失关键信息。
+
+`openai` 模式在本项目里表示 OpenAI-compatible provider 路径，不只指 OpenAI 官方模型。只要 provider 暴露兼容接口，就可以通过 model profile 接入。真实模型 benchmark 只有在这种模式下才开始评估 provider、model、prompt、tool contract、runtime、verification loop 的整体表现。也就是说，如果你想回答“某个模型在这 45 个任务上到底能不能完成”，必须看真实模型运行，而不是只看 synthetic 分数。
+
+这也是本教程为什么会反复强调“证据类型”。当你看到一个结果时，先问三个问题：第一，它是哪种 executor mode；第二，它保存了哪些 trace、cost、duration、failure reason；第三，它是否能被复现或至少被复盘。没有这三个问题，benchmark 结果很容易变成宣传数字，而不是工程证据。
+
+真实世界里的公开 benchmark 也有类似问题。SWE-bench 之所以重要，是因为它把真实 GitHub issue 转成软件工程任务，让模型必须修改仓库并通过测试。但即使是这样的 benchmark，也会随着模型进步、数据污染、任务饱和和代表性变化而失去一部分区分度。OpenAI 后来也公开讨论过为什么不再把 SWE-bench Verified 作为前沿 coding capability 的主要指标。这个例子说明：benchmark 本身不是终点，benchmark 的设计、数据来源、执行模式、污染风险和长期趋势同样重要。
+
+所以，本教程不会教你把 benchmark 当成“排行榜数字”。它会教你把 benchmark 当成工程证据：它证明了什么，没有证明什么，缺少什么上下文，失败样本是否可复盘，历史趋势是否能说明改动变好还是变坏。
+
+### 1.5 为什么 tool calling 是 Agent 的分界线
+
+聊天模型只能输出文本。Agent 之所以能处理工程任务，是因为它可以通过工具和环境发生交互。读取文件是工具，搜索代码是工具，运行 `npm test` 是工具，保存 memory 是工具，调用 extension 是工具，发起 subagent 也是工具。
+
+但这里有一个必须讲清楚的边界：模型不能直接“做事”。模型只能提出一个结构化请求，runtime 决定是否执行。比如模型可能输出一个 `read_file` 请求，参数是某个路径；runtime 要判断这个工具是否存在、参数是否合法、路径是否在 workspace 内、文件是否允许读取。模型可能输出一个 `run_command` 请求，参数是 `npm run typecheck`；runtime 要判断这是不是允许的命令、是否需要审批、是否会产生危险副作用。模型可能请求写文件；runtime 要判断写入范围、执行域和审批策略。
+
+这就是 tool calling 的本质：它把模型的自然语言意图转成可以检查、可以约束、可以记录的结构化动作。没有工具调用，模型只能“建议你运行测试”；有了工具调用，runtime 可以真的运行测试并把输出返回给模型。没有工具调用，模型只能“猜测文件内容”；有了工具调用，模型可以读到真实文件。没有工具调用，模型只能“声称已修复”；有了工具调用，runtime 可以要求它运行验证命令。
+
+OpenAI 的 function calling 文档和 Anthropic 的 tool use 文档都强调了类似思想：模型生成结构化工具请求，客户端或 runtime 执行工具，再把工具结果回传给模型。ReAct 论文则从更基础的角度提出 reasoning 与 action/observation 交替进行的模式。对 Omni Agent 来说，这些外部思想落到了本地仓库环境里：工具不是抽象 API，而是和文件、命令、workspace、approval、artifact 绑定在一起。
+
+因此，学习 Omni Agent 时，不要只看 prompt。你要看工具定义是否清楚，工具输出是否适合模型继续推理，工具失败是否有足够信息，工具调用是否被记录，工具风险是否被审批策略识别。很多 Agent 失败并不是模型“不会思考”，而是工具契约让模型很难正确行动。
+
+### 1.6 为什么 approval policy 不是装饰品
+
+本地编码 Agent 有一个天然风险：它离真实文件和真实命令太近。一个聊天模型输出错误代码，最多是建议不好；一个本地 Agent 执行错误命令，可能会修改文件、删除数据、泄露信息、污染仓库、提交错误结果。越是强的 Agent，越需要清晰的安全边界。
+
+Approval policy 解决的不是“是否信任模型”这个抽象问题，而是每个工具动作应该如何处理。读取一个普通源码文件，通常可以自动允许。搜索文本，通常也可以自动允许。写文件要更谨慎，因为它会改变 workspace。执行命令要看命令类型，`npm run typecheck` 和删除目录不是一类风险。访问外部网络、读取密钥、写入系统目录、执行交互式命令、控制 gateway、启动 subagent，也都需要不同级别的判断。
+
+Omni Agent 的审批层会把工具调用按类型和风险分类。源码里的 `packages/approvals` 定义了不同 approval class，例如只读范围内操作、搜索、变更、可执行命令、控制面动作、交互式动作等。系统再根据 policy、approval class 和 risk tier 计算允许、提示审批或拒绝。这个过程不是 UI 弹窗那么简单，而是 runtime 安全模型的一部分。
+
+本教程后面的 approval 章节会详细解释这些分类。这里你只需要先建立一个判断：Agent 不应该因为模型“想执行”就执行。模型生成的是建议动作，runtime 才是执行者。一个可控 Agent 必须把工具调用变成可审计、可拦截、可配置的行为。
+
+### 1.7 为什么 memory 不能被盲信
+
+Agent 需要记忆。没有记忆的系统，每次任务都像第一次见到你：不知道仓库习惯，不知道用户偏好，不知道之前哪些方案失败过，不知道验证命令是什么。Memory 可以显著提升长期使用体验。
+
+但 memory 也有风险。旧信息可能过期，模型总结可能不准确，用户偏好可能只适用于某个项目，过去的失败经验可能不适用于当前代码。一个危险的 Agent 会把 memory 当成事实；一个可靠的 Agent 会把 memory 当成带来源、范围、置信度和复核状态的辅助信息。
+
+Omni Agent 的 accountable memory 思路就是为了解决这个问题。`docs/accountable-memory.md` 里说明 memory tag 可以携带 `source`、`scope`、`confidence`、`expiry`、`review` 等信息。也就是说，memory 不只是“记住一句话”，而是要说明这句话来自哪里、适用范围是什么、可信度如何、是否被验证、是否需要重新验证。
+
+本教程会一直坚持一个原则：当前源码优先于旧记忆，当前验证优先于模型自述，当前 evidence 优先于历史印象。如果 memory 和仓库当前文件冲突，应该相信当前文件；如果 memory 说“这个项目用 npm”，但 `package.json`、lockfile 和 CI 显示项目已经迁移到 pnpm，就不能盲信 memory。Memory 的价值是帮助 runtime 更快进入状态，而不是替代观察和验证。
+
+### 1.8 为什么 run artifact 是“证据链”的核心
+
+如果一个 Agent 说“我已经修好了”，你应该问：证据在哪里？
+
+证据可以有很多形式：修改了哪些文件，运行了哪些命令，命令退出码是什么，测试输出是什么，模型用了哪个 profile，调用了哪些工具，哪些工具被审批拦住，哪些步骤失败后又被修复，耗时多久，token usage 多少，最后总结里有哪些残余风险。这些信息如果只停留在终端滚动输出里，很快就会丢失。真正的工程系统应该把它们保存成 run artifact。
+
+Omni Agent 把 artifact 作为重要设计对象。`docs/agent-run-artifacts.md` 说明 `agent-run` artifact 可以包含 task contract、tool trace、approvals、diff、verification 和 summary。Session store 里也有保存 artifact 的接口。Benchmark runtime runs 还会把完整 eval summary 保存到 `.artifacts/benchmarks/runs/<run-id>/`，并更新 history、trend、latest 和 report。这样一次运行就不只是“模型回答了一段话”，而是形成一条可以追踪的证据链。
+
+Run artifact 对三类人都有价值。
+
+对使用者来说，它能回答“Agent 到底做了什么”。如果结果失败，可以看失败发生在哪个工具、哪个验证命令、哪个审批点。对维护者来说，它能回答“系统为什么退化”。如果新版本 benchmark 下降，可以对比 trace、duration、tool call、failure reason。对外部读者来说，它能回答“能力声明是否可信”。如果项目声称支持某项能力，就应该能指向相关 scenario、scorecard 和 artifact，而不是让读者只相信宣传文字。
+
+### 1.9 这本教程会如何使用现有仓库
+
+这本教程不是脱离源码写的理论书。每一章都会尽量回到仓库里的真实文件。比如：
+
+- 讲 runtime 时，会回到 `packages/core-runtime`，看 runtime options、tool loop、verification、metrics 和 artifact 收集。
+- 讲 model profile 时，会回到 `packages/model-client`，看 `protocol`、`baseUrl`、`apiKeyEnv`、`model`、`supportsTools`、`supportsStreaming` 这些字段。
+- 讲 workspace 时，会回到 `packages/workspace`，看本地仓库如何被读写和隔离。
+- 讲 tools 时，会回到 `packages/tools`，看工具注册、参数、输出和失败处理。
+- 讲 approval 时，会回到 `packages/approvals`，看工具调用如何被分类和决策。
+- 讲 memory 时，会回到 `packages/session-store`、`packages/context` 和 `docs/accountable-memory.md`。
+- 讲 eval 时，会回到 `packages/evals`、`examples/evals/suite.json` 和 benchmark scripts。
+- 讲 claims 时，会回到 `docs/capability-backed-claims.md` 和 `examples/evals/capability-scorecard.json`。
+
+这样做有两个目的。第一，避免教程变成空泛概念。Agent、runtime、eval、memory 这些词很容易讲得很玄，但一旦落到代码路径，就会变得具体。第二，帮助读者形成源码阅读路线。你不需要一开始读完整个仓库，但你应该知道一个概念对应哪些文件。以后你要改功能、修 bug、加 eval、写 benchmark report，就知道从哪里开始。
+
+### 1.10 本教程不承诺什么
+
+为了避免误导读者，本教程也要明确说出它不承诺什么。
+
+第一，它不承诺 Omni Agent 已经是一个成熟公开 benchmark。当前项目已经具备 eval harness、benchmark suite、runtime eval、capability scorecard、release gates 等重要基础，但这不等于所有 benchmark 结果都代表真实模型能力。默认 synthetic benchmark 主要证明 harness 和评分路径没坏；mock runtime 主要证明 runtime 路径；真实模型能力需要真实 provider、model profile、trace、cost、duration、failure reason 和重复运行来支撑。
+
+第二，它不承诺换一个更强模型就能解决所有问题。真实 Agent 表现由许多因素共同决定：模型能力、工具契约、prompt、workspace context、memory、approval policy、验证命令、失败恢复、上下文压缩、成本限制、运行轮数。模型弱会失败，但模型强也可能因为工具设计差而失败。
+
+第三，它不把模型自述当作证据。模型说“我已经完成”“测试应该通过”“这个改动很安全”，都只是自然语言输出。真正的证据来自工具结果、验证命令、diff、artifact、eval score、release gate。学习 Omni Agent 的过程，就是不断把“模型说了什么”转化成“系统证明了什么”。
+
+第四，它不鼓励无限自动化。一个本地 Agent 越接近真实仓库和真实命令，越需要边界。审批、隔离、密钥管理、artifact redaction、workspace containment 都是系统质量的一部分。可控比炫技更重要。
+
+### 1.11 读完本章你应该形成什么判断力
+
+读完这一章后，你不需要立刻懂所有源码，但应该形成几条基本判断。
+
+第一，Agent 不是模型本身。Agent 是模型、runtime、workspace、tools、approval、context、memory、session store、eval 和 artifact 组成的系统。评价 Agent 不能只看模型回答质量。
+
+第二，runtime 是核心。Runtime 决定模型如何看见环境、如何请求动作、如何被约束、如何验证、如何记录。一个 Agent 项目的质量，很大程度取决于 runtime 是否清晰、可控、可复盘。
+
+第三，benchmark 要看模式。Synthetic 证明 harness 和 scoring；mock 证明 runtime 路径；真实模型运行才证明模型在该 runtime 和工具契约下的表现。不要把三者混成一个分数。
+
+第四，工具调用是边界。模型只能请求工具，runtime 执行工具。工具定义、参数 schema、输出格式、失败信息和审批策略都会直接影响 Agent 能力。
+
+第五，memory 是辅助，不是真理。旧 memory 必须被来源、范围、置信度和复核状态约束。当前源码和当前验证优先。
+
+第六，artifact 是证据。没有 artifact，就很难复盘失败、比较版本、支撑能力声明。一个工程化 Agent 应该把成功和失败都记录下来。
+
+第七，能力声明必须有证据链。README 里的能力介绍只是入口，真正支撑能力的是测试、eval scenario、scorecard、maturity check、release gate 和 run artifact。
+
+后面的章节会把这些判断逐一展开。你会先建立 Omni Agent 的整体心智模型，再学习术语、本地运行、目录地图、runtime 主循环、model profile、workspace、tools、approval、context、memory、session store、subagents、gateway、evals 和 benchmark。每一章只解决一个问题，逐步把一个“看起来会聊天的模型”还原成一个可以在真实仓库里工作、留下证据、接受评测、能够复盘失败的本地编码 Agent runtime。
+
+### 1.12 本章参考资料
+
+#### 本项目参考
+
+- [README.en.md](../../README.en.md)：项目主张、教程定位、核心术语、runtime modes、evals 和 benchmark 模式说明。
+- [docs/omni-agent-paradigms.md](../omni-agent-paradigms.md)：Omni Agent 的五个核心范式，尤其是 evidence、authority、durable run records。
+- [docs/verification-native-runtime.md](../verification-native-runtime.md)：说明为什么任务完成必须绑定 verification evidence。
+- [docs/capability-backed-claims.md](../capability-backed-claims.md)：说明公开能力声明如何映射到 scorecard、eval scenario 和 `npm run maturity:check`。
+- [docs/accountable-memory.md](../accountable-memory.md)：说明 memory 的 source、scope、confidence、expiry、review 等 accountability metadata。
+- [docs/agent-run-artifacts.md](../agent-run-artifacts.md)：说明 `agent-run` artifact 如何记录 task contract、tool trace、approval、diff、verification 和 summary。
+- [docs/governed-subagents.md](../governed-subagents.md)：说明 subagent 为什么是受治理的 worker，而不是更多聊天窗口。
+- [examples/evals/suite.json](../../examples/evals/suite.json)：默认 eval suite，可用于理解 manifest-driven evaluation。
+- [examples/evals/capability-scorecard.json](../../examples/evals/capability-scorecard.json)：能力状态和证据映射。
+- [packages/core-runtime/src/index.ts](../../packages/core-runtime/src/index.ts)：runtime 主循环、runtime options、工具事件、验证和 metrics 的核心实现位置。
+- [packages/model-client/src/index.ts](../../packages/model-client/src/index.ts)：model profile、provider protocol、OpenAI-compatible 和 Anthropic-compatible 调用路径。
+- [packages/approvals/src/index.ts](../../packages/approvals/src/index.ts)：approval class、risk tier 和 allow/prompt/deny 决策逻辑。
+- [packages/evals/src/index.ts](../../packages/evals/src/index.ts)：eval schema、score 类型和 report 逻辑。
+- [packages/session-store/src/index.ts](../../packages/session-store/src/index.ts)：session、run、memory、artifact 的持久化入口。
+
+#### 外部参考
+
+- [Anthropic: Building Effective AI Agents](https://www.anthropic.com/engineering/building-effective-agents)：区分 workflows 与 agents，强调工具、环境反馈、停止条件、测试和 guardrails。
+- [OpenAI Function Calling](https://platform.openai.com/docs/guides/function-calling)：解释模型如何生成结构化工具请求，以及 function schema 在工具调用中的作用。
+- [Anthropic Tool Use with Claude](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)：解释 Claude tool use 的基本循环：模型请求工具、客户端执行、结果回传。
+- [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)：经典论文，提出 reasoning 与 acting 交替进行的 agent loop 思想。
+- [Toolformer: Language Models Can Teach Themselves to Use Tools](https://arxiv.org/abs/2302.04761)：研究模型如何学习何时调用工具、传什么参数、如何整合工具结果。
+- [OpenAI Evaluation Best Practices](https://platform.openai.com/docs/guides/evaluation-best-practices)：解释为什么大模型应用需要系统化 eval，而不是只靠人工试用。
+- [OpenAI Agent Evals](https://platform.openai.com/docs/guides/agent-evals)：面向 agent workflow 的 eval 设计参考。
+- [SWE-bench: Can Language Models Resolve Real-World GitHub Issues?](https://arxiv.org/abs/2310.06770)：真实 GitHub issue 驱动的软件工程 benchmark。
+- [OpenAI: Why SWE-bench Verified No Longer Measures Frontier Coding Capabilities](https://openai.com/index/why-we-no-longer-evaluate-swe-bench-verified/)：讨论 benchmark 饱和、污染和代表性问题，适合理解“分数不等于完整能力”。
+- [OpenTelemetry GenAI Agent and Framework Spans](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/)：agent trace、tool span 和运行时观测记录的标准化参考。
 
 ---
 
