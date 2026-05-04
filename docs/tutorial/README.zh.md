@@ -6006,140 +6006,258 @@ Next action:
 ## 22. 实战篇导读：从阅读教程到真正上手
 
 
-本章讨论的是：把教程知识迁移到真实仓库任务、真实模型测试和能力声明发布。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+从这一章开始，教程进入实战篇。前面章节主要回答“这个系统是什么、为什么这样设计、源码在哪里、失败怎样复盘”。实战篇要回答另一个问题：当你真的维护这个仓库时，如何把一个想法变成可运行命令、可审查 diff、可复现 eval、可发布能力声明。
 
+实战不是随便找一个功能开改。实战的第一原则是：每个动作都必须能连接到证据。读源码要连接到测试，写功能要连接到验证命令，跑 benchmark 要连接到 artifact，发布 README 能力声明要连接到 scorecard 和 release gate。如果这些连接缺失，项目看起来会很热闹，但可信度不会提高。
 
-### 22.1 本章先建立的心智模型
+### 22.1 实战篇的三个目标
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，practice、claim 和 operator 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一个目标是把阅读变成操作。读 `docs/operations.md` 时，不是为了记住 runbook，而是为了知道当 gateway delivery failed、model fallback failed、checkpoint rollback failed 时，应该先看什么、跑什么测试、保存什么 evidence。读 [`docs/release-checklist.md`](../../docs/release-checklist.md) 时，不是为了背 18 个步骤，而是为了知道 release gate 为什么必须包括 typecheck、build、artifact smoke、release-local eval、diagnostics、reference parity、test、smoke eval、benchmark 和 maturity check。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，release gate、evidence 和 workflow 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二个目标是把操作变成报告。一个命令通过了，不等于你已经完成实战。你还要说明它证明什么、不证明什么。比如 `npm run release:check` 是强 gate，但它仍然主要检查本地工程和合约；默认 `eval:benchmark` 如果是 synthetic，就不能被写成真实模型能力。报告必须保留 mode、runId、artifact path、failure summary、maturity issue。
 
-本章反复出现的关键词包括：`practice`、`release gate`、`claim`、`evidence`、`operator`、`workflow`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+第三个目标是把报告变成能力声明。仓库里有 [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)，它把公开 claim 绑定到 scorecard、eval scenario 和 maturity validation。换句话说，项目不能随便说“我们有成熟 benchmark gates”。它必须说明 capability id、minimum status、required scenario ids、risk if not mature。实战篇会反复训练这个习惯：能力声明必须有证据背书。
 
-### 22.2 在仓库中找到入口
+### 22.2 选择实战任务的原则
 
-阅读本章时，建议从下面这些文件开始：
+实战任务要小，但不能假。适合入门的任务有四类。
 
-1. [`docs/operations.md`](../../docs/operations.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`README.zh.md`](../../README.zh.md)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`docs/release-checklist.md`](../../docs/release-checklist.md)：用来观察本章在仓库中的实现、测试或运维入口。
+第一类是文档证据任务。比如把某个 README claim 连接到 `capability-backed-claims.md` 中的 claim id，补充对应 scenario、测试命令和风险说明。这类任务不会改 runtime，但能训练能力声明的边界。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，claim、operator 和 practice 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二类是 eval 任务。比如从一个真实失败样本设计 scenario，写 objective、success criteria、expectation、requiredToolNames、requiredFinalResponseIncludes，并说明它适合 synthetic、mock 还是真实模型。这类任务训练你把“感觉上应该会”变成“可以被判分”。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+第三类是 release gate 任务。比如检查 `scripts/release-check.ts` 中的 required files 和 gates，解释每个 gate 保护什么风险，再选择一个 gate 写最小复现。这类任务训练你理解发布前的工程边界。
 
-### 22.3 它在一次 Agent 任务中怎样出现
+第四类是小功能任务。比如给 benchmark report 增加一个字段，给 CLI diagnostics 增加一个脱敏输出，给 eval expectation 增加一个失败 reason。这类任务必须配测试和文档，不能只改实现。
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，evidence、workflow 和 release gate 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+不适合入门的任务也要说清楚：不要一开始重写 runtime 主循环，不要替换 model-client 架构，不要把所有 benchmark 改成真实模型，不要一次性改安全策略。实战篇不是鼓励大改，而是训练你稳定地完成小闭环。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+### 22.3 实战任务的标准工作流
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+每个实战任务都按同一条工作流推进：
 
-### 22.4 设计时最容易忽略的边界
+```text
+Problem
+-> Evidence target
+-> Smallest source surface
+-> Test or command
+-> Change
+-> Verification
+-> Report
+-> Claim boundary
+```
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，operator、practice 和 claim 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`Problem` 是你要解决的问题，必须写成具体句子。不要写“优化 benchmark”，要写“让 benchmark report 保存真实模型 run 的 failure summary”。`Evidence target` 是你希望任务结束后留下什么证据，例如 JSON artifact、测试断言、report.md、release note。`Smallest source surface` 是最小代码面，例如只看 `scripts/eval-benchmark.ts` 和 `packages/evals/src/index.ts`。`Test or command` 是最小验证，不要一开始跑全套 release gate。`Change` 是实际 diff。`Verification` 是运行结果。`Report` 是解释。`Claim boundary` 是说明这次改动不能证明什么。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+这条流程和普通 Web 项目不同。Agent runtime 的很多能力都容易被误用成营销词，所以最后一步必须存在。比如你补了 synthetic benchmark report，并不能写“真实模型能力提升”；你加了 mock runtime eval，也不能写“OpenAI/DeepSeek 稳定通过”；你补了文档，也不能写“能力成熟”。边界写得越清楚，项目越可信。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+### 22.4 release gate 是什么
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+release gate 是发布前必须通过的一组检查。它不是 CI 装饰，也不是“跑几个测试”。在 Omni Agent 中，[`scripts/release-check.ts`](../../scripts/release-check.ts) 会先检查必需文件是否存在，例如 `docs/security.md`、`docs/operations.md`、`docs/live-testing.md`、`docs/release-checklist.md`、deployment 文件、capability scorecard 和 release-local eval manifest。文件缺失时，release check 直接失败。
 
-### 22.5 如何判断实现是否可靠
+文件检查通过后，它会依次运行 gate：`typecheck`、`build`、`release:artifact-smoke`、`eval:release-local`、`release:diagnostics`、`reference:evidence-smoke`、`reference:parity -- --strict`、`test`、`eval:smoke`、`eval:benchmark`、`maturity:check`。这些命令覆盖类型、构建、artifact、runtime eval、诊断、参考证据、全测试、基础 eval、benchmark 和 maturity 声明。
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，workflow、release gate 和 evidence 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+理解 release gate 时，不要只问“它会不会慢”。要问每个 gate 防什么风险。`typecheck` 防类型和项目引用破坏；`build` 防产物构建失败；`release:artifact-smoke` 防 artifact 写入和读取路径坏掉；`eval:release-local` 防本地 runtime eval 断线；`release:diagnostics` 防发布时没有诊断信息；`maturity:check` 防 claim 没有证据就被公开。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+### 22.5 capability-backed claim 是什么
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+[`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md) 是公开能力声明登记表。它的规则很严格：一个 claim 必须映射到 `examples/evals/capability-scorecard.json`，必须有 scorecard 或 suite 中的 eval scenario，必须经过 `npm run maturity:check`。`usable` 和 `mature` 不是随便写的等级。`usable` 至少需要 scorecard evidence、required tests、benchmark scenario coverage 和 explicit risk。`mature` 还需要 mature evidence、live 或 contract tests、mature benchmark scenario、operational runbook 和 failure recovery tests。
 
-### 22.6 常见误区
+这张表教会我们一种写 README 的方法。不要写“Omni Agent supports strong benchmark quality gates”这种空泛句子。应该写：能力是 benchmark-quality，当前 claim 是 usable，required scenario 是 benchmark-quality-gate，风险是大多数 benchmark run 仍使用 synthetic executor，所以历史回归证据还不成熟。这样的声明听起来克制，但可信。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，practice、claim 和 operator 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+实战篇后面的练习都会要求读者把 claim 拆成四部分：能力名、证据、成熟度、风险。少任何一项，都不能算完整 claim。
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+### 22.6 operator 视角
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+operator 是运行和维护系统的人，不一定是写代码的人。operator 关心的是：系统当前健康吗，失败时先看哪里，能不能恢复，风险是否已经暴露在报告里。[`docs/operations.md`](../../docs/operations.md) 就是 operator runbook。它按场景组织：shell and file safety、checkpoint rollback、gateway and channels、MCP runtime、tool lifecycle hooks、model runtime、memory and skills、subagents and automation。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+从 operator 视角看实战任务，最重要的是不要只写“实现完成”。你要说明这个能力出了问题时怎么查。例如你改 model fallback，就要知道 operations 里要求检查 model profile id、provider id、auth profile health、cooldown state、fallback attempts。你改 gateway delivery，就要知道要检查 `/health`、`/routes`、delivery status transitions、retry 和 dead_letter。
 
-### 22.7 一个可操作的检查流程
+一个能力如果没有 operator 路径，就不应该被称为成熟。它最多是实现存在。成熟意味着它能被运行、被观察、被诊断、被恢复。
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+### 22.7 从实战到 GitHub 发布
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，release gate、evidence 和 workflow 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+GitHub 页面展示的是结果，但背后应该有工程流程。GitHub Actions 官方文档把 workflow 定义为由一个或多个 job 组成的可配置自动化过程，并通过 YAML 文件定义。放到 Omni Agent 里，CI 不只是“绿色徽章”，而是公开可信度的一部分。一个失败的 CI 说明 release gate 或基本测试没有通过；一个绿色 CI 也要看它跑了哪些 job，不能只看图标。
 
-### 22.8 与真实模型评测的关系
+如果你要把实战成果发布到 GitHub，至少要做四件事。第一，确认 README 的能力描述没有超过证据。第二，确认 release checklist 里的相关 gate 已经跑过或说明未跑原因。第三，确认新增文档、测试、artifact 没有泄露密钥或本地路径敏感信息。第四，确认 commit message 能说明问题、改动、验证和边界。
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，claim、operator 和 practice 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Dockerfile 也属于发布边界。Docker 文档把 Dockerfile 描述为构建镜像的指令集合。Omni Agent 有 `deploy/Dockerfile` 和生产 compose 文件，所以 release gate 会要求这些文件存在。即使本章不教部署，你也要理解：发布不是把代码推上去就结束，还包括容器构建、健康检查、secret 配置和运维文档。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+### 22.8 实战报告模板
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+每个实战任务结束后，用下面模板写报告：
 
-### 22.9 一个完整的小案例
+```text
+Task:
+Why this task matters:
+Files inspected:
+Files changed:
+Commands run:
+Artifacts produced:
+Result:
+Claim supported:
+Claim not supported:
+Remaining risk:
+Next step:
+```
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+`Claim supported` 和 `Claim not supported` 必须同时写。比如你完成了文档链接检查，可以支持“文档中的本地链接有效”，但不能支持“功能实现正确”。你跑通了 synthetic benchmark，可以支持“default suite scoring path works”，但不能支持“real model performance is strong”。你跑通了 `release:check`，可以支持“当前 release gate 通过”，但仍然要保存 benchmark output 和 maturity issues 到 release notes。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+这种模板会让写作变慢一点，但能避免能力夸大。开源 Agent 项目最怕的是 README 比源码强，宣传比 eval 强。实战篇的目标就是反过来：让 README 被源码、测试、eval、artifact 和 release gate 支撑。
 
-这个案例强调的是工程诚实。 在本章语境中，evidence、workflow 和 release gate 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 22.9 案例一：复核一条能力声明
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+假设 README 中写了一句：“Omni Agent has usable eval and benchmark quality gates for release decisions.” 这句话看起来合理，但实战中不能直接接受。你要打开 [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)，找到 `eval-benchmark-gates-usable` 这一行，再检查它对应的 capability id、minimum status、required scenario ids 和 risk。
 
-### 22.10 排错时的分层问题表
+这条 claim 的重点不是“benchmark 很强”，而是“usable”。它的风险说明指出，大多数 benchmark run 仍然使用 synthetic executor output，所以历史回归证据还没有达到 mature。这个风险非常关键。它告诉读者：项目可以说自己有可用的 eval 和 benchmark quality gates，但不能说自己已经拥有成熟公开 benchmark，也不能用 synthetic 分数直接证明真实模型能力。
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+复核这条 claim 时，你应该写一份短报告：
 
-分层排错能减少无效尝试。 在本章语境中，operator、practice 和 claim 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+```text
+Claim:
+Evidence source:
+Scenario id:
+Minimum status:
+What it supports:
+What it does not support:
+Risk:
+Next evidence needed:
+```
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+`What it supports` 可以写“release decision has benchmark gate coverage”。`What it does not support` 必须写“does not prove real model performance across providers”。`Next evidence needed` 可以写“repeat openai-compatible runs with saved traces, costs, durations, and failure summaries”。这就是能力声明复核的完整动作。
 
-### 22.11 如何把本章内容写进团队流程
+### 22.10 案例二：走查 release gate
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+release gate 走查不是直接运行 `npm run release:check` 然后等待结果。正确做法是先读 [`scripts/release-check.ts`](../../scripts/release-check.ts)，列出 required files 和 gates，再解释每一组 gate 的责任。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，workflow、release gate 和 evidence 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+required files 保护的是发布材料完整性。如果 `docs/security.md` 不存在，说明安全边界没有公开说明；如果 `docs/operations.md` 不存在，说明失败恢复和运维路径没有说明；如果 `examples/evals/capability-scorecard.json` 不存在，说明能力成熟度没有结构化证据；如果 deployment 文件不存在，说明部署路径不可复现。
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+gates 保护的是行为完整性。`typecheck` 和 `build` 保护工程可编译；`release:artifact-smoke` 保护 artifact 关键路径；`eval:release-local` 保护本地 runtime eval；`release:diagnostics` 保护发布诊断；`reference:evidence-smoke` 和 `reference:parity -- --strict` 保护参考能力证据；`test` 保护通用行为；`eval:smoke` 和 `eval:benchmark` 保护评测入口；`maturity:check` 保护能力声明。
 
-### 22.12 练习
+走查报告不需要复制所有输出，但要保存失败点。如果某个 gate 失败，你要写清楚它属于哪一层：环境、构建、测试、eval、benchmark、maturity、文档、部署。比如 `maturity:check` 失败通常不是模型问题，而是 claim、scorecard、scenario 或 evidence 之间断链。把它说成“CI 挂了”没有任何帮助。
 
-1. 围绕 `practice` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `release gate` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `claim` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `evidence` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `operator` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `workflow` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+### 22.11 案例三：把一个小改动变成完整实战
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+选择一个最小任务：给 release checklist 中的 benchmark 步骤补一句说明，提醒读者记录 benchmark JSON output 和 maturity issues。这个任务只改文档，但仍然要完整走实战流程。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+问题陈述可以写：“release checklist 提到记录 benchmark JSON output，但没有解释为什么 maturity issues 也要进入 release notes。” Evidence target 是文档中新增的说明。Smallest source surface 是 [`docs/release-checklist.md`](../../docs/release-checklist.md)。验证命令是本地链接检查和 `git diff --check`。如果项目有 markdown lint，也可以跑对应命令。Claim boundary 是：这次改动只改发布文档，不改变 release gate 的实际执行逻辑。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+完成后，报告可以写：
 
-### 22.13 本章参考资料
+```text
+Task:
+Clarify release note evidence for benchmark output and maturity issues.
 
-- Omni Agent: [`docs/operations.md`](../../docs/operations.md)
-- Omni Agent: [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)
-- Omni Agent: [`README.zh.md`](../../README.zh.md)
-- Omni Agent: [`docs/release-checklist.md`](../../docs/release-checklist.md)
-- OpenAI evals guide: [https://platform.openai.com/docs/guides/evals](https://platform.openai.com/docs/guides/evals)
-- GitHub Actions workflow syntax: [https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions)
-- Dockerfile reference: [https://docs.docker.com/reference/dockerfile/](https://docs.docker.com/reference/dockerfile/)
+Files changed:
+docs/release-checklist.md
+
+Verification:
+git diff --check -- docs/release-checklist.md
+
+Supported claim:
+Release documentation explains what evidence to retain.
+
+Not supported:
+This does not prove benchmark quality or change release gate behavior.
+```
+
+这个案例看起来很小，但它训练的是正确肌肉：每个改动都要有问题、证据、验证和边界。很多优秀开源项目不是靠一次大功能变可靠，而是靠这种小而准确的改动长期积累。
+
+### 22.12 实战中的 review rubric
+
+review rubric 是审查标准。没有 rubric，review 很容易变成个人偏好。Omni Agent 的实战 review 可以按五类看。
+
+第一类是范围。改动是否只触碰必要文件？是否把文档、测试、runtime、eval、部署混在一个 diff 里？如果一个任务只是补 claim 说明，却顺手改 benchmark scoring，就应该拆开。
+
+第二类是证据。改动是否有测试、命令、artifact 或链接？如果没有，作者是否说明为什么不需要？文档改动也需要证据，例如本地文件链接、源码入口、官方文档链接。
+
+第三类是语义。新增字段、命令、claim、状态名是否准确？是否和已有命名风格一致？是否会让读者把 synthetic 当成 real model，把 usable 当成 mature，把 warning 当成 clean success？
+
+第四类是安全。是否涉及密钥、路径、外部 endpoint、artifact、日志、workflow secret、Docker build context？如果涉及，是否更新 security 或 operations 文档？是否避免把本地绝对路径写进公开材料？
+
+第五类是验证。作者是否运行了最小验证？如果没有运行全量 release gate，是否说明原因？如果验证失败，是否保存失败原因并明确下一步？
+
+把这五类写进 review，可以让贡献者知道项目真正重视什么。不是代码越多越好，而是证据越清楚越好。
+
+### 22.13 实战中的常见误区
+
+第一个误区是把实战等同于“跑真实模型”。真实模型很重要，但如果没有 manifest、trace、cost、duration、failure summary 和 baseline，它只是一次昂贵尝试。实战可以从文档、测试、eval、release gate 开始。
+
+第二个误区是把 release gate 当成万能证明。`npm run release:check` 通过很有价值，但你仍然要说明它跑的是什么 mode、默认 benchmark 是否 synthetic、是否包含真实 provider、是否保存报告。gate 是证据集合，不是魔法印章。
+
+第三个误区是把 operator 文档当成上线后才需要的东西。实际恰恰相反，operator 路径应该在能力设计时就出现。你新增一个能力，就要问它失败时谁会看、看哪里、怎么恢复、如何确认恢复成功。
+
+第四个误区是把 GitHub 页面当作最终目标。GitHub 只是展示窗口。真正的目标是让外部读者能从 README 进入文档，从文档进入测试，从测试进入 eval，从 eval 进入 artifact，从 artifact 进入真实结论。如果这条链断了，再漂亮的页面也只是包装。
+
+### 22.14 后续实战篇如何阅读
+
+第 23 章会从一条 CLI 命令读调用链，训练你把用户命令追踪到源码。第 24 章会讲高质量 eval scenario，训练你把任务目标写成可判分合同。第 25 章会讲真实模型 benchmark 报告，训练你保存模型、成本、时间、失败原因。第 26 章会讲能力声明证据链，直接延续本章的 claim 思维。
+
+阅读后续章节时，每章都要产出一个东西。读 CLI 章，产出调用链图。读 eval 章，产出 scenario draft。读 benchmark 报告章，产出报告模板。读 claim 章，产出一条复核后的能力声明。不要只读不做；实战篇的每一章都应该留下可检查材料。
+
+### 22.15 三个推荐实战作业
+
+第一个作业是“发布证据走查”。选择 release checklist 中任意一个 gate，查清它对应的脚本、输入、输出和失败含义。比如选择 `eval:benchmark`，你需要找到 `scripts/eval-benchmark.ts`，说明它支持哪些 mode，默认 manifest 是什么，artifact 会保存到哪里，failure summary 包含哪些字段，为什么 synthetic mode 不能代表真实模型能力。作业结束时，你要交付一页说明和一条最小验证命令。
+
+第二个作业是“能力声明降级”。选择一个听起来很强的能力描述，把它改写成证据支撑范围内的说法。例如把“Omni Agent can objectively benchmark agents”改成“Omni Agent provides usable eval and benchmark gates; default benchmark is synthetic unless run with a real model profile”。这个作业训练你写克制但可信的开源文案。强项目不怕说明边界，怕的是边界不清。
+
+第三个作业是“真实失败转 eval”。从 DeepSeek system test 或本地失败记录中选择一个失败，把它拆成 objective、fixture、expected changed files、required tools、verification command、failure taxonomy、regression expectation。作业不要求马上实现完整 fixture，但必须写清楚怎样让同类失败再次出现时被捕获。这个作业能把失败从一次事故变成长期资产。
+
+这三个作业覆盖实战篇的三条主线：发布、声明、评测。发布保证项目能交付；声明保证项目不夸大；评测保证失败能复现。读者可以按顺序完成，也可以根据当前项目最薄弱的地方选择一个先做。
+
+### 22.16 怎样判断实战完成
+
+实战完成不看你花了多少时间，也不看你读了多少文件，而看四个结果。
+
+第一个结果是“有产物”。产物可以是 diff、报告、scenario draft、调用链图、root cause report、release gate 说明。没有产物，就只是浏览。
+
+第二个结果是“有验证”。验证可以是命令，也可以是人工检查表，但必须写清楚。文档改动至少要过链接检查和 `git diff --check`；测试改动要跑目标测试；eval 改动要跑 smoke 或 benchmark；release 改动要说明是否需要 release gate。
+
+第三个结果是“有边界”。你要写明这次实战支持什么，不支持什么。比如“支持 release checklist 更清楚”，不支持“release gate 行为改变”；“支持 synthetic benchmark report 正常生成”，不支持“真实模型能力提升”。
+
+第四个结果是“有下一步”。真正的实战很少一次结束。一个好任务应该自然导出下一步：补真实模型 run、补失败样本、补 scorecard、补 operations、补安全文档、补测试。下一步不是泛泛写“继续优化”，而是具体到文件、命令或 scenario。
+
+如果四个结果都具备，这个实战任务就算完成。否则，即使你改了很多字、跑了很多命令，也可能只是没有收束的探索。
+
+### 22.17 实战篇的学习节奏
+
+建议每次只做一个实战主题。第一天读材料，第二天写计划，第三天做最小改动，第四天验证，第五天写报告。不要一天内同时做 CLI、eval、release、Docker、security。多线并行会让证据混在一起，最后不知道哪个结果证明了哪个结论。
+
+每个主题结束后，都要回看本章模板。问题是否具体？证据是否存在？验证是否最小？报告是否说明边界？能力声明是否克制？如果答案是否定的，就不要急着进入下一章。实战篇不是为了制造进度感，而是为了形成工程习惯。
+
+### 22.18 operator 检查清单
+
+实战任务完成后，最后用 operator 视角再检查一次。第一，用户遇到失败时是否知道先看哪里。第二，失败是否会留下 runId、artifact、verification summary 或 failure reason。第三，安全边界是否清楚，例如密钥、路径、审批、外部请求、Docker 构建上下文。第四，恢复动作是否存在，例如 retry、rollback、continuation、dead letter、fallback、重新运行验证。第五，报告是否说明剩余风险。
+
+举例说，如果你修改 model fallback 相关文档，operator 检查清单会要求你说明 profile id、provider id、auth health、cooldown、fallback attempts 应该在哪里看。如果你修改 gateway delivery 文档，就要说明 queued、sending、sent、acknowledged、retrying、failed、dead_letter 这些状态如何解释。如果你修改 benchmark 文档，就要说明 run id、mode、manifest、summary、quality、trend、failure summary 保存在哪里。
+
+这个检查清单能防止实战任务只服务开发者，而不服务维护者。一个功能在源码里存在，不代表 operator 能安全使用；一个 eval 能跑，不代表外部读者能解释结果。实战篇的最终目标，是让功能、证据、运维和公开叙述连成一条可复查路径。
+
+如果你不知道一项改动是否需要 operator 检查，可以问一个简单问题：当它失败时，谁会被叫醒，谁需要判断是否继续，谁需要向用户解释结果。如果答案不是“没有人”，就应该写清楚失败现象、排查入口、恢复动作和验证方式。Agent 项目尤其如此，因为失败常常发生在模型、工具、权限、环境和评测之间的交界处，靠临场猜测很难稳定处理。
+
+这也是为什么实战篇会同时讲源码、命令、报告和发布。只会改源码的人，可能不知道能力如何被证明；只会写报告的人，可能不知道证据是否真实；只会跑命令的人，可能不知道失败该归到哪一层。真正的维护工作要求这些能力同时存在，至少要能在一次小任务里完整走通。
+
+因此，本章不把“上手”理解为会启动程序，而是理解为会完成闭环：发现问题、定位入口、做最小改动、运行验证、保存证据、写清边界、准备下一步。这个闭环越稳定，后续章节的实战价值越高，读者也越不容易被表面分数或漂亮文案误导，更能判断项目真正进步在哪里、证据到底够不够、风险是否已经说明白、下一步是否具体可做。这才是工程上手，也是后续实战的基础，不是表演式操作，更不是截图式证明，而是可复查的工作记录和维护资料，必须长期保留、持续更新、反复校正、公开解释，并接受审查和复盘验证。
+
+### 22.19 本章练习
+
+1. 阅读 [`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)，选择一个 claim，写出它的 capability id、minimum status、required scenario ids 和 risk。
+2. 阅读 [`docs/release-checklist.md`](../../docs/release-checklist.md)，把 18 个发布步骤分成类型、构建、eval、benchmark、安全、部署、报告六类。
+3. 阅读 [`scripts/release-check.ts`](../../scripts/release-check.ts)，解释 required files 和 gates 分别防什么风险。
+4. 设计一个实战任务，要求只改一个文件、只运行一个最小验证命令、只支持一个明确 claim。
+5. 用本章模板写一份实战报告，必须包含 `Claim supported` 和 `Claim not supported`。
+6. 找一条 README 能力描述，判断它是否能映射到 scorecard、eval scenario、测试和 maturity check。
+
+### 22.20 本章参考资料
+
+- Omni Agent operations runbook：[`docs/operations.md`](../../docs/operations.md)
+- Omni Agent capability-backed claims：[`docs/capability-backed-claims.md`](../../docs/capability-backed-claims.md)
+- Omni Agent README：[`README.zh.md`](../../README.zh.md)
+- Omni Agent release checklist：[`docs/release-checklist.md`](../../docs/release-checklist.md)
+- Omni Agent release check script：[`scripts/release-check.ts`](../../scripts/release-check.ts)
+- OpenAI Docs：[Evals](https://platform.openai.com/docs/guides/evals)
+- GitHub Docs：[Workflow syntax for GitHub Actions](https://docs.github.com/en/actions/writing-workflows/workflow-syntax-for-github-actions)
+- Docker Docs：[Dockerfile reference](https://docs.docker.com/reference/dockerfile/)
 
 ## 23. 从一条 CLI 命令读懂系统调用链
 
