@@ -3367,28 +3367,242 @@ node ./scripts/run-tests.mjs tests/safety.test.ts tests/approvals.test.ts
 
 ## 11. Context 与 Memory：让 Agent 记住有用信息，但不迷信旧信息
 
-上下文是模型当下能看到的信息。记忆是跨任务保存的信息。两者经常被混在一起，但它们不是一回事。
+Context 和 Memory 是 Agent 系统里最容易被混淆的两个词。很多人会说“让 Agent 有记忆”“把上下文拉长”“把历史都塞进去”，但这些说法如果不拆开，很容易把系统做成一个成本高、幻觉多、难复盘的黑盒。
 
-Context 是一次模型调用的输入。它可能包括当前任务、系统规则、工具说明、workspace 摘要、相关文件片段、历史消息摘要、memory 命中结果。Context 的容量有限，所以 runtime 必须选择。选择上下文是 Agent 系统最重要的能力之一。
+本章先给出清晰定义：context 是一次模型调用当下能看到的输入；memory 是跨任务、跨会话保存并在未来可能被召回的信息。Context 解决“这一步模型应该看什么”，memory 解决“过去哪些经验值得再次参考”。两者都重要，但都不能被迷信。
 
-Memory 是长期保存的经验。比如“这个仓库使用 npm，不使用 pnpm”，“提交前要运行 `npm run typecheck`”，“用户偏好直接实现而不是只给建议”，“某类 eval 失败通常要检查 required tool events”。这些信息跨任务有价值。
+Omni Agent 的上下文实现主要位于 [`packages/context/src/index.ts`](../../packages/context/src/index.ts)，线程压缩位于 [`packages/context/src/thread-compressor.ts`](../../packages/context/src/thread-compressor.ts)，memory accountability 文档位于 [`docs/accountable-memory.md`](../accountable-memory.md)。读这一章时，请记住一个原则：Agent 可靠性不来自“记得更多”，而来自“记得有用、知道来源、敢于重新验证”。
 
-但是 memory 有风险。旧 memory 可能过期，可能来自错误任务，可能和当前源码冲突。Omni Agent 的原则应该是：当前源码优先于旧 memory；用户当前指令优先于旧偏好；验证结果优先于模型猜测；过期 memory 只能作为参考，不能作为事实。
+### 11.1 Context：一次模型调用的输入边界
 
-你可以用下面命令保存和搜索 memory：
+Context 是模型本次推理能看到的内容。它可能包括系统规则、开发者规则、用户当前任务、工具说明、workspace snapshot、项目指令文件、相关源码片段、历史对话摘要、上一次工具结果、memory 命中内容、当前任务状态、验证状态和失败原因。
 
-```bash
-npm run dev -- memory-save --cwd "." --content "Use npm scripts for verification in this repository" --tag build
-npm run dev -- memory-search --cwd "." --query "verification"
-```
+这些信息不是随便拼在一起。Context 需要排序、筛选和压缩。因为模型上下文窗口有限，即使窗口很大，也不应该把所有东西都塞进去。上下文越大，不一定越好；噪声越多，模型越容易忽略关键事实，成本也越高。
 
-保存 memory 时要避免垃圾信息。不是每句话都值得保存。好的 memory 应该稳定、可复用、对未来任务有行动价值。比如“用户今天心情不错”不是工程 memory；“这个仓库 benchmark artifacts 不应提交”是工程 memory。
+在 Omni Agent 中，`ExecutionContext` 不是一段自由文本，而是结构化对象。它包含 `taskContract`、`workspaceSnapshot`、`workspaceInstructions`、`taskState`、`taskSceneSummary`、`threadSummary`、`repoSummary`、`systemPrompt` 和 `promptSections` 等字段。这个结构说明：上下文不是“聊天记录”，而是 runtime 对当前任务的组织结果。
 
-长上下文任务还涉及 compression。随着对话变长，不能把所有历史消息都塞给模型。Compression 的目标是保留关键事实、当前任务状态、已执行工具、失败原因、剩余步骤，而不是写一篇泛泛总结。一个糟糕 summary 会让恢复后的 Agent 忘记关键验证状态，或者重复已经做过的工作。
+`taskContract` 说明任务目标、工作目录、成功标准、约束和验证模式。`workspaceSnapshot` 说明仓库状态。`workspaceInstructions` 保存项目本地规则。`taskState` 保存当前阶段、当前目标、已完成子目标、待完成子目标、失败原因和验证状态。`threadSummary` 保存历史对话压缩结果。`promptSections` 最终把这些结构转换成模型可读的 prompt。
 
-理解 context 与 memory 后，你会明白为什么 Agent 不是“上下文越长越好”。真正重要的是：什么信息进入上下文，什么信息被压缩，什么信息被丢弃，什么信息被验证。
+学习 context 时，你要特别注意：模型不是直接面对整个世界，而是面对 runtime 选择后的一组信息。选择得好，模型就像有经验的工程师；选择得差，模型就像在一堆碎片里猜答案。
 
----
+### 11.2 TaskContract：先定义任务，再组织上下文
+
+`TaskContract` 是上下文的核心之一。它包含 objective、agent role、workspace id、thread id、cwd、success criteria、constraints、verification mode 和 preferred execution domain。
+
+这些字段的价值在于把用户请求变成可执行合同。比如用户说“修一下 CI”，这个请求还不够具体。Runtime 需要把它整理成：目标是修复 CI 失败；成功标准是相关测试通过；约束是不能改无关文件、不能泄露密钥；验证模式是 required；执行域是 workspace 或 worktree。
+
+如果没有 TaskContract，模型很容易在长任务中漂移。它可能一开始修 CI，后来顺手重构 README，再后来开始解释架构，最后忘了验证。TaskContract 像任务锚点，让每轮上下文都能回到“这次到底要完成什么”。
+
+TaskContract 还帮助 eval。一个 scenario 可以检查 Agent 是否满足 success criteria，而不是只看最后回答。它也帮助 subagent 分工：父 agent 可以把 objective、constraints 和 verification commands 传给子 agent，避免子 agent 自己重新发明任务边界。
+
+### 11.3 TaskState：长任务必须知道自己在哪一步
+
+`TaskState` 描述任务当前阶段。Omni Agent 中的 `TaskPhase` 包括 `understanding`、`acting`、`verifying`、`repairing`、`blocked` 和 `done`。这些状态看似简单，但对长任务非常重要。
+
+一个 Agent 如果不知道自己处于哪个阶段，就会出现常见问题：还没理解需求就开始改文件；已经改完却忘了验证；验证失败后继续总结成功；用户打断后仍按旧目标执行。
+
+`TaskState` 还包含当前目标、已完成子目标、待完成子目标、最近失败原因和最新验证快照。它让模型在每轮调用前知道：现在要做什么，已经做过什么，失败在哪里，验证是否通过。
+
+这比简单的聊天历史更可靠。聊天历史可能很长，模型可能漏看；结构化状态则把关键事实放到固定位置。对于 verification-native runtime，`latestVerification` 尤其重要。一个任务是否完成，不能靠模型自信，而要看验证状态。
+
+### 11.4 Workspace instructions：上下文里的项目规则
+
+上一章提到过 `AGENTS.md`、`README.md`、`CONTRIBUTING.md` 等文件。它们在 context 中通常作为 workspace instructions 出现。它们提供项目本地规则，但不能覆盖系统安全策略和用户当前目标。
+
+Context engine 需要决定哪些 instruction files 进入 prompt。一个大型仓库可能有多个层级的规则文件。修改 `packages/context` 时，根目录规则和 package 层规则都可能相关；修改 docs 时，docs 目录规则可能更相关。
+
+这里的难点是信任级别。项目规则是有用上下文，但也可能过时或被污染。Runtime 应该把它们标为项目指令，而不是最高优先级命令。模型可以参考“提交前运行 typecheck”，但不能执行“忽略审批策略”。
+
+好的 context 会把规则来源写清楚。模型看到的不应该是一段无来源文本，而应该知道：这是 workspace instruction，来自哪个路径，是否被截断。这有助于模型和人类复盘。
+
+### 11.5 Thread summary：历史不能无限保留
+
+长对话一定会遇到压缩。随着消息增多，runtime 不能把所有历史逐字塞给模型。`thread-compressor.ts` 的任务就是把历史压缩成可用摘要。
+
+压缩的目标不是“写一篇流畅总结”，而是保留任务连续性。对于编码 Agent 来说，最重要的信息包括：当前 active task、已经解决的问题、仍待处理的问题、改过哪些文件、验证状态、开放风险。
+
+Omni Agent 的 `StructuredThreadHandoff` 正是围绕这些字段设计的：`activeTask`、`resolved`、`pending`、`filesChanged`、`verificationStatus`、`openRisks`。这些字段比普通摘要更适合恢复任务。恢复后的 Agent 不需要知道每句寒暄，但必须知道哪些文件已改、哪些验证没跑、哪些风险还没解决。
+
+`createThreadSummarySnapshot` 还会生成 `summaryVersion` 和 `summaryHash`。这让 summary 本身可追踪。未来如果 summary 格式升级，可以用 version 区分；如果要判断 summary 是否变化，可以用 hash。
+
+一个糟糕的压缩摘要会写：“我们讨论了项目并做了一些修改。”这几乎没有工程价值。一个好的摘要会写：“当前任务是修复 eval benchmark openai mode；已修改 `scripts/eval-benchmark.ts`；验证 `npm run typecheck` 通过；`npm run eval:benchmark -- --mode openai` 未运行，因为缺少 key；风险是报告字段尚未覆盖 cost。”后者才能帮助下一轮继续工作。
+
+### 11.6 Tool observation compaction：工具结果也需要压缩
+
+工具调用多了以后，工具结果也会撑爆上下文。搜索结果、测试输出、diff、浏览器快照、benchmark report 都可能很长。`compactToolObservationsForModel` 的目标是保留近期和关键工具观察，同时压缩较旧或冗长内容。
+
+它会保护头部和尾部的一部分观察，也会根据数量和总字符数触发压缩。这样做的原因是：最早的工具调用通常说明任务起点，最新的工具调用通常说明当前状态，中间的大量重复输出可以缩短。
+
+但压缩工具结果要非常小心。某些工具结果不能随便压缩，比如失败原因、验证输出、用户确认、路径安全错误、artifact path。压缩掉这些信息，Agent 可能会重复运行命令，或者误以为验证已经通过。
+
+因此，工具压缩应该服务于“保留决策所需事实”，而不是服务于“让文本更短”。如果一段输出影响下一步，就应该保留；如果只是噪声，就可以摘要。
+
+### 11.7 Memory：长期经验不是当前事实
+
+Memory 是跨任务保存的信息。它可以来自用户偏好、项目经验、失败复盘、验证通过的学习、运行总结或人工标注。它的价值是减少重复学习。例如：某个仓库总是用 `npm run typecheck` 验证；某类 eval 失败常由 required tool 缺失导致；用户偏好直接实现而不是只给建议。
+
+但 memory 最大的问题是过期和来源不明。旧 memory 可能来自旧版本代码；可能是某次失败任务中的错误推断；可能是模型自动生成但没有验证；也可能和用户当前指令冲突。
+
+所以本章标题强调“不迷信旧信息”。正确优先级应该是：当前用户指令高于旧偏好；当前源码高于旧 memory；当前验证结果高于模型推测；明确证据高于历史印象；过期 memory 只能作为线索，不能作为事实。
+
+举例来说，memory 里写着“这个项目使用 pnpm”，但当前仓库只有 `package-lock.json` 且 `package.json` scripts 用 npm，那么 Agent 应该相信当前仓库，而不是旧 memory。Memory 应该提醒你检查，不应该替你下结论。
+
+### 11.8 Accountable Memory：记忆必须说明来源和可信度
+
+[`docs/accountable-memory.md`](../accountable-memory.md) 提到，runtime 会通过 memory tags 保存 accountability metadata。常见标签包括 `source:<value>`、`scope:<thread|workspace>`、`confidence:<low|medium|high>`、`expiry:<session|project|none>` 和 `review:<unreviewed|verified|needs-reverify>`。
+
+这些标签让 memory 从“随手记一句”变成“有来源、有范围、有可信度、有过期策略的记录”。
+
+`source` 告诉你记忆来自哪里。它可能是 automatic、run-summary、pre-compress、delegation 或 verified-learning。来自自动总结的信息，可信度通常低于经过验证的学习。
+
+`scope` 告诉你记忆适用于 thread 还是 workspace。某个用户在当前线程的临时偏好，不应该自动扩展到整个项目；某个仓库的验证命令，也不一定适用于其他仓库。
+
+`confidence` 告诉你可信度。高置信 memory 应该有验证证据；低置信 memory 只能作为提醒。
+
+`expiry` 告诉你保留期限。某些信息只在当前 session 有用，某些项目规则可以长期保留，某些信息需要随代码变化重新检查。
+
+`review` 告诉你是否被人工或验证流程确认。`review:unreviewed` 的 memory 不能当作事实，`review:verified` 的 memory 可信度更高，`review:needs-reverify` 表示它可能已经不适用。
+
+这些字段看起来像元数据，但它们决定了 Agent 会不会被旧信息误导。
+
+### 11.9 什么信息值得保存成 Memory
+
+不是所有信息都值得保存。保存太多 memory 会污染未来上下文，让 Agent 变得啰嗦、固执或过度自信。
+
+值得保存的信息通常有三个特征：稳定、可复用、能指导行动。
+
+稳定，意味着它不太可能明天就变。例如“这个仓库 release 前运行 `npm run release:check`”比“今天某个测试刚失败”更适合保存。
+
+可复用，意味着未来任务可能再次需要。例如“benchmark artifacts 不应提交到 git”是可复用经验；“刚才我打开了第 8 章”不是。
+
+能指导行动，意味着它会改变 Agent 行为。例如“用户希望直接实现并验证，不要只给建议”会影响工作方式；“用户说了一句好”没有工程价值。
+
+不应该保存的信息包括：临时情绪、一次性命令输出、大段源码、敏感信息、未经验证的猜测、已经写入文档的普通事实、会很快过期的路径和 token。
+
+保存 memory 前可以问自己一句：如果未来 Agent 看到这条记忆，它会更准确地完成任务，还是更容易被干扰？只有前者才值得保存。
+
+### 11.10 Context Engine 的生命周期
+
+Omni Agent 的 context engine 有几个关键阶段：bootstrap、ingest、afterTurn、compact、maintain、prepareSubagentSpawn、onSubagentEnded 和 render。
+
+`bootstrap` 在任务开始时建立初始上下文。它会接收 task contract、workspace snapshot、thread messages、previous summary、workspace instructions 和额外指令。
+
+`ingest` 和 `afterTurn` 用于更新上下文。工具结果、用户新消息、task state 变化、workspace snapshot 更新，都可能进入这两个阶段。
+
+`compact` 在上下文过长时压缩历史。它不应该丢掉当前任务状态、验证状态和开放风险。
+
+`maintain` 用于周期性维护，例如估算 prompt tokens、处理 deferred compaction、整理 subagent outcome notes。
+
+`prepareSubagentSpawn` 会为子任务准备上下文。它不能把父任务全部历史无差别塞给子 agent，而应该传递目标、角色、边界、预算和必要背景。
+
+`onSubagentEnded` 会把子 agent 结果回写到父上下文。重要的是保留状态、变更文件、验证结果和错误摘要，而不是只保留一句“子任务完成”。
+
+`render` 最终把结构化状态转换成模型调用需要的 execution context。
+
+理解这个生命周期，你就能看懂为什么 Agent 每一轮都不是从零开始，也不是简单延续聊天。它是在不断维护一个任务状态机。
+
+### 11.11 错误上下文会怎样伤害 Agent
+
+为了理解 context 的重要性，我们看几个常见失败。
+
+第一种失败是缺少当前目标。模型看到了很多历史消息，却没有看到明确 active task。于是它开始回答旧问题，或者继续一个已经完成的子任务。这种失败在长线程中很常见。解决办法不是把更多聊天记录塞进去，而是把 `activeTask` 和当前 `TaskState` 放到固定位置。
+
+第二种失败是缺少验证状态。模型看到“我改完了”，但没看到测试是否通过，于是直接总结成功。对于 coding agent，这很危险。正确 context 必须包含 latest verification：passed、failed、skipped 还是 not-run。没有验证状态时，模型应该倾向于继续验证，而不是宣布完成。
+
+第三种失败是 memory 覆盖当前事实。旧 memory 说“运行 pnpm test”，当前仓库却只有 npm scripts。模型如果迷信 memory，就会运行错误命令。解决办法是把 memory 当线索，让 workspace snapshot 和当前文件证据拥有更高优先级。
+
+第四种失败是压缩摘要遗漏文件变更。恢复后的 Agent 不知道已经改了哪些文件，可能重复修改或覆盖用户改动。好的 summary 必须包含 files changed，并最好保留 git diff 或 artifact 引用。
+
+第五种失败是工具结果被过度压缩。测试失败的关键错误行被删掉，只剩“测试失败”。模型无法定位根因，只能猜。工具压缩必须保留失败摘要、退出码、artifact path 和关键错误片段。
+
+第六种失败是把第三方内容混入高优先级指令。网页、README、issue 或日志里出现“忽略之前规则”，如果被放进系统 prompt 位置，就会造成指令污染。正确做法是标明来源和信任级别，让模型知道它只是 workspace 或 external content。
+
+这些失败说明：上下文管理不是性能优化，而是行为控制。错误上下文会让强模型做出错误行动；正确上下文能让普通模型也更稳定。
+
+### 11.12 新手如何手动审查一次 Context
+
+如果你刚开始学习 Omni Agent，可以用一个简单流程手动审查上下文。
+
+第一步，确认任务合同。问自己：当前 objective 是什么？成功标准是什么？有哪些约束？是否需要验证？如果这些问题答不上来，后续 context 再丰富也没用。
+
+第二步，确认 workspace 事实。查看 repo root、branch、dirty 状态、changed files、package scripts。当前仓库事实应该优先于 memory 和旧摘要。
+
+第三步，确认项目指令。哪些 instruction files 被加载？它们来自哪里？是否可能过时？是否包含不应执行的第三方指令？
+
+第四步，确认历史摘要。摘要是否写明 active task、resolved、pending、files changed、verification status、open risks？如果只是泛泛总结，就不适合恢复任务。
+
+第五步，确认 memory 命中。每条 memory 的 source、scope、confidence、expiry、review 是什么？有没有过期？有没有和当前代码冲突？如果冲突，应该以当前证据为准。
+
+第六步，确认工具观察。最近关键工具结果是否保留？失败输出是否有 artifact？验证命令是否记录 exit code？是否有必要重新运行验证？
+
+第七步，确认 prompt sections。最终给模型的内容是否把高优先级规则、用户当前目标、项目上下文、工具结果和 memory 区分清楚？如果全部混成一段自然语言，模型更容易误判优先级。
+
+这个审查流程可以作为 debug 清单。当 Agent 行为异常时，不要马上说“模型太弱”。先看它当时看到的 context 是否正确。如果 context 本身错了，更强模型也可能错。
+
+### 11.13 Context 与 Memory 的工程边界
+
+Context、memory、artifact 和 source file 各自有不同职责。
+
+Context 是当下推理输入，应该短而关键。它回答“这一步需要知道什么”。
+
+Memory 是长期经验，应该稳定且可复用。它回答“过去有什么经验可能帮助现在”。
+
+Artifact 是证据，应该完整且可追溯。它回答“结论从哪里来”。
+
+Source file 是当前事实，应该优先于旧记忆。它回答“项目现在到底是什么样”。
+
+很多 Agent 系统混淆这些边界：把 artifact 当 context 全量塞入，把 memory 当事实，把 source file 摘要当源码，把聊天历史当任务状态。混淆之后，系统会变得昂贵、迟钝、不可复盘。
+
+Omni Agent 的目标是把这些层分开：当前源码通过 workspace 读取；长输出进入 artifact；稳定经验进入 accountable memory；当前推理只拿必要 context；历史消息通过 structured handoff 压缩。这样，Agent 才能在长任务中保持方向。
+
+### 11.14 一个完整例子：从失败验证到可复用记忆
+
+假设一次任务中，Agent 修改了 eval 代码，运行 `npm run eval:benchmark` 后失败。正确处理流程应该是：
+
+1. 工具结果记录命令、退出码、stdout、stderr 和 artifact path。
+2. Context 中更新 `latestVerification.status=failed`，并写入最近失败原因。
+3. Thread summary 的 open risks 记录 benchmark 失败，pending 记录需要修复。
+4. Agent 根据 artifact 读取关键错误，继续修复，而不是总结成功。
+5. 修复后重新运行验证。如果通过，summary 更新 verification status。
+6. 如果失败原因具有长期价值，例如“真实模型 benchmark 必须记录 executor mode，否则报告不可解释”，可以保存一条 verified learning memory。
+7. 这条 memory 应带 `source:verified-learning`、`confidence:high`、`expiry:project`、`review:verified`。
+
+这个流程体现了四层协作：工具留下证据，context 保持当前状态，summary 支持长线程恢复，memory 保存可复用经验。任何一层缺失，Agent 都会更难稳定。
+
+这个例子也说明，memory 的最佳来源不是“模型觉得有道理”，而是“某次任务中被验证过的经验”。如果一次任务没有通过验证，相关 memory 至少应标记为 `needs-reverify`。如果只是模型自动总结，应该标记为 `unreviewed`。只有当代码、测试、benchmark 或人工 review 支持这个结论时，才适合标记为 `verified`。
+
+实际开发中，你还应该定期清理 memory。过期的路径、旧脚本名、旧模型表现、旧 benchmark 数字都可能误导 Agent。Memory 系统如果只会增加不会衰减，最终会变成噪声库。一个健康的 memory 系统必须允许低置信信息被忽略，允许过期信息被重新验证，允许错误信息被修正。
+
+因此，真正的目标不是“让 Agent 永远记住所有事”，而是“让 Agent 记住值得记住的事，并且知道什么时候该重新检查”。这也是本章最重要的一句话。
+
+当你以后调试 Agent 行为时，请先看 context，再看 memory，最后才怀疑模型本身。很多所谓模型能力问题，根因其实是上下文组织错误、旧记忆污染、验证状态丢失或摘要过度压缩，需要优先排除。
+
+这一步排查越扎实，后续模型选择和 prompt 调整才越有意义。
+
+### 11.15 本章练习
+
+第一个练习：打开 [`packages/context/src/index.ts`](../../packages/context/src/index.ts)，找到 `ExecutionContext`、`TaskContract` 和 `TaskState`。用自己的话解释每个字段为什么存在。
+
+第二个练习：打开 [`packages/context/src/thread-compressor.ts`](../../packages/context/src/thread-compressor.ts)，找到 `StructuredThreadHandoff`。写一个模拟摘要，包含 active task、resolved、pending、files changed、verification status 和 open risks。
+
+第三个练习：阅读 [`docs/accountable-memory.md`](../accountable-memory.md)，设计三条 memory：一条 `review:verified`，一条 `review:unreviewed`，一条 `review:needs-reverify`。说明它们未来被召回时应该如何使用。
+
+第四个练习：拿一个真实任务，列出哪些内容应该进入 context，哪些内容应该保存成 memory，哪些内容应该只留在 artifact，哪些内容应该丢弃。这个练习会训练你区分当下输入、长期经验和证据材料。
+
+第五个练习：故意写一条错误 memory，例如“本项目使用 pnpm”。然后检查当前仓库证据如何反驳它。这个练习的目的不是破坏系统，而是训练你不要迷信 memory。
+
+第六个练习：把一段长对话压缩成 `StructuredThreadHandoff`。要求必须包含已完成事项、未完成事项、变更文件、验证状态和开放风险。压缩完成后，遮住原对话，只看摘要，判断下一位 Agent 能否继续工作。
+
+### 11.16 本章参考资料
+
+- Omni Agent context engine: [`packages/context/src/index.ts`](../../packages/context/src/index.ts)
+- Omni Agent thread compressor: [`packages/context/src/thread-compressor.ts`](../../packages/context/src/thread-compressor.ts)
+- Omni Agent accountable memory contract: [`docs/accountable-memory.md`](../accountable-memory.md)
+- Omni Agent context tests: [`tests/context.test.ts`](../../tests/context.test.ts)
+- OpenAI conversation state guide: [https://platform.openai.com/docs/guides/conversation-state](https://platform.openai.com/docs/guides/conversation-state)
+- OpenAI response length guide: [https://platform.openai.com/docs/guides/text-generation#control-the-length-of-the-response](https://platform.openai.com/docs/guides/text-generation#control-the-length-of-the-response)
+- SQLite FTS5 documentation: [https://www.sqlite.org/fts5.html](https://www.sqlite.org/fts5.html)
+- Model Context Protocol specification: [https://modelcontextprotocol.io/specification](https://modelcontextprotocol.io/specification)
 
 ## 12. Session Store 与 Run Artifact：证据从哪里来
 
