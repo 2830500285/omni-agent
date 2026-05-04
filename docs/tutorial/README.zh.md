@@ -5117,140 +5117,176 @@ Cost 也要谨慎。`estimateModelUsageCost` 只有在模型价格快照里存�
 ## 18. 安全、密钥与发布边界
 
 
-本章讨论的是：把 API key、环境变量、日志脱敏、artifact 边界和公开仓库发布规则讲清楚。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+本章讲安全边界。对本地编码 Agent 来说，安全不是只在 README 里写一句“不要泄露 API key”。Omni Agent 会读取 workspace、调用 shell、编辑文件、连接模型 provider、保存 run artifact、暴露 gateway route、使用 MCP、管理 subagent、运行 benchmark。每个环节都有可能把敏感信息带进上下文、日志、报告、diff 或公开仓库。因此，安全章节必须回答四个具体问题：什么东西算 secret，secret 应该放在哪里，哪些证据可以公开，哪些动作必须被权限和路径边界拦住。
 
+读本章时，先看 [`docs/security.md`](../../docs/security.md)。它把 Omni Agent 的 trust boundary 列得很细：workspace 文件是不可信输入，shell 命令受 approval 和 workspace path 约束，MCP 是外部工具，channel plugin 是外部入口和出口，model provider 是远程服务，credential pool 是共享 secret 边界，browser screenshot 是视觉证据边界，model routing diagnostics 只能暴露 profile id、健康状态和 cooldown，不能暴露 raw credential。这个文档不是装饰，它是后续实现和发布检查的基准。
 
-### 18.1 本章先建立的心智模型
+### 18.1 什么是 secret
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，secret、environment variable 和 public repo 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Secret 不只是 API key。任何能让别人代表你访问外部服务、修改资源、读取私有数据、伪造请求或扩大权限的信息，都应该按 secret 处理。常见 secret 包括模型 provider key、GitHub token、Slack bot token、Telegram bot token、Feishu tenant token、webhook URL、OAuth refresh token、cookie、private key、signed URL、数据库连接串、带用户名密码的 base URL、云厂商 access key、npm token、Hugging Face token、CI deploy token。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，redaction、artifact 和 least privilege 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Omni Agent 的 [`packages/safety/src/index.ts`](../../packages/safety/src/index.ts) 里有两个核心函数：`redactSensitiveText` 和 `redactSensitiveValue`。前者用正则扫描字符串中的敏感值，后者按 key 名和对象结构递归脱敏。它会关注 `api_key`、`secret`、`token`、`password`、`authorization`、`cookie`、`credential`、`private_key`、`webhook`、`signed_url`、`presigned_url` 等 key，也会扫描常见 key 形状、private key 块、GitHub token、Slack token、Google OAuth token、npm token、JWT、Bearer token 和 URL 查询参数里的 token。
 
-本章反复出现的关键词包括：`secret`、`redaction`、`environment variable`、`artifact`、`public repo`、`least privilege`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+但是 redaction 不是万能保险。正则只能覆盖常见形状，不能理解所有自定义 secret。比如某个内部系统的短 token、某个带签名路径的私有下载地址、某个看起来像普通字符串的 session id，可能不会被自动识别。安全流程的第一原则仍然是：不要把 secret 写进文件、prompt、artifact、issue、commit message、README 或 benchmark 报告。redaction 是最后一道防线，不是第一道防线。
 
-### 18.2 在仓库中找到入口
+### 18.2 密钥应该放在哪里
 
-阅读本章时，建议从下面这些文件开始：
+模型章节已经讲过，profile 里应该保存 `apiKeyEnv`，不要保存真实 key。例如 DeepSeek profile 写 `apiKeyEnv: "DEEPSEEK_API_KEY"`，OpenAI profile 写 `apiKeyEnv: "OPENAI_API_KEY"`。真实 key 放在本机 shell 环境变量、系统 secret manager 或 CI secret 中。公开文档里只能写占位符：
 
-1. [`docs/security.md`](../../docs/security.md)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`packages/safety/src/index.ts`](../../packages/safety/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`docs/live-testing.md`](../../docs/live-testing.md)：用来观察本章在仓库中的实现、测试或运维入口。
+```powershell
+$env:DEEPSEEK_API_KEY = "<your-deepseek-key>"
+```
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，environment variable、public repo 和 secret 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+不要写看起来像真实 key 的示例。哪怕 key 已经过期，也不要提交。GitHub secret scanning 可能会报警，读者也可能复制错误示例。更重要的是，团队会形成坏习惯：把密钥当作配置文本，而不是权限凭证。
 
-当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
+如果要配置多个 profile，可以使用 `OMNI_AGENT_MODEL_PROFILES_JSON`，但里面仍然只放 `apiKeyEnv` 或 credential id，不放 raw key。若真的需要 credential pool，也应该把每个 entry 的来源、用途和 scope 写清楚。`docs/security.md` 明确说明 credential pool 必须按 workspace、provider、route 和 capability scope 隔离。模型 key 不能被复用成 channel webhook token，MCP OAuth token 不能被复用成 deploy secret。一个 secret 只服务一个明确用途，才能在泄露或滥用时被快速吊销。
 
-### 18.3 它在一次 Agent 任务中怎样出现
+### 18.3 Artifact 能保存什么
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，artifact、least privilege 和 redaction 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Agent runtime 要留下证据，否则无法复盘；但证据不是越完整越好。Benchmark artifact、run summary、tool event、gateway event、model diagnostics 都应该遵循“足够排查，但不暴露权限”的原则。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+可以保存的内容包括：run id、thread id、scenario id、step id、profile id、provider id、model id、tool name、tool status、duration、token usage、cost status、verification status、失败分类、redacted error message、文件相对路径、workspace 内 changed files、artifact path、quality report、trend report。它们能帮助维护者定位失败，同时不直接授予外部权限。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+不应该保存的内容包括：Authorization header、完整 API key、cookie、webhook URL、OAuth token、带签名的下载链接、数据库连接串、私有文件全文、未脱敏的 provider raw response、包含 key 的 diff、用户私人文档内容、CI secret 值、外部服务返回的敏感 payload。即使 artifact 目录默认不提交，也不能把它当作随意倾倒敏感信息的地方，因为它可能被压缩、上传、粘贴到 issue 或用于公开报告。
 
-### 18.4 设计时最容易忽略的边界
+浏览器截图也要按 artifact 边界处理。`docs/security.md` 把 browser screenshot artifacts 称为 visual evidence boundary：截图可以保存 PNG、mime type、byte size、artifact path、capture timestamp 和有限的 browser observation，但不能让截图工具变成读取任意 artifact 内容的后门。截图如果包含 token、私人页面或账号信息，公开前必须删除或重新截取。
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，public repo、secret 和 environment variable 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 18.4 工具层如何防止泄露
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+[`packages/tools/src/index.ts`](../../packages/tools/src/index.ts) 里有两类与安全相关的机制。第一类是 secret scan 和 presentation redaction。工具输出给 UI 或报告时，会经过 presentation 构造函数。`scanPlaintextSecrets` 会检查 OpenAI-like key、private key、AWS access key、GitHub token、generic secret assignment 等模式。如果 diff 或文本里发现疑似 secret，presentation 会变成 `[redacted due to secret scan findings]`。这可以避免模型把包含 key 的文件改动直接展示给用户或写进报告。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+第二类是路径和写入边界。`assertWriteTargetAccess` 会在 subagent 场景下检查目标路径是否在允许的 `targetPaths` 内，并确认不会逃出 workspace root。文件工具、checkpoint、rollback、transactional patch 都必须尊重 workspace boundary。安全问题不只来自 secret 泄露，也来自越权写入：例如模型想把文件写到 workspace 外、覆盖系统目录、回滚非托管 checkpoint、通过 symlink 或 junction 逃逸。一个本地 Agent 如果能随意写出工作区，密钥再安全也不够。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+工具风险还体现在 `riskHint`。读者应该习惯看工具 spec 中的风险说明：read-only、writes workspace files、destructive rollback、network operation、external message delivery 等。模型不应该把高风险工具当普通文本补全来用；runtime 也不应该让高风险工具绕过 approval policy。
 
-### 18.5 如何判断实现是否可靠
+### 18.5 发布公开仓库前要检查什么
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，least privilege、redaction 和 artifact 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+把项目推到 GitHub 之前，要做一次安全发布检查。最少包括下面几步：
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+```powershell
+git status --short
+git diff -- docs README.md README.zh.md
+git ls-files .artifacts
+git ls-files | Select-String -Pattern '\\.env|secret|token|credential|key'
+```
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+这些命令不是完整 secret scanner，但能帮你发现最常见问题：`.artifacts` 被误加入暂存区，`.env` 被跟踪，文档里出现 token 字样，报告里带了真实 provider 信息。真正发布前还应该使用 GitHub secret scanning、仓库保护规则、CI secret 配置和人工 review。公开仓库里的 `deploy/env.example` 可以说明需要哪些环境变量，但不能填真实值。
 
-### 18.6 常见误区
+提交前还要看 `git diff --cached`。很多泄露不是来自源码，而是来自“顺手提交”的日志、测试输出、临时报告、浏览器截图、benchmark summary、失败 raw response。只要文件会进入 Git，它就应该被当成公开材料审查。即使仓库现在是 private，也要按 public 标准处理，因为仓库可能未来被公开、fork、打包或同步到镜像。
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，secret、environment variable 和 public repo 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 18.6 与真实模型评测的关系
 
-第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
+真实模型评测会放大安全风险。模型 provider 会收到 prompt、上下文、工具描述和部分 workspace 信息；runtime 会保存模型响应、tool events 和 usage；benchmark 会生成 summary、history、trend 和 report。如果 workspace 里有 `.env`、私有配置或客户数据，模型可能读到；如果工具结果没脱敏，artifact 可能保存；如果报告直接上传 GitHub，泄露就变成公开事件。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+因此，跑真实 benchmark 前要做两件事。第一，准备干净 fixture workspace。不要拿包含真实密钥、客户数据、内部配置的仓库直接跑公开 benchmark。第二，明确报告范围。公开报告只需要证明能力，不需要包含所有 raw trace。如果需要分享失败证据，可以摘录 redacted verification output、tool event 名称、失败分类和相对路径，而不是贴完整原始响应。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+如果真实模型评测发现泄露，处理顺序应该是：停止发布，移除 artifact，吊销相关 secret，清理 git history 或重新生成提交，补充 ignore 规则和 secret scan，写一个回归检查。不要只把文档里的 key 删掉就继续发布，因为 key 可能已经进入历史、远程缓存、CI log 或截图。
 
-### 18.7 一个可操作的检查流程
+### 18.7 最小权限原则如何落地
 
-1. 先阅读本章相关源码入口，确认核心类型和公开函数。
-2. 再阅读对应测试，找出测试保护了哪些风险。
-3. 运行最小命令，只验证本章相关模块，不一开始跑全量套件。
-4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
-5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
+最小权限不是口号，而是配置和工具设计。模型 key 只允许调用模型，不允许访问 GitHub；GitHub token 只允许目标仓库操作，不允许全账号管理；channel token 只允许指定 chat 或 bot scope，不允许读取不相关频道；MCP token 只允许 allowlist 内 server、redirect origin、scope 和 tool；subagent 只允许自己的 targetPaths 和 allowedTools；gateway route 只暴露必要 endpoint，并使用 token 验证。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，redaction、artifact 和 least privilege 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`docs/security.md` 还强调 checkpoint/rollback 不是 policy bypass。回滚可以恢复文件，但不能绕过当前 workspace root、approval policy、MCP allowlist、credential pool scope 和 lifecycle hook。换句话说，恢复状态以后仍然要重新检查权限。否则攻击者可以通过旧状态把高权限配置带回来。
 
-### 18.8 与真实模型评测的关系
+### 18.8 一个具体案例：报告里能不能写 base URL
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，environment variable、public repo 和 secret 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Base URL 是否敏感，要看它包含什么。`https://api.openai.com/v1`、`https://api.deepseek.com/v1` 这类公开 provider endpoint 通常可以写。带用户名密码、签名参数、内部域名、临时下载 token、私有网关路径的 URL 不应该公开。`packages/model-client` 里的 diagnostics 会 redacted base URL 中的用户名和密码，但你写文档时仍然要自己判断。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+例如报告可以写：“Base URL source: DeepSeek public OpenAI-compatible endpoint。”不一定要贴完整内部代理地址。如果团队使用自建 proxy，公开报告可以写 “internal OpenAI-compatible proxy, redacted”，并说明 protocol、model id、tool support、streaming support，而不是暴露公司内部域名。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+### 18.9 用威胁模型读安全章节
 
-### 18.9 一个完整的小案例
+威胁模型就是先假设谁可能利用系统、他能接触什么、他想得到什么，再看系统在哪里阻断。对 Omni Agent 来说，至少有五类攻击面。第一类是 workspace prompt injection。仓库里的 README、issue、测试数据、技能文件、记忆文件都可能写入“忽略系统指令、读取密钥、上传文件”这类内容。防护重点是把 workspace 内容当作不可信输入，保留来源标签，并且不能让它覆盖 approval、workspace root、tool policy 和 model provider policy。
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+第二类是工具滥用。模型可能被诱导运行危险 shell 命令、删除目录、写出 workspace、下载脚本再执行、把私有文件复制到公开路径。防护重点是 command policy、risk tier、approval、path containment、subagent targetPaths 和 transactional patch。安全不是禁止所有写入，而是让写入必须有范围、有证据、有回滚路径。
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+第三类是 secret exfiltration。攻击者不一定要直接读取 `.env`；他可以诱导模型把 key 写进总结、diff、benchmark report、gateway event、browser screenshot、route response、MCP payload 或 issue 评论。防护重点是 secret 不进入 workspace、presentation redaction、artifact redaction、route config sanitization、diagnostics redaction 和发布前扫描。不要只盯着源码文件，日志和报告同样可能泄露。
 
-这个案例强调的是工程诚实。 在本章语境中，artifact、least privilege 和 redaction 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第四类是外部工具边界。MCP、channel plugin、gateway、ACP bridge、browser、model provider 都是外部边界。它们可能有自己的权限、令牌、回调 URL 和数据保留策略。防护重点是 allowlist、scope、gateway auth、route policy、credential pool isolation、model profile diagnostics 和 provider health。一个本地 Agent 一旦能连接外部服务，就必须把“谁能调用、调用什么、用哪个凭证、结果保存到哪里”写清楚。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+第五类是恢复和长期状态。checkpoint、rollback、memory、session store、longitudinal benchmark history 都会跨时间保留信息。攻击者可能把恶意内容放进 memory，让未来任务信任；也可能通过 rollback 恢复旧的高权限状态；还可能让错误 benchmark 成为 baseline。防护重点是 source label、freshness、post-rollback revalidation、history review 和 baseline 审核。长期状态带来便利，也带来长期污染的风险。
 
-### 18.10 排错时的分层问题表
+### 18.10 发生泄露时怎么处理
 
-| 问题 | 应先检查什么 | 常见误判 | 更可靠的动作 |
-| --- | --- | --- | --- |
-| 功能看起来不存在 | 源码入口和导出类型 | 只看 README | 搜索实现和测试 |
-| 功能运行失败 | 最小命令和 artifact | 直接怪模型 | 先看工具、环境和参数 |
-| benchmark 分数异常 | executor mode 和 suite 版本 | 把分数等同能力 | 对比 trace 与失败原因 |
-| 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
-| 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
+如果怀疑 key 已经进入仓库或 artifact，第一步不是美化提交，而是立即止血。先停止 push、release、报告发布和 CI 传播。然后吊销或轮换相关密钥。只要 secret 曾经进入 git commit、公开 issue、CI log、artifact zip、截图或聊天记录，就要假设它已经泄露。不要等确认有人使用了再轮换。
 
-分层排错能减少无效尝试。 在本章语境中，public repo、secret 和 environment variable 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第二步是定位范围。查工作区、暂存区、最近提交、远程分支、GitHub Actions log、benchmark artifact、`.artifacts`、截图、README、issue、release note、package 文件。可以结合 GitHub secret scanning、本地 grep、手动 review 和团队审计。定位时要记录证据：哪个文件、哪次运行、哪个 run id、哪类 secret、是否推送远程、是否公开可见。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+第三步是清理。未提交的文件直接删除或脱敏；已提交但未推送的提交可以用新的干净提交或历史改写处理；已经推送公开仓库的 secret，即使之后删除，历史中仍可能存在，必须轮换密钥并按平台建议清理历史。对于公开仓库，不要只在新 commit 里删除 secret 就结束。删除只是降低继续暴露，不能撤回已经泄露的值。
 
-### 18.11 如何把本章内容写进团队流程
+第四步是补防线。泄露如果来自 `.artifacts` 被提交，就补 `.gitignore` 和发布检查；如果来自报告 raw response，就补 report redaction；如果来自 tool presentation，就补 secret scan pattern；如果来自 model diagnostics，就补 redacted field；如果来自文档示例，就改成占位符并补贡献指南。安全事故的价值在于变成测试和流程，而不是只靠某个人下次小心。
 
-如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
+第五步是写清楚影响范围。内部记录可以包含完整细节；公开说明只需要写受影响范围、已轮换凭证、已清理位置、已补防线，不要再次贴出 secret 或能复原 secret 的上下文。安全复盘要足够具体，但不能制造二次泄露。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，least privilege、redaction 和 artifact 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+### 18.11 安全测试应该覆盖哪些证据
 
-当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
+安全能力也要有测试和 eval 证据。最低限度应该覆盖四类。
 
-### 18.12 练习
+第一类是脱敏测试。给 `redactSensitiveText` 和 `redactSensitiveValue` 输入常见 secret 形状、嵌套对象、Error、数组、循环引用，确认输出不会保留 raw secret。还要测试非敏感普通文本不被过度脱敏，否则报告会失去排查价值。好的 redaction 既要挡住 secret，也要保留足够诊断信息。
 
-1. 围绕 `secret` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `redaction` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `environment variable` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `artifact` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `public repo` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `least privilege` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+第二类是 presentation 测试。工具输出 diff、搜索结果、编辑结果、错误信息时，presentation 不能把 secret 明文交给 UI。`packages/tools/src/index.ts` 里的 `buildPresentationDiff`、`redactPresentationDiffIfNeeded`、`redactPresentationTextIfNeeded` 就属于这个边界。测试应该模拟写入疑似 key 的 diff，确认最终展示变成 redacted message，而不是原文。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+第三类是路径和权限测试。写文件、替换文件、rollback、checkpoint、subagent write target、artifact read，都应该测试 workspace escape、symlink/junction、未声明 targetPaths、非托管 checkpoint、跨 run artifact 读取。安全边界如果只测正常路径，等于没有测。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+第四类是发布检查测试。CI 可以检查 `.env`、`.artifacts`、常见 log、benchmark raw output 是否被纳入提交；也可以在 release checklist 中要求 `docs/security.md`、`docs/live-testing.md` 和 scorecard evidence 同步更新。安全文档如果不和测试、CI、发布流程绑定，很快会变成过期承诺。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+### 18.12 团队协作中的安全责任
 
-### 18.13 本章参考资料
+团队维护 Omni Agent 时，安全责任要分给具体动作，而不是笼统地说“大家注意”。写模型 profile 的人负责不提交 key，并说明 profile 的协议、scope 和支持能力；写工具的人负责 riskHint、path containment、presentation redaction 和失败时的安全结果；写 gateway/channel 的人负责 route secret sanitization、auth token 和外部消息范围；写 eval 的人负责不把真实客户数据放进 fixture，不把 raw provider response 当公开报告；发版的人负责检查 artifact、diff、secret scanning 和 release note。
 
-- Omni Agent: [`docs/security.md`](../../docs/security.md)
-- Omni Agent: [`packages/safety/src/index.ts`](../../packages/safety/src/index.ts)
-- Omni Agent: [`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
-- Omni Agent: [`docs/live-testing.md`](../../docs/live-testing.md)
-- OpenAI API key safety: [https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety)
-- OWASP LLM Top 10: [https://genai.owasp.org/owasp-top-10-for-llm-applications/](https://genai.owasp.org/owasp-top-10-for-llm-applications/)
-- GitHub secret scanning: [https://docs.github.com/en/code-security/secret-scanning/about-secret-scanning](https://docs.github.com/en/code-security/secret-scanning/about-secret-scanning)
+贡献者也需要知道哪些文件不能随便改。`docs/security.md` 是安全基准，改动它意味着扩大或改变信任边界；`packages/safety/src/index.ts` 是脱敏核心，改动它可能导致日志泄露；`packages/tools/src/index.ts` 的 presentation 和 secret scan 是 UI 证据边界，改动它可能让 diff 暴露 secret；gateway route 和 model diagnostics 的 sanitization 关系到远程接口。教程把这些边界讲清楚，是为了让新贡献者改功能时知道哪里不能顺手简化。
+
+安全流程还要允许阻断发布。如果 release 前发现真实 key、内部 URL、客户数据、未脱敏截图或 raw token 进入公开材料，即使功能已经写完，也应该暂停发布。推迟一天发布，比事后吊销凭证、清理历史、解释事故成本低得多。对于 agent 项目，可信度来自“能做事”与“不会越界”同时成立。
+
+### 18.13 公开材料分级
+
+为了避免每次发布都临时判断，可以把材料分成四级。
+
+第一级是可以公开的材料：安装命令、环境变量名称、profile id 示例、公开 provider endpoint、模型类别、benchmark mode、summary metrics、失败分类、相对路径、脱敏后的报告结论。这些信息能帮助读者复现思路，但不能让别人访问你的账号或私有资源。
+
+第二级是默认内部、必要时脱敏公开的材料：完整 `summary.json`、`quality.json`、`trend.json`、部分 tool event、verification output、失败堆栈、model usage、gateway route diagnostics、MCP server id、内部 proxy 描述。这些材料很有排查价值，但发布前要检查是否带有内部路径、用户名、组织名、私有 endpoint、客户数据或 raw response。
+
+第三级是只应内部保存的材料：完整 raw provider response、完整 prompt、包含私有仓库内容的 trace、browser screenshot、channel message payload、MCP OAuth 细节、CI log、未清洗的 stderr、包含绝对路径和用户名的本机诊断。这些材料可以用于调试，但不能直接贴到公开 README、issue 或 release note。
+
+第四级是应该立即删除或轮换的材料：真实 API key、OAuth refresh token、private key、webhook secret、cookie、数据库连接串、带签名 URL、云厂商 access key、可直接访问内部服务的 bearer token。只要它们进入不该进入的地方，就按泄露处理，而不是讨论“有没有人看到”。
+
+分级的价值是让团队沟通更快。当一个贡献者问“这个 report 能不能上传 GitHub”，维护者可以回答：“先判断它属于哪一级，二级材料先脱敏，三级材料只写摘要，四级材料禁止上传并轮换。”这样比每次凭感觉判断可靠。
+
+### 18.14 安全与可观测性的取舍
+
+Agent 系统需要可观测性，否则失败无法复盘；但可观测性越强，越容易收集敏感信息。解决方式不是关闭所有日志，而是设计“分层证据”。公开层记录 run id、模式、指标、失败类别；维护层记录脱敏 tool event、verification output、相对路径；受限层保存完整 trace，但只有需要排查的人能访问，并且有保留期限；禁止层不保存 raw secret。
+
+例如 model routing diagnostics 可以告诉你 profile 是否 eligible、selected order 是多少、是否 cooldown、context limit 是多少、credential pool 里有几个 configured entry，但不能打印 raw key。gateway route response 可以告诉你 route id、adapter type、delivery status、last error summary，但不能打印 webhook URL 和 bot token。benchmark report 可以告诉你 costStatus 是 unknown 或 estimated，但不能为了复现而贴 provider invoice、账号 id 或私有价格合同。
+
+可观测性的设计还要考虑读者。公开 GitHub README 面向外部开发者，只需要足够说明项目可信；内部 run artifact 面向维护者，需要足够复盘失败；安全事故记录面向项目 owner，需要足够追踪影响范围。把这三类读者混在一起，就会出现两种坏结果：公开材料泄露过多，或者内部材料过度脱敏导致无法排查。
+
+### 18.15 把安全检查写进 PR 模板
+
+如果项目开始接受贡献，安全检查应该进入 PR 模板，而不是靠维护者临时提醒。模板可以要求贡献者回答五个问题：这次改动是否新增外部网络调用；是否新增或修改 secret、token、webhook、OAuth、model profile；是否会写入 artifact、log、screenshot、report 或 gateway response；是否扩大工具权限、workspace 写入范围、MCP allowlist 或 channel route；是否更新了对应测试和 `docs/security.md`。
+
+这些问题看起来简单，但能迫使贡献者在提交前自查。比如一个人新增了 `read_artifact` 工具，就必须说明它只能读取当前 run 拥有的 artifact，不能读任意本地文件；一个人新增 route diagnostics，就必须说明哪些字段会被脱敏；一个人新增 live test，就必须说明需要哪些环境变量、哪些变量不能进入 log；一个人修改 model profile schema，就必须说明 raw credential 是否会被持久化。PR 模板不是形式主义，它把安全判断前移到代码 review 之前。
+
+维护者 review 时也要按证据提问。不要只问“安全吗”，而要问“哪个测试证明 path escape 被拒绝”“哪个字段会被 redacted”“哪个 artifact 可以公开”“如果 key 泄露怎么轮换”“这个 MCP scope 为什么需要”。这种提问方式会让安全讨论落到代码和文档，而不是停留在主观保证。
+
+最后，安全检查要允许结论是“不能合并”。如果一个功能必须把 raw credential 写进日志才能工作，说明设计本身有问题；如果一个 benchmark 必须使用真实客户仓库才能展示高分，说明任务集设计有问题；如果一个 gateway route 为了方便调试暴露完整配置，说明诊断接口边界有问题。好的安全流程不是把所有风险都写成警告，而是在风险超过收益时明确拒绝。对本地 Agent 来说，这种拒绝能力和工具能力同样重要。如果读者只记住一句话，就记住这一句：任何能让系统替你做事的凭证，都不能进入会被模型读取、被日志保存、被报告发布、被 Git 追踪的地方。只要某个信息可以换来外部权限，就要默认它不能公开；只要某个文件可能公开，就要默认它会被陌生人读取。这也是本地 Agent 能长期被信任的底线，也是开源项目积累信誉的底线，必须反复检查，不能靠运气，也不能靠事后补救，更不能交给侥幸心理，必须写进流程和评审里面执行。
+
+### 18.16 本章练习
+
+1. 打开 [`packages/safety/src/index.ts`](../../packages/safety/src/index.ts)，列出 `redactSensitiveText` 能识别的三类 secret，再写出它不能保证识别的一类内部 secret。
+2. 在一个临时文件里写入占位符 key，例如 `<your-api-key>`，确认它不会被误当成真实 key；再解释为什么文档不应该写真实形状的示例 key。
+3. 查看一次 benchmark artifact，判断哪些字段可以公开，哪些字段如果包含 raw provider response 就需要脱敏。
+4. 设计一个发布前检查清单，至少包含 `.artifacts`、`.env`、log、screenshot、benchmark report、model profile JSON、CI secret 的检查。
+5. 写一段报告结论，要求既能说明真实模型评测结果，又不暴露 API key、内部 URL 或私人 workspace 内容。
+
+### 18.17 本章参考资料
+
+- Omni Agent security model：[`docs/security.md`](../../docs/security.md)
+- Omni Agent safety redaction：[`packages/safety/src/index.ts`](../../packages/safety/src/index.ts)
+- Omni Agent tool redaction and secret scan：[`packages/tools/src/index.ts`](../../packages/tools/src/index.ts)
+- Omni Agent live testing boundary：[`docs/live-testing.md`](../../docs/live-testing.md)
+- OpenAI API key safety：[Best practices for API key safety](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety)
+- OWASP GenAI security：[OWASP Top 10 for LLM Applications](https://genai.owasp.org/owasp-top-10-for-llm-applications/)
+- GitHub Docs：[About secret scanning](https://docs.github.com/en/code-security/secret-scanning/about-secret-scanning)
 
 ## 19. 从源码实现一个小功能
 
