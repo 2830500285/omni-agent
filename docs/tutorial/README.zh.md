@@ -2163,11 +2163,119 @@ Runtime 主循环是 Omni Agent 的核心。它把用户任务变成可执行、
 
 ## 7. Model Profile：如何安全接入真实模型
 
-真实模型接入是很多人最容易踩坑的地方。常见错误包括：把 API key 写进 README；把 provider URL 写死在代码里；只支持一个模型；没有记录使用了哪个模型；不知道 provider 是否支持 tool calling；把 OpenAI-compatible 和真正 OpenAI 混为一谈。
+### 7.1 Model Profile 不是模型名称
 
-Omni Agent 用 model profile 解决这些问题。一个 profile 是一个命名配置。它可以叫 `primary`、`deepseek-flash`、`openai-fast`、`anthropic-main`。Profile 中应该包含模型调用所需的元信息，但不应该包含真实密钥。真实密钥放在环境变量里。
+真实模型接入是 Agent 项目最容易踩坑的地方。很多人会把模型接入理解成“填一个 API key 和 model name”，但这对 coding agent runtime 来说远远不够。
 
-基础 setup 命令如下：
+一个真实模型调用至少涉及这些问题：
+
+- 使用什么协议？
+- API base URL 是什么？
+- 请求路径是否需要覆盖？
+- 模型 id 是什么？
+- API key 从哪个环境变量读取？
+- provider 是否支持原生 tool calling？
+- provider 是否支持 streaming？
+- 是否需要额外 headers？
+- 是否需要额外 body 参数？
+- 是否有多个 credential 可以轮换？
+- 请求失败后是否进入 cooldown？
+- 是否参与 failover？
+- 这次 run 最终用了哪个 profile？
+
+Model Profile 就是把这些问题收束成一个命名配置。它不是单纯的 model name，而是模型运行契约。
+
+在 `packages/model-client/src/index.ts` 里，`ModelProfile` 包含 `id`、`name`、`protocol`、`baseUrl`、`apiPath`、`apiKeyEnv`、`credentials`、`credentialStrategy`、`model`、`supportsTools`、`supportsStreaming`、`maxInputTokens`、`costHint`、`headers`、`requestBody` 等字段。看到这些字段，你就能明白：模型接入不是一句“用 gpt-4.1-mini”就能描述完整。
+
+Model Profile 的价值有三点。
+
+第一，它让模型接入显式化。你可以运行 `npm run dev -- models` 查看当前有哪些 profile、哪些 key 配置了、哪些支持 tools、哪些支持 streaming。
+
+第二，它让 provider 差异被隔离在 model-client 层，而不是散落到 runtime 和 tools 里。
+
+第三，它让 run artifact 能记录模型来源。没有 profile 记录，真实模型 benchmark 就无法复盘。
+
+### 7.2 Profile 的核心字段
+
+先看最常见字段。
+
+`id` 是 profile 标识。例如 `primary`、`deepseek-flash`、`openai-fast`、`anthropic-main`。CLI 和 benchmark 可以通过这个 id 选择模型。
+
+`name` 是人类可读名称。它用于输出和诊断。
+
+`protocol` 是 provider 协议。Omni Agent 支持内置协议，例如 `openai`、`responses`、`anthropic`，也可以通过扩展支持其他协议。这里要特别注意：`openai` protocol 不等于只能使用 OpenAI 官方服务，它通常表示 OpenAI-compatible API 形态。
+
+`baseUrl` 是 provider 的基础 URL。例如 OpenAI 官方、Anthropic 官方、DeepSeek 或本地兼容端点会有不同 base URL。
+
+`apiPath` 是可选请求路径。某些 provider 的路径不完全等同于默认 OpenAI-compatible path，就需要覆盖。
+
+`apiKeyEnv` 是环境变量名，不是密钥本身。比如 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`DEEPSEEK_API_KEY`。这是安全边界：profile 可以被保存，真实密钥不应该写进仓库。
+
+`model` 是模型 id。它由 provider 定义，不同 provider 的命名规则不同。
+
+`supportsTools` 表示该 provider/profile 是否支持原生工具调用。如果不支持，runtime 可能需要使用 JSON envelope fallback。
+
+`supportsStreaming` 表示是否请求 streaming。Streaming 对交互体验有价值，但也要求 provider 和客户端解析路径兼容。
+
+`headers` 和 `requestBody` 用于 provider-specific 参数。比如某些服务需要特殊 header，某些模型需要 token limit、reasoning 参数或其他 body 字段。
+
+`maxInputTokens` 和 `costHint` 则服务于上下文控制和成本估算。真实模型评测时，这些字段能帮助解释为什么某个 profile 更适合长上下文或更昂贵。
+
+### 7.3 为什么密钥只写环境变量名
+
+密钥处理是 Model Profile 最重要的安全点。
+
+Profile 应该保存 `apiKeyEnv`，而不是保存 API key。比如：
+
+```json
+{
+  "id": "primary",
+  "name": "OpenAI primary",
+  "protocol": "openai",
+  "baseUrl": "https://api.openai.com/v1",
+  "apiKeyEnv": "OPENAI_API_KEY",
+  "model": "gpt-4.1-mini",
+  "supportsTools": true,
+  "supportsStreaming": true
+}
+```
+
+真实密钥应该放在 shell 环境变量、系统环境变量、secret manager 或部署平台 secret 中。
+
+PowerShell：
+
+```powershell
+$env:OPENAI_API_KEY="..."
+$env:DEEPSEEK_API_KEY="..."
+$env:ANTHROPIC_API_KEY="..."
+```
+
+bash/zsh：
+
+```bash
+export OPENAI_API_KEY="..."
+export DEEPSEEK_API_KEY="..."
+export ANTHROPIC_API_KEY="..."
+```
+
+不要把 key 写进：
+
+- README。
+- docs。
+- eval fixture。
+- committed `.env` 文件。
+- shell 脚本。
+- issue 或 PR 描述。
+- benchmark report。
+- run artifact 明文。
+
+Omni Agent 的 model-client 里有 secret redaction 相关逻辑，诊断时也会显示 redacted 信息。但最好的安全策略是从源头避免把密钥写进可持久化文件。
+
+### 7.4 使用 `setup` 创建 profile
+
+长期使用时，可以通过 `setup` 持久化 profile。
+
+OpenAI-compatible 示例：
 
 ```bash
 npm run dev -- setup \
@@ -2182,9 +2290,13 @@ npm run dev -- setup \
   --supports-streaming true
 ```
 
-这里的 `--profile-id primary` 是 profile 名称。`--protocol openai` 表示使用 OpenAI-compatible 协议。`--base-url` 是 provider API 地址。`--api-key-env` 不是密钥本身，而是环境变量名。`--model` 是模型 id。`--supports-tools` 表示模型是否支持结构化工具调用。`--supports-streaming` 表示是否支持流式输出。
+PowerShell 中也可以写成单行，路径加引号：
 
-如果你要接 DeepSeek 或其他兼容端点，结构类似：
+```powershell
+npm run dev -- setup --storage-root "$env:USERPROFILE\.omni-agent" --default-workspace "E:\repo" --profile-id primary --protocol openai --base-url "https://api.openai.com/v1" --api-key-env OPENAI_API_KEY --model gpt-4.1-mini --supports-tools true --supports-streaming true
+```
+
+DeepSeek 或其他 OpenAI-compatible endpoint 的形态类似：
 
 ```bash
 npm run dev -- setup \
@@ -2197,24 +2309,359 @@ npm run dev -- setup \
   --supports-streaming true
 ```
 
-请注意 `<openai-compatible-base-url>` 和 `<model-id>` 是占位符，不要把真实密钥写进命令历史或文档。你应该在 shell 里设置环境变量：
+这里的 `<openai-compatible-base-url>` 和 `<model-id>` 是占位符。不要把真实密钥写在命令示例里。真实 key 只通过 `DEEPSEEK_API_KEY` 环境变量提供。
 
-```powershell
-$env:DEEPSEEK_API_KEY="your_key_here"
-```
-
-更稳妥的做法是让环境变量来自本地安全配置或系统环境，而不是提交到仓库。`.env` 文件如果存在，也应该在 `.gitignore` 中。
-
-配置后运行：
+配置完后运行：
 
 ```bash
 npm run dev -- models
 npm run dev -- doctor --cwd "." --mode openai
 ```
 
-`models` 告诉你 profile 是否被加载；`doctor --mode openai` 告诉你真实模型模式下还有哪些配置缺失。不要跳过 doctor。很多所谓“模型不行”的问题，其实是 profile 没加载、key env 缺失、base URL 错误、tool support 配置不匹配。
+`models` 负责查看 profile 是否加载。`doctor --mode openai` 负责检查真实模型模式下的缺失项。
 
-在 benchmark 中，model profile 更重要。因为同一个 eval suite，用不同模型、不同 tool support、不同 max iterations，结果会完全不同。如果 artifact 没记录 profile，你就无法比较结果。
+### 7.5 `models` 命令应该怎么看
+
+`npm run dev -- models` 是接模型前必须看的命令。它不是装饰性命令，而是模型接入的诊断入口。
+
+你应该从输出里检查：
+
+- profile 数量是否符合预期。
+- profile id 是否写对。
+- protocol 是否正确。
+- base URL 是否正确。
+- API key env 是否存在。
+- API key 是否 configured。
+- supportsTools 是否符合 provider 实际能力。
+- supportsStreaming 是否符合 provider 实际能力。
+- 是否有 warnings 或 errors。
+
+如果 `apiKeyConfigured` 是 false，说明当前 shell 环境中找不到对应变量。解决方法不是改代码，而是设置环境变量或检查变量名是否写错。
+
+如果 `supportsTools` 配错，会影响工具调用路径。把不支持原生 tools 的 provider 标成 true，可能导致 provider 请求失败；把支持 tools 的 provider 标成 false，runtime 可能走 JSON fallback，效果和稳定性会不同。
+
+如果 protocol 配错，问题更严重。比如把 Anthropic Messages API endpoint 配成 OpenAI-compatible protocol，请求 body 和 response parsing 都可能不匹配。
+
+### 7.6 OpenAI-compatible、Responses、Anthropic 的区别
+
+Omni Agent 的 model-client 里可以看到三类内置协议：`openai`、`responses`、`anthropic`。
+
+`openai` 通常表示 OpenAI-compatible chat completions 风格。许多第三方模型服务也会做 OpenAI-compatible API，因此 DeepSeek、本地模型网关或其他兼容端点可能使用这个协议。
+
+`responses` 表示 OpenAI Responses API 风格。Responses API 在工具、推理、状态和多模态扩展上有自己的对象模型。如果 provider 是 OpenAI 官方且你希望使用 Responses 路径，就应该选择对应 protocol。
+
+`anthropic` 表示 Anthropic Messages API 风格。Anthropic 的 tool use、messages、content block、headers、version 字段等和 OpenAI-compatible 路径不同。
+
+三者不是名字不同而已。它们的请求结构、工具声明格式、响应解析方式、usage 字段、错误处理、streaming 格式都可能不同。把协议配错，模型可能完全不可用，或者 tool call 解析失败。
+
+因此，接模型时先问 provider 提供的到底是哪种协议。不要看到“兼容 OpenAI”就默认所有字段都一样，也不要把所有模型服务都当成同一种 API。
+
+### 7.7 Tool support 与 JSON fallback
+
+Coding agent 需要工具。模型能不能稳定使用工具，取决于 provider 是否支持 tool calling，以及 runtime 如何处理不支持工具的模型。
+
+如果 `supportsTools=true`，runtime 会优先走原生 tool calling 路径。模型返回结构化 tool call，runtime 可以直接解析工具名称和参数。
+
+如果 `supportsTools=false`，runtime 可能使用 JSON envelope fallback，也就是让模型用 JSON 格式表达工具请求。这种方式兼容性更强，但稳定性通常弱于原生 tool calling。模型可能输出格式错误、混入解释文本、漏字段，runtime 需要更多修复逻辑。
+
+因此，`supportsTools` 不能随便填。它应该反映 provider 实际能力。
+
+真实模型评测时，这个字段尤其重要。同一个模型，如果原生 tools 可用，可能表现很好；如果只能 JSON fallback，工具调用失败率可能上升。Benchmark report 应该记录这一点。
+
+### 7.8 Streaming support 不是必需，但会影响体验
+
+`supportsStreaming` 表示 provider 是否支持流式输出。
+
+Streaming 对 chat 和 workbench 体验有价值，因为用户可以更快看到模型输出。但对 benchmark 和自动化任务来说，streaming 不是核心能力。很多 eval 更关心最终结果、tool trace、verification evidence 和 artifact。
+
+如果 provider streaming 不稳定，可以先关闭 streaming，保证非流式路径跑通。不要把 streaming 失败误判成模型能力失败。它可能只是协议解析、SSE 格式、网络代理或 provider 实现差异。
+
+### 7.9 Credential pool、cooldown 与 failover
+
+Omni Agent 的 model-client 不只支持单个 key。源码中可以看到 credential entries、credential strategy、health、cooldown、route diagnostics 等概念。
+
+Credential pool 的意义是：一个 profile 可以有多个 credential，runtime 可以按策略选择。策略可能是 round-robin、least-used 等。某个 credential 失败后，可以记录 failure count、last error、cooldownUntil，避免立刻重复打到不可用 key。
+
+Profile failover 的意义是：当一个 profile 因 rate limit、auth、server error 等失败时，router 可以尝试其他 profile。路由诊断会记录哪些 profile eligible，哪些因为 cooldown 被跳过，最终选择顺序是什么。
+
+这些机制对真实模型运行很重要。没有 cooldown，系统可能在 rate limit 后疯狂重试；没有 route diagnostics，你不知道为什么 fallback 到另一个模型；没有 credential health，你不知道哪个 key 经常失败。
+
+但它们也带来评测解释问题。同一个 benchmark，如果中途 failover 到另一个模型，结果就不再是单一模型表现。报告必须记录 profile attempts 和最终 provider。
+
+### 7.10 DeepSeek 接入时应该特别注意什么
+
+DeepSeek 或其他兼容端点通常走 OpenAI-compatible profile，但仍然需要谨慎验证。
+
+第一，确认 base URL 和 model id。不要凭记忆写。Provider 的模型名和 endpoint 可能变化，接入前应以官方文档为准。
+
+第二，确认 tool calling 支持。某些模型虽然兼容 chat completions，但工具调用支持可能不完整。`supportsTools` 要按真实能力配置。
+
+第三，先跑小任务。不要一上来跑完整 45 项 benchmark。先跑 `models`、`doctor --mode openai`、一个只读 run，再跑一个低风险工具任务，最后再跑 eval。
+
+第四，保存失败原因。之前项目里的 DeepSeek 系统测试文档记录过一个重要经验：更轻量的 flash 模型可能能跑通一些路径，但在复杂代码编辑上更容易出现结构破坏或修复不足。判断“模型弱”之前，要先看 trace：是模型没理解任务，还是工具调用失败，还是验证反馈不充分，还是 max iterations 不够。
+
+第五，注意成本和频率。真实模型 benchmark 会消耗 token 和费用，也可能触发 rate limit。先用 `--max-iterations` 控制范围，必要时只跑 subset。
+
+### 7.11 真实模型任务的最小验证路径
+
+建议按这个顺序接真实模型：
+
+```bash
+npm run dev -- models
+npm run dev -- doctor --cwd "." --mode openai
+npm run dev -- run --cwd "." --mode openai --model-profile primary --task "Summarize this repository"
+npm run dev -- run --cwd "." --mode openai --model-profile primary --task "Inspect package.json and explain available scripts"
+```
+
+第一条检查 profile。第二条检查 openai mode 下的运行条件。第三条跑只读总结。第四条要求模型读取具体文件并解释脚本。
+
+如果这些都通过，再考虑带验证命令的任务：
+
+```bash
+npm run dev -- run --cwd "." --mode openai --model-profile primary --task "Run the TypeScript check and summarize the result" --verify "npm run typecheck"
+```
+
+再之后才考虑 eval：
+
+```bash
+npm run eval:smoke
+npm run eval:benchmark -- --mode openai --model-profile primary --max-iterations 8
+```
+
+这个顺序能逐步隔离问题。如果模型连只读总结都失败，先查 profile；如果只读成功但工具任务失败，查 tool support；如果工具成功但 verification 失败，查命令和项目状态；如果 eval 失败，查 manifest、expectation、model behavior 和 artifact。
+
+### 7.12 Benchmark 中为什么必须记录 profile
+
+同一个 eval suite，用不同模型结果会不同；同一个模型，用不同 tool support 结果会不同；同一个 provider，在 streaming 和 non-streaming 下行为也可能不同；同一个 profile，如果发生 failover，结果又会变化。
+
+因此 benchmark report 至少应该记录：
+
+- executor mode。
+- profile id。
+- provider/protocol。
+- model id。
+- supportsTools。
+- supportsStreaming。
+- max iterations。
+- start/end time。
+- duration。
+- token usage。
+- cost estimate。
+- failed task reasons。
+- profile attempts 或 fallback 信息。
+
+没有这些信息，benchmark 只能作为一次模糊实验，不能作为能力证据。
+
+这也是前面章节一直强调“分数不等于能力”的原因。模型 profile 是分数背后的条件。如果条件不清楚，分数没有可比性。
+
+### 7.13 常见错误清单
+
+接模型时最常见的错误包括：
+
+- 把真实 key 写进仓库。
+- `apiKeyEnv` 写错，比如设置了 `DEEPSEEK_API_KEY`，profile 里却写 `DEEPSEEK_KEY`。
+- base URL 少了 `/v1` 或多了不该有的路径。
+- protocol 选错。
+- model id 写错。
+- `supportsTools` 与 provider 实际能力不匹配。
+- `supportsStreaming` 开启但 provider 的 SSE 格式不兼容。
+- 在新终端里忘记重新设置环境变量。
+- benchmark report 只写模型名，不写 profile 配置。
+- provider rate limit 后没有查看 cooldown 或 retry-after。
+- 把 mock 成功误解成真实模型成功。
+
+排查顺序固定：先 `models`，再 `doctor --mode openai`，再最小只读任务，再工具任务，再验证任务，再 eval。不要直接从完整 benchmark 开始排查。
+
+### 7.14 本章小结
+
+Model Profile 是真实模型接入的核心抽象。它把 provider 协议、base URL、API key 环境变量、模型 id、工具能力、streaming 能力、headers、request body、credential pool、cooldown、诊断信息统一起来。
+
+安全接入真实模型要坚持几条原则：
+
+- profile 保存环境变量名，不保存真实 key。
+- 先用 `models` 和 `doctor` 验证配置。
+- protocol 必须匹配 provider。
+- tool support 必须按真实能力配置。
+- streaming 可先关闭，保证基础路径。
+- 真实模型任务从只读小任务开始。
+- benchmark 必须记录 profile 和失败原因。
+- 发生 failover 时，报告必须说明。
+
+只要这些原则成立，真实模型接入就会从“玄学调 key”变成可诊断、可复盘、可比较的工程流程。
+
+### 7.15 如何读 model diagnostics
+
+真实模型接入失败时，不要只看最后一句错误。Model diagnostics 通常可以拆成几层。
+
+第一层是 profile selection。系统到底加载了哪些 profile？来源是默认环境变量，还是 JSON 配置，还是持久化 setup？如果你以为自己配置了 `deepseek-flash`，但 `models` 输出里没有这个 id，问题就不在 provider，而在 profile 加载。
+
+第二层是 key configuration。`apiKeyEnv` 是哪个变量？当前 shell 里这个变量是否 configured？如果 `apiKeyConfigured=false`，请求一定失败。此时不要改 base URL，也不要怀疑模型能力，先设置环境变量。
+
+第三层是 protocol。协议是否与 provider 匹配？OpenAI-compatible、Responses、Anthropic Messages 三种请求格式不同。协议错了，工具声明、message 格式、response parsing 都可能错。
+
+第四层是 tool capability。`supportsTools` 是否与 provider 实际能力一致？如果 provider 不支持原生 tools，却配置为 true，请求可能直接失败；如果 provider 支持 tools，却配置为 false，Agent 可能退回 JSON fallback，导致工具调用质量下降。
+
+第五层是 route diagnostics。多 profile 或 credential pool 场景下，要看哪些 profile eligible，哪些因 cooldown 跳过，最终尝试顺序是什么。没有这层信息，你很难解释为什么系统没有使用你以为的主模型。
+
+第六层是 sanitized raw result。真实 provider 的原始错误可能包含敏感信息，因此系统需要 redaction。诊断里应该保留错误类别和可行动信息，但不泄露 key。
+
+读 diagnostics 时，推荐按下面顺序写笔记：
+
+```text
+profile id:
+protocol:
+baseUrl:
+model:
+apiKeyEnv:
+apiKeyConfigured:
+supportsTools:
+supportsStreaming:
+selected/fallback:
+last error kind:
+cooldown:
+next action:
+```
+
+这份笔记比“模型不能用”更有价值。它能告诉你下一步应该设置 key、改 protocol、关 streaming、改 tool support，还是等待 cooldown。
+
+### 7.16 真实模型评测的最小报告模板
+
+只要你用真实模型跑 eval 或 benchmark，就应该写一个最小报告。哪怕只是本地实验，也建议保存这些字段：
+
+```text
+Run date:
+Executor mode:
+Manifest:
+Model profile id:
+Protocol:
+Provider/base URL family:
+Model id:
+supportsTools:
+supportsStreaming:
+maxIterations:
+Task count:
+Completion rate:
+Verification pass rate:
+First-pass rate:
+Average tool calls:
+Duration:
+Token usage:
+Estimated cost:
+Failed scenarios:
+Failure reasons:
+Artifacts path:
+Conclusion boundary:
+```
+
+其中最重要的是 conclusion boundary，也就是结论边界。例如：
+
+```text
+This run shows that deepseek-flash can complete 18/45 tasks in this suite under openai-compatible mode with native tool calls enabled. It does not prove general coding-agent capability outside this manifest, and failures should be reviewed from saved traces before changing prompts or tool contracts.
+```
+
+中文可以写成：
+
+```text
+这次运行说明 deepseek-flash 在当前 suite、当前 profile、当前 maxIterations 和工具配置下完成了 18/45 个任务。它不能证明该模型具备通用 coding-agent 能力，也不能和 synthetic 分数直接比较。失败任务需要结合 trace、工具事件和验证输出复盘。
+```
+
+这个模板能防止 benchmark 结果被误读。真实模型评测不是一句“通过率多少”就结束，而是要说明运行条件、失败原因和适用边界。
+
+### 7.17 不要在接模型时做这些事
+
+第一，不要把真实 key 写进 profile JSON。Profile 可以保存 `apiKeyEnv`，不能保存明文 key。即使是 private repo，也不要养成把 key 写进文件的习惯。
+
+第二，不要在没有 `models` 和 `doctor` 诊断的情况下直接跑 benchmark。这样失败后很难知道是配置问题还是模型问题。
+
+第三，不要把 provider 文档里的模型名想当然迁移到另一个 provider。不同 provider 的 model id、endpoint、tool support 都可能不同。
+
+第四，不要把 `supportsTools=true` 当成性能开关随便打开。它是能力声明，必须符合 provider 实际支持。
+
+第五，不要把 streaming 问题当成模型推理问题。Streaming 是传输和解析路径，失败可能和 SSE、代理、网络、provider 实现有关。
+
+第六，不要忽略 cooldown。Rate limit 或 provider error 后立即重试，可能只会造成更多失败。看 route diagnostics 和 retry-after。
+
+第七，不要把一次真实模型失败直接归因于“模型太弱”。先看 trace：模型是否拿到了正确上下文，工具是否成功，验证失败是否回传，maxIterations 是否足够，prompt 是否清楚。
+
+第八，不要把真实模型成功归因于模型本身。成功也可能依赖更好的工具契约、更清楚的 context、更简单的 fixture、更宽松的判分。报告要写清条件。
+
+### 7.18 Profile 与安全、成本、复现性的关系
+
+Model Profile 同时影响安全、成本和复现性。
+
+安全方面，profile 决定 key 从哪里读、headers 会不会泄露、raw response 是否需要 redaction、provider 是否外发数据。接入真实模型时，workspace 内容、工具输出、错误日志都可能进入请求上下文。不要把敏感仓库直接交给未知 endpoint。必要时先用 mock 或本地模型验证流程。
+
+成本方面，profile 决定模型价格、上下文长度、输出长度、重试次数和失败成本。一个长上下文模型可能更适合复杂任务，但成本更高。一个 flash 模型便宜，但可能在复杂修复中失败率更高，反复重试后总成本未必更低。
+
+复现性方面，profile 是 benchmark 条件的一部分。如果今天用 `primary` 指向模型 A，明天改成模型 B，但报告里都写 `primary`，历史趋势就会失真。因此长期 benchmark 应该记录具体 model id 和 profile snapshot，而不是只记录 profile 名称。
+
+这也是为什么 Model Profile 不只是配置，而是证据的一部分。真实模型能力必须绑定运行条件。
+
+### 7.19 多模型 failover 的正确理解
+
+多模型 failover 不是为了“随便哪个能用就行”，而是为了在受控条件下提高可用性。比如你可以有一个主 profile 和一个备用 profile：主模型质量更高但容易 rate limit，备用模型速度更快但能力稍弱。Runtime 在主 profile 失败或 cooldown 时尝试备用 profile。
+
+但 failover 会改变结果解释。假设一个 benchmark 通过了，你必须知道它是否全程使用主模型。如果中途有 20% 任务 fallback 到备用模型，那么这个结果不能简单归因于主模型。报告应该写清楚 profile attempts。
+
+Failover 也不应该掩盖配置错误。如果主 profile 因为 key 写错一直失败，系统 fallback 到备用 profile，表面上任务完成了，但主 profile 实际不可用。`models` 和 route diagnostics 的价值就在这里：它们能告诉你系统为什么选择了某个 profile，而不是让 fallback 静悄悄发生。
+
+设计多模型链时，建议遵守三条规则。第一，profile id 要有语义，例如 `primary-coding`、`backup-fast`，不要只叫 `model1`、`model2`。第二，报告要记录最终使用的 profile。第三，benchmark 对比时尽量固定路由策略，否则历史趋势会混入模型切换因素。
+
+### 7.20 配置排错表
+
+下面这张表可以作为真实模型接入时的快速排查顺序。
+
+| 现象 | 优先检查 | 可能原因 | 下一步 |
+| --- | --- | --- | --- |
+| `models` 没有出现目标 profile | profile source | setup 未写入、JSON 配置未加载、profile id 写错 | 重新运行 setup 或检查 profile JSON |
+| `apiKeyConfigured=false` | 环境变量 | 当前 shell 没有设置 `apiKeyEnv` 对应变量 | 设置环境变量后重新运行 `models` |
+| provider 返回 401 | key 和 endpoint | key 错误、key 不属于该 provider、base URL 写错 | 用 provider 官方最小 curl 示例验证 |
+| provider 返回 404 | base URL / apiPath / model id | 路径不对、模型名不存在 | 对照官方文档检查 URL 和 model |
+| tool call 一直失败 | supportsTools / protocol | provider 不支持原生 tools、协议不匹配 | 关闭 supportsTools 或改正确 protocol |
+| streaming 中断 | supportsStreaming / 网络 | provider SSE 不兼容、代理中断 | 先关闭 streaming 验证非流式路径 |
+| benchmark 大量失败但小任务成功 | maxIterations / eval 难度 / tool contract | 模型能基础对话但不能复杂修复 | 查看失败 scenario trace 和 tool events |
+| 第一次成功第二次失败 | cooldown / rate limit | provider 限速、credential pool 某个 key 失败 | 看 route diagnostics 和 retry-after |
+| 报告里无法复现结果 | profile 记录不足 | 没记录 model id、tool support、fallback | 补 benchmark report 模板字段 |
+
+这张表的核心思想是：先定位层级，再处理问题。不要在 key 缺失时改 prompt，不要在 protocol 错误时怀疑模型推理，不要在 eval 设计不清时调 provider 参数。真实模型接入的稳定性来自分层诊断。
+
+### 7.21 接入前的人工审查清单
+
+在把一个新的 profile 放进默认 workflow 之前，最好做一次人工审查。审查不是走形式，而是为了避免“配置看起来能跑，但长期数据不可解释”。你可以按下面的顺序逐项确认。
+
+第一，确认 profile 的用途。它是交互式开发用、CI 用、benchmark 用，还是本地 smoke test 用？不同用途对稳定性、成本、速度和能力的要求不同。交互式开发可以接受偶尔慢一点，但不能经常丢上下文；CI 可以接受更保守的模型，但必须输出稳定；benchmark 必须固定版本和参数；smoke test 只需要覆盖协议路径，不应该消耗昂贵模型。
+
+第二，确认 credential 的来源。不要把 key 写进仓库，不要把本机临时变量当成团队配置，不要在文档里给出真实 token。profile 只应该记录 `apiKeyEnv` 这类变量名，真正的密钥由运行环境提供。这样做的好处是同一份配置可以在本机、CI、服务器上复用，而不把私密信息混进提交历史。
+
+第三，确认协议能力是否真实存在。很多兼容接口声称“OpenAI compatible”，但只兼容最基础的 chat completion，不一定支持原生 tool calls、streaming、structured output、parallel tool calls 或 response metadata。profile 里的 `supportsTools`、`supportsStreaming` 等字段应该来自一次真实验证，而不是来自市场宣传。如果没有验证，就宁可保守填写。
+
+第四，确认失败语义。provider 返回 429、500、连接超时、内容过滤、工具协议错误时，runtime 应该如何处理？哪些错误可以 retry，哪些错误必须失败，哪些错误可以 fallback？如果这些语义不清楚，benchmark 结果会很难解释：你不知道失败是模型能力问题、网络问题、限速问题，还是 runtime 对错误分类太粗。
+
+第五，确认报告字段。一次真实运行至少应记录 profile id、provider、model id、endpoint 类型、是否启用工具、是否启用流式、开始时间、结束时间、token 或 cost 估算、失败类型和 trace 路径。没有这些字段，报告就只能说“跑过一次”，不能支持后续比较。
+
+这个清单看起来繁琐，但它会把很多后期问题前置解决。模型接入不是只要拿到一段回答就结束；对于一个 verification-native runtime，真正的结束条件是：别人可以看懂你接入了什么、怎么运行的、为什么失败、怎样复现。
+
+### 7.22 本章参考资料
+
+#### 本项目参考
+
+- [packages/model-client/src/index.ts](../../packages/model-client/src/index.ts)：`ModelProfile`、protocol、provider clients、credential pool、cooldown、route diagnostics。
+- [tests/model-client.test.ts](../../tests/model-client.test.ts)：model-client 行为测试。
+- [README.zh.md](../../README.zh.md)：runtime modes、model profile、failover 配置示例。
+- [docs/operations.md](../operations.md)：Model Runtime 运维排查。
+- [docs/live-testing.md](../live-testing.md)：真实 provider/live testing 的边界。
+- [docs/deepseek-system-test-2026-04-30.md](../deepseek-system-test-2026-04-30.md)：DeepSeek 系统测试记录和模型表现观察。
+- [scripts/eval-benchmark.ts](../../scripts/eval-benchmark.ts)：benchmark 真实模型模式入口。
+- [scripts/release-diagnostics.ts](../../scripts/release-diagnostics.ts)：release diagnostics 中的 model diagnostics。
+
+#### 外部参考
+
+- [OpenAI Responses API Reference](https://platform.openai.com/docs/api-reference/responses/object)：OpenAI Responses 对象和请求路径参考。
+- [OpenAI Function Calling](https://platform.openai.com/docs/guides/function-calling)：工具调用能力和 schema 参考。
+- [Anthropic Messages API](https://docs.anthropic.com/en/api/messages)：Anthropic Messages API 和 tool use 的协议参考。
+- [Anthropic Tool Use](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)：Claude tool use 基本循环。
+- [OpenAI API Key Safety](https://help.openai.com/en/articles/5112595-best-practices-for-api-key-safety)：API key 安全实践。
+- [OpenAI Production Best Practices](https://platform.openai.com/docs/guides/production-best-practices)：生产环境模型调用、可靠性和安全建议。
 
 ---
 
