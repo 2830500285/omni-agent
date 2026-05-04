@@ -3607,65 +3607,103 @@ Omni Agent 的目标是把这些层分开：当前源码通过 workspace 读取�
 ## 12. Session Store 与 Run Artifact：证据从哪里来
 
 
-本章讨论的是：把一次 Agent 运行从聊天过程变成可查询、可复盘、可审计的工程记录。如果前面的章节像是在搭建一台机器，那么这一章就是把其中一个关键部件拆下来，观察它为什么存在、怎样运行、在哪里容易出错，以及如何用测试和文档证明它确实可靠。
+前面的章节已经讲过 runtime 如何接收任务、选择模型、调用工具、执行验证。但这些动作如果只存在于当前进程内存里，一旦命令结束，就只剩终端里滚过的几行文字。用户后来想问“它到底改了什么”“哪个工具失败了”“有没有运行验证”“这条 memory 从哪里来”，系统就回答不了。
+
+Session Store 解决的正是这个问题。它把 workspace、thread、run、message、tool event、artifact、memory、thread summary、metrics 等对象保存下来，让一次 Agent 运行从“聊天过程”变成“可查询的工程记录”。Run Artifact 则进一步把一次任务的关键证据打包成稳定 JSON：任务合同、工具轨迹、审批、diff、验证、最终总结。没有这两层，Agent 很难被审计，也很难支撑公开 benchmark 或能力声明。
 
 
 ### 12.1 本章先建立的心智模型
 
-心智模型的第一步，是把抽象名词放回真实工作流。 在本章语境中，workspace、run 和 timeline 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+先把几个对象分清楚。
 
-心智模型的第二步，是把能力和责任分开。 在本章语境中，thread、artifact 和 memory 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`workspace` 是项目现场，回答“这次任务发生在哪个仓库”。一个 workspace 可以有多个 thread。
 
-本章反复出现的关键词包括：`workspace`、`thread`、`run`、`artifact`、`timeline`、`memory`、`trace`、`verification`。不要把这些词当成术语装饰。每一个词都应该能回答一个实际问题：谁负责做决策，谁负责执行，谁负责记录，谁负责验证，谁负责在失败时给出解释。
+`thread` 是一条对话或任务线索，回答“这些消息和运行属于哪个持续上下文”。一个 thread 可以包含多次 run，因为同一个问题可能经过多轮尝试、修复和验证。
+
+`run` 是一次具体执行，回答“这一次 Agent 到底做了什么”。Run 会记录 objective、status、execution domain、source root、execution root、verification status、final response 等信息。
+
+`message` 是用户、系统、助手在 thread 中留下的文本。它适合恢复对话语义，但不能代替工具证据。
+
+`tool event` 是工具调用记录，包含 tool name、risk tier、status、summary、output preview、stored output ref、presentation 等字段。它回答“模型请求了什么工具，runtime 实际执行结果是什么”。
+
+`artifact` 是证据文件或证据记录。长输出、完整报告、agent-run JSON、截图、benchmark 结果都应该落到 artifact，而不是全部塞进聊天记录。
+
+`memory` 是跨任务保存的信息。它可以引用 workspace、agent、thread，也可以带 tags。Memory 和 artifact 的区别是：memory 指导未来行为，artifact 证明过去发生过什么。
+
+理解这些对象后，你会发现 Session Store 不是数据库杂物间，而是 Agent 的事实账本。每条记录都在回答一个复盘问题。
 
 ### 12.2 在仓库中找到入口
 
 阅读本章时，建议从下面这些文件开始：
 
-1. [`packages/session-store/src/index.ts`](../../packages/session-store/src/index.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-2. [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)：用来观察本章在仓库中的实现、测试或运维入口。
-3. [`tests/session-store.test.ts`](../../tests/session-store.test.ts)：用来观察本章在仓库中的实现、测试或运维入口。
-4. [`tests/tools.test.ts`](../../tests/tools.test.ts)：用来观察本章在仓库中的实现、测试或运维入口。
+1. [`packages/session-store/src/index.ts`](../../packages/session-store/src/index.ts)：核心实现。先看 `WorkspaceRecord`、`ThreadRecord`、`RunRecord`、`MessageRecord`、`ToolEventRecord`、`ArtifactRecord`、`MemoryRecord`、`AgentRunArtifactPayload` 这些类型，再看 `SqliteSessionStore` 的写入和查询方法。
+2. [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)：解释 `agent-run` artifact 的 JSON 结构，尤其是 `taskContract`、`toolTrace`、`approvals`、`diff`、`verification`、`summary` 六块。
+3. [`tests/session-store.test.ts`](../../tests/session-store.test.ts)：最适合新手阅读的入口。它用一个临时 store 串起 workspace、agent、thread、run、message、tool event、artifact、memory、thread summary、learned skill、automation、route 等对象。
+4. [`tests/tools.test.ts`](../../tests/tools.test.ts)：展示工具层如何通过 session store 保存 memory、checkpoint、skill 等结果，帮助你理解 store 不是只给 runtime 用，也服务于工具生态。
 
-源码入口不是为了让读者立刻读完所有实现，而是为了把教程文字和真实代码绑定起来。 在本章语境中，run、timeline 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+读源码时建议先从类型开始。Session Store 的难点不是某一条 SQL，而是对象之间的关系：workspace 包住 thread，thread 包住 run，run 连接 message、tool event、artifact 和 metrics；memory、profile fact、learned skill 又把某些运行经验提升为未来可召回的信息。把这张对象图画出来，比一开始逐行读实现更有效。
 
 当你打开这些文件时，先不要急着逐行理解。第一轮只看导出的类型、公开函数、测试名称和文档标题。第二轮再看关键函数如何组合。第三轮才看边界条件和失败处理。这样的阅读顺序能避免一开始就陷入实现细节。
 
 ### 12.3 它在一次 Agent 任务中怎样出现
 
-一次 Agent 任务通常不是单步完成，而是在观察、计划、执行、验证和修复之间循环。 在本章语境中，artifact、memory 和 verification 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+一次典型任务会这样进入 Session Store。
 
-你可以把这个过程想象成一张运行记录。用户请求进入系统后，runtime 先整理任务目标，再读取 workspace 状态，然后根据上下文选择工具或模型调用。每个动作都应该产生可解释结果。如果动作成功，系统继续推进；如果动作失败，系统保存失败证据并决定是修复、重试、请求确认还是停止。
+第一步，runtime 用 `upsertWorkspace` 确认当前仓库对应的 workspace 记录。如果同一个路径以前运行过，它应复用已有 workspace，而不是制造一堆重复项目。
 
-本章主题在这条链路中承担的角色，是让这个过程不只停留在“模型回答了什么”，而是能够落到“系统实际做了什么”。这也是 Omni Agent 与普通聊天机器人的根本区别。
+第二步，runtime 创建或复用 thread。Thread 的作用是承载持续对话，例如“修复 eval benchmark”这个主题可能包含多次 run。
+
+第三步，runtime 调用 `createRun`，写入 objective、agentId、executionDomain 等信息。此时 run 状态通常是 `running`。
+
+第四步，用户消息、系统消息、助手消息通过 `appendMessage` 进入 thread。消息适合保存语义背景，但不能承担全部证据责任。
+
+第五步，每次工具调用通过 `recordToolEvent` 保存。比如 `workspace_info` 成功、`run_command` 失败、`git_diff` 返回改动摘要，都应该留下 tool event。长输出可以被截断并指向 stored output ref。
+
+第六步，命令输出、报告、完整 trace、agent-run JSON 通过 `addArtifact` 或 `addAgentRunArtifact` 保存。Artifact 是复盘时最重要的材料。
+
+第七步，运行结束时调用 `completeRun`，写入 status、finalResponse、verificationStatus。随后 `upsertRunMetrics` 可以记录 turn count、tool call count、token、duration、context engine status 等指标。
+
+这个流程的关键是：最终回答不是唯一结果。真正完整的一次 run，应该能从 store 中还原“任务是什么、模型说了什么、工具做了什么、验证跑没跑、失败证据在哪里”。
 
 ### 12.4 设计时最容易忽略的边界
 
-边界是本地 Agent 最容易被低估的部分。 在本章语境中，timeline、trace 和 workspace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+Session Store 最容易被误用的地方，是把不同生命周期的信息混在一起。
 
-第一类边界是权限边界。不是所有角色都应该拥有所有工具，不是所有工具都应该在所有 execution domain 中执行，不是所有历史信息都应该拥有当前事实的优先级。
+第一类边界是 run 与 thread。Run 是一次执行，thread 是持续上下文。如果某次 run 失败，不能把整个 thread 标记为失败；如果 thread 里有旧的成功经验，也不能证明当前 run 成功。
 
-第二类边界是时间边界。一次运行中的状态、一个会话中的偏好、一个项目长期有效的规则，不应该混在一起。临时信息如果被保存成长期 memory，会污染未来任务；长期规则如果只存在于当前 context，下一次任务又会重新学习。
+第二类边界是 message 与 artifact。Message 保存对话文本，artifact 保存证据。测试完整输出、benchmark report、工具长输出不适合放进 message；否则 context 会膨胀，也不利于检索。
 
-第三类边界是证据边界。聊天摘要、artifact、测试结果、benchmark 报告、源码 diff 的证明力不同。不能用一句总结替代测试结果，也不能用一次 synthetic benchmark 替代真实模型能力结论。
+第三类边界是 artifact 与 memory。Artifact 证明过去发生的事，memory 指导未来行为。一次失败输出应该保存成 artifact；只有当失败模式被确认有长期价值时，才应该提炼成 memory。
+
+第四类边界是 preview 与完整输出。Tool event 里的 output preview 适合快速浏览，但它可能被截断。真正复盘时要看 stored output ref 或 artifact path。不能因为 preview 没显示错误，就判断工具没有失败。
+
+第五类边界是 run metrics 与能力评分。Turn count、tool call count、token、duration 能说明运行成本和行为形态，但不能直接说明任务成功。任务成功仍要看 verification、diff、eval result 和 artifact。
 
 ### 12.5 如何判断实现是否可靠
 
-判断实现可靠性，不能只看 happy path。 在本章语境中，memory、verification 和 thread 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+判断 Session Store 是否可靠，要看它能不能回答复盘问题。
 
-你至少要检查四类证据。第一，源码中是否有明确类型和边界检查。第二，测试是否覆盖成功路径、失败路径和危险路径。第三，运行结果是否留下 artifact 或 trace。第四，文档是否告诉用户如何复现、如何解释失败、如何避免误用。
+第一，它能不能持久化基本对象？`tests/session-store.test.ts` 中会创建 workspace、agent、thread、run，并在 run 下追加 message、tool event、artifact 和 memory。这说明 store 不是只保存聊天文本，而是保存完整运行结构。
 
-如果一项能力只有 README 声明，没有测试、没有 artifact、没有失败解释，它就还只是愿景。反过来，如果它能在源码、测试、命令、报告和文档中互相印证，即使功能范围很小，也已经具备工程可信度。
+第二，它能不能把 run 的上下文补齐？测试里会调用 `updateRunExecutionContext` 写入 source root、execution root、worktree、sandbox 等信息。没有这些字段，后续看到一个 run 时就不知道它到底在哪个目录执行。
+
+第三，它能不能记录工具事件？`recordToolEvent` 至少要保存 tool name、risk tier、status、summary、presentation。未来排查“为什么模型没完成”时，tool event 往往比最终回答更有价值。
+
+第四，它能不能保存可复用知识但不混淆范围？测试里既有 thread memory，也有 workspace memory 和 agent-specific workspace memory。不同 scope 的 memory 应被不同方式召回。
+
+第五，它能不能生成 agent-run artifact？`docs/agent-run-artifacts.md` 要求 payload 包含 taskContract、toolTrace、approvals、diff、verification、summary。如果这些字段缺失，报告就很难支撑“这次任务完成了”的结论。
 
 ### 12.6 常见误区
 
-第一个误区，是把名字相同的概念当成能力相同。 在本章语境中，trace、workspace 和 run 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+第一个误区，是把 run summary 当成 run artifact。Summary 是给人快速阅读的文字，artifact 是结构化证据。Summary 可以说“测试通过”，但 artifact 应该写明验证命令、状态、输出摘要或报告路径。
 
 第二个误区，是把一次成功当成长期可靠。一次 demo 能跑，只能说明路径可能可行；多次可复现、有失败样本、有 baseline、有版本记录，才能说明它适合被公开声明。
 
-第三个误区，是把模型问题和 runtime 问题混在一起。很多失败看起来像模型弱，实际可能是工具描述不清、上下文缺失、审批阻断、工作目录错误、测试命令不完整或 benchmark 模式解释错误。
+第三个误区，是把 tool event preview 当成完整输出。Preview 可能被截断，只适合快速查看。真正定位失败时，要跟随 stored output ref 或 artifact path 看完整内容。
 
-第四个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
+第四个误区，是把 memory 当成 artifact。Memory 是给未来任务使用的经验，不应该用来证明过去任务已经成功。证明过去任务要看 run、tool event、verification 和 artifact。
+
+第五个误区，是只优化最终回答。对 Agent 来说，最终回答只是表层结果。真正应该优化的是工具选择、执行边界、证据记录、失败修复和验证闭环。
 
 ### 12.7 一个可操作的检查流程
 
@@ -3675,25 +3713,33 @@ Omni Agent 的目标是把这些层分开：当前源码通过 workspace 读取�
 4. 制造一个失败样本，看系统是否能给出清楚错误和 artifact。
 5. 把结果写成简短记录：输入是什么，动作是什么，输出是什么，证据在哪里，剩余风险是什么。
 
-这个流程的价值在于，它把学习变成一套可重复的工程动作。 在本章语境中，verification、thread 和 artifact 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这个流程的重点是“能还原”。如果你只能看到最终回答，就说明记录不够；如果能看到 run 状态但看不到工具事件，说明执行证据不够；如果能看到工具事件但看不到完整输出，说明 artifact 不够；如果能看到验证命令但不知道 diff，说明任务结果仍然不完整。一个好的 run record 应该让后来的人不依赖模型自述，也能判断任务完成程度。
 
 ### 12.8 与真实模型评测的关系
 
-真实模型评测之所以困难，是因为你不能只看模型最后说了什么。 在本章语境中，workspace、run 和 timeline 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+真实模型评测最怕“只有分数，没有过程”。一个 benchmark 说 32/45 通过，如果没有 run artifact，你不知道失败是模型没有调用工具、工具参数错、审批阻断、验证命令失败、上下文压缩丢信息，还是判分器设计不合理。
 
-当你用 DeepSeek、OpenAI 或其他兼容端点跑 benchmark 时，本章主题会影响结果解释。模型可能因为上下文不足而失败，也可能因为工具协议不兼容而失败，可能因为审批策略拒绝动作而失败，也可能因为任务本身没有足够证据要求而被误判通过。
+因此，真实模型 benchmark 应尽量把每个 scenario 映射到 run record：模型 profile 是什么，thread 和 run id 是什么，工具事件有哪些，是否出现 required tool，diff 是否符合预期，verification status 是什么，失败原因归类是什么，完整输出或报告保存在什么 artifact。
 
-因此，真实报告必须写清执行模式、模型 profile、工具能力、运行时间、成本、失败类型、artifact 路径和复现命令。没有这些字段，报告只是一张分数表，不是工程证据。
+这样做还有一个好处：长期趋势可解释。如果某个版本分数下降，你可以比较两个版本的 run artifact，而不是只看总分。比如 tool call count 变少，可能是 prompt 让模型过早总结；approval blocked count 变多，可能是新策略过严；duration 增加，可能是模型或工具重试变多。Session Store 让 benchmark 从“分数表”变成“可诊断数据”。
 
 ### 12.9 一个完整的小案例
 
-假设你正在维护 Omni Agent，并且有人在 issue 中说：本章相关能力“看起来存在，但不知道是否真的可靠”。一个成熟的处理方式不是立刻回复“已经支持”，而是把问题转化成可验证路径。
+假设一次任务是“修改 parser 并运行 targeted test”。一个合格的 agent-run artifact 应该长这样：
 
-第一步，你应该定位到本章列出的源码入口，确认能力是否真的在 runtime 中被调用，而不是只存在于未接线的工具函数。第二步，阅读测试，确认测试是否覆盖正常路径和失败路径。第三步，运行一个最小验证命令，保留输出。第四步，如果能力会影响用户文件、外部服务或模型评测，就补充 artifact 或报告字段。第五步，把结果写回文档，说明这项能力现在能证明到什么程度，哪些部分仍然只是未来计划。
+`taskContract` 里写 objective、execution domain、source root、execution root、success criteria 和 constraints。比如 success criteria 是“targeted parser tests pass”，constraints 是“only touch parser and parser tests”。
 
-这个案例强调的是工程诚实。 在本章语境中，thread、artifact 和 memory 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+`toolTrace` 里记录 `read_file`、`search_text`、`write_file`、`run_command` 等工具事件。每个事件至少要有 tool name、risk tier、status、summary、output preview、createdAt。如果 `run_command` 输出太长，就用 stored output ref 指向完整日志。
 
-如果最终证据只能证明 synthetic 路径，就不要宣称真实模型能力；如果只验证了 mock runtime，就不要宣称生产模型稳定；如果只写了文档，还没有测试，就不要把它放进成熟能力列表。这样写文档会更谨慎，但项目可信度会更高。
+`approvals` 里记录哪些动作被允许、提示或拒绝。比如 `run_command` 的 `npm test -- tests/parser.test.ts` 是低风险验证命令，可以记录为 allow；如果模型尝试 `git reset --hard`，应该记录为 deny 或 prompt。
+
+`diff` 里写 changed files 和 summary。如果 patch 太长，可以写 patch artifact path。
+
+`verification` 里写 status、commands、summary。这里是判断任务是否完成的核心字段。
+
+`summary` 里写 final response、notes、next steps。它是人类入口，但不是唯一证据。
+
+这个例子比“任务完成了”有用得多。后来的人能看懂目标、动作、审批、改动、验证和结论。如果验证失败，也能继续追溯是哪一步出问题。
 
 ### 12.10 排错时的分层问题表
 
@@ -3705,34 +3751,84 @@ Omni Agent 的目标是把这些层分开：当前源码通过 workspace 读取�
 | 真实模型结果不稳定 | profile、rate limit、tool support | 只调 prompt | 固定模型和参数后重复运行 |
 | 文档与实现不一致 | 最近 commit、测试和 release checklist | 以旧文档为准 | 以当前源码和验证为准 |
 
-分层排错能减少无效尝试。 在本章语境中，run、timeline 和 trace 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+这张表在本章要稍微具体化：排错时先看 run，再看 tool events，再看 artifact，最后才回到 prompt 或模型。比如“benchmark 分数异常”时，不要先改 prompt；先确认每个失败 scenario 有没有 run record，run 是否完成，verification status 是什么，required tool 是否出现。只有这些证据都完整，模型层分析才有意义。
 
-很多问题如果从错误层级切入，会越修越乱。比如工具参数错了，却不断修改 prompt；workspace 路径错了，却怀疑模型能力；benchmark suite 太简单，却把高分当成真实能力。分层问题表的作用，就是提醒读者先定位层级，再采取动作。
+很多问题如果从错误层级切入，会越修越乱。工具参数错了，却不断修改 prompt；artifact 没保存，却怀疑 eval 判分；run status 还是 running，却发布 completed 报告；memory 被误召回，却说模型不稳定。Session Store 的价值，就是让这些问题能被分层定位。
 
 ### 12.11 如何把本章内容写进团队流程
 
 如果这个项目由多人维护，本章内容不应该只停留在个人理解里。你可以把它转化成团队流程：新增能力必须有最小测试，新增工具必须有风险分类，新增 benchmark 必须写明 executor mode，新增真实模型报告必须保存 trace 和 cost，修改安全边界必须更新 security 文档。
 
-团队流程的价值，是把个人经验变成项目习惯。 在本章语境中，artifact、memory 和 verification 不是孤立概念，而是同一条工程链路上的三个观察点。读者需要先判断它们分别解决什么问题，再判断它们之间如何传递证据。很多 Agent 项目失败，并不是因为模型完全不能推理，而是因为这些边界没有被写成稳定流程：该进入上下文的信息没有进入，该落到 artifact 的证据只停留在聊天里，该被验证的结论被当成了经验，该被拒绝的高风险动作被包装成普通工具调用。学习这一章时，不要急着背 API 名称，而要不断追问：这个设计保护了什么风险，它留下了什么证据，下一位维护者能不能复现这个判断。
+团队流程的重点是统一证据格式。不要让一个人把测试输出贴在 issue 里，另一个人把结果写在 README，第三个人只保留本地终端历史。对 Agent 项目来说，应约定：重要 run 要有 artifact；benchmark 要保存 run id 和报告路径；真实模型测试要记录 profile、cost、duration、failure reason；安全相关拒绝要记录 approval decision；长期经验要进入 memory 并带 scope 和 tags。
 
 当新贡献者加入时，不要只让他读完全部源码。更有效的方式是给他一个小任务，让他沿着本章流程走一遍：定位入口，读测试，运行命令，制造失败，保存证据，更新文档。完成一次这样的练习，比泛泛阅读十篇 Agent 文章更能建立工程直觉。
 
-### 12.12 练习
+### 12.12 如何复盘一次失败 run
 
-1. 围绕 `workspace` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-2. 围绕 `thread` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-3. 围绕 `run` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-4. 围绕 `artifact` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-5. 围绕 `timeline` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
-6. 围绕 `memory` 写一个小检查：它的输入是什么，输出是什么，失败时应该留下什么证据，是否需要人工确认。
+现在用一个具体失败场景把本章内容串起来。假设用户要求 Agent 修改 eval 判分逻辑，Agent 最后回答“已经修复”，但 CI 或本地测试仍然失败。你不应该先去猜模型哪里想错了，而应该按 Session Store 的记录顺序复盘。
 
-这些练习不要求你一次写很多代码。更重要的是训练判断力：看到一个 Agent 能力声明时，你能不能找到对应源码、测试、运行命令和证据。
+第一步，看 run record。确认 objective 是否就是用户要求的任务，status 是 `failed`、`completed` 还是 `completed_with_warnings`，verificationStatus 是 `passed`、`failed`、`skipped` 还是 `not-run`。如果 run 被标记为 completed，但 verificationStatus 是 failed，这就是运行状态和验证状态不一致，需要优先修。
 
-第 7 个练习：把本章主题写成一句能力声明，再为它补齐证据链。证据链至少包括一个源码入口、一个测试或命令、一个 artifact 或报告字段，以及一个公开参考链接。
+第二步，看 execution context。确认 sourceRoot、executionRoot、worktreePath、sandboxPath。很多失败不是模型能力问题，而是命令在错误目录运行，或者 Agent 在 worktree 里改了文件，用户却查看原 workspace。
 
-第 8 个练习：设计一个失败样本，说明如果缺少本章能力，Agent 会怎样给出错误结论。失败样本越具体，越能帮助你理解系统边界。
+第三步，看 messages。Messages 能告诉你用户原始要求、模型中间解释和最终总结。但 messages 只是语义材料，不足以证明工具行为。它们用于理解意图，不用于直接判定完成。
 
-### 12.13 本章参考资料
+第四步，看 tool events。检查模型是否调用了应调用的工具。例如修改 eval 逻辑前是否读取了相关文件，修改后是否查看了 diff，结束前是否运行了测试。还要看 tool event 的 status：工具失败后模型是否继续修复，还是忽略失败直接总结。
+
+第五步，看 artifacts。如果 tool event 的 outputPreview 被截断，就必须打开 stored output 或 artifact。测试失败的关键栈、断言差异、benchmark report 通常不应该只靠 preview 判断。
+
+第六步，看 diff。确认 changedFiles 是否和任务相关。一个 Agent 可能改了文档却没有改判分逻辑，也可能改了测试让它通过却没有修实现。Diff 是判断“它实际做了什么”的核心证据。
+
+第七步，看 verification。确认 commands 是否真实执行，status 是否 passed，summary 是否和命令输出一致。不要接受“模型说测试通过”，只接受 verification 记录里的命令和结果。
+
+第八步，看 memory 或 learned skill。失败 run 不应该自动沉淀成 verified memory。如果这次运行没有通过验证，相关经验应该标记为需要复核，或者只作为失败案例保存。
+
+这个复盘顺序能把问题分层：任务目标错了，是 contract 问题；目录错了，是 workspace/execution context 问题；工具没调用，是模型或 prompt 问题；工具失败，是环境或参数问题；验证没跑，是 runtime loop 问题；验证失败却总结成功，是完成判定问题。没有 Session Store，这些层级会混在一起，最后只剩一句“模型不行”。
+
+### 12.13 Agent-run artifact 六个字段怎么写
+
+`agent-run` artifact 的价值在于把一次运行浓缩成稳定 JSON。它不是随便把所有内容打包，而是按复盘需要分成六块。
+
+`taskContract` 应该回答“这次任务承诺完成什么”。至少要写 objective、executionDomain、sourceRoot、executionRoot、successCriteria 和 constraints。不要只写用户一句话。比如“修复测试”太模糊；更好的 success criteria 是“`node ./scripts/run-tests.mjs tests/evals.test.ts` 通过，并且只修改 eval schema 和相关测试”。
+
+`toolTrace` 应该回答“Agent 实际做了哪些动作”。每条记录应包含 toolCallId、toolName、riskTier、status、summary、outputPreview、outputTruncated、storedOutputRef、presentation、createdAt。这里的重点不是记录越长越好，而是能看出行动顺序和失败点。工具失败时，summary 要写清失败原因；输出过长时，要有 storedOutputRef。
+
+`approvals` 应该回答“哪些动作经过了安全决策”。低风险工具可以自动 allow，但高风险命令、rollback、外部发送、文件删除等动作必须记录 decision、riskTier、approvalClass、summary。审批记录的价值在事故复盘时很明显：你能知道系统是否错误放行了危险动作，还是正确拦截了模型请求。
+
+`diff` 应该回答“仓库实际发生了什么变化”。它至少应包含 changedFiles 和 summary；patch 可以内联，也可以放到 patchArtifactPath。对于长 diff，建议保存 patch artifact，而不是把巨大 diff 塞进 JSON。Diff summary 不应该夸大，只说明实际变化。
+
+`verification` 应该回答“完成标准是否被验证”。它至少包含 status、commands、summary。这里要避免含糊写法。不要写“看起来没问题”，要写“运行了什么命令，退出状态是什么，失败摘要是什么”。如果没有运行验证，要明确 `not-run` 或 `skipped`，并说明原因。
+
+`summary` 应该回答“给用户的最后结论是什么”。它可以包含 finalResponse、notes、nextSteps。但 summary 不能替代前五块。一个好的 summary 会引用验证状态和剩余风险；一个坏的 summary 会在没有验证时说“已完成”。
+
+这六块合起来，构成一次运行的最小证据链。它不要求记录所有 token，也不要求保存无限日志，但必须让后来的人能回答：任务是什么，做了什么，改了什么，验证了什么，哪些动作被审批，结论是否可信。
+
+### 12.14 Session Store 与隐私边界
+
+保存记录也意味着承担隐私责任。Agent 运行中可能出现路径、命令、错误输出、环境变量名、API provider 名称、用户项目结构，甚至意外出现密钥片段。因此 Session Store 和 artifact 不能只追求“保存更多”，还要考虑脱敏和最小必要记录。
+
+对命令输出，应该保存足够复盘的内容，但敏感 token、Authorization header、API key、cookie 等必须经过 redaction。对模型输入输出，应该避免把完整密钥、私有数据或第三方机密材料写入可公开 artifact。对 benchmark 报告，应该记录 cost、duration、model profile，但不要泄露真实 key 或内部 endpoint secret。
+
+公开仓库尤其要注意 artifacts 边界。本地 `.artifacts` 可以保存详细运行材料，但不等于所有 artifact 都应该提交。适合提交的是脱敏后的报告、稳定的 fixture、评测 suite 和必要文档；不适合提交的是真实密钥、临时日志、用户私有仓库内容、完整 provider 响应。
+
+因此，Session Store 的成熟度不只看“能保存”，还要看“保存什么、保存多久、谁能读取、能否脱敏、能否复盘”。一个 Agent 如果把所有东西都写进日志，短期看方便，长期看会形成安全债务。
+
+### 12.15 本章的最小完成标准
+
+学完这一章后，你应该能独立回答四个问题。第一，一个 workspace、thread、run 分别代表什么，为什么不能混用。第二，tool event、message、artifact、memory 各自保存什么，为什么不能互相替代。第三，一个 `agent-run` artifact 至少应该包含哪些字段，哪些字段支撑“任务完成”的判断。第四，当一次任务失败时，应该按什么顺序从 run record、tool event、artifact、diff、verification 中找根因。
+
+如果这些问题答不上来，说明你还停留在“看最终回答”的阶段；如果能答上来，你就已经开始用工程证据理解 Agent，并能判断一次运行是否真的值得信任、是否可以复现、是否可以写进公开报告，是否还能被后来的人继续审计、维护和长期比较。
+
+### 12.16 练习
+
+1. 打开 [`tests/session-store.test.ts`](../../tests/session-store.test.ts)，按顺序列出它创建了哪些对象。把这些对象画成一张关系图：workspace、agent、thread、run、message、tool event、artifact、memory、thread summary、metrics。
+2. 阅读 [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)，手写一个最小 `agent-run` JSON。要求包含 `taskContract`、一个 `toolTrace`、一个 `approval`、一个 `diff`、一个 `verification` 和一个 `summary`。
+3. 设计一个失败 run：工具 `run_command` 执行测试失败，stdout 很长。说明哪些内容放进 tool event preview，哪些内容放进 artifact，最终 summary 应该怎么写才不误导用户。
+4. 设计一条 memory：“这个仓库 release 前必须运行 `npm run release:check`”。说明它应该是 thread scope 还是 workspace scope，tags 应该写什么，是否需要来源 run id。
+5. 找一个 benchmark 报告，列出如果没有 run artifact，你无法回答哪些问题。至少写五个，例如模型 profile、工具调用、验证命令、失败原因、成本。
+6. 修改一个小的 session-store 测试思路：如果 `addAgentRunArtifact` 没有包含 verification status，你会如何设计断言让测试失败？
+
+### 12.17 本章参考资料
 
 - Omni Agent: [`packages/session-store/src/index.ts`](../../packages/session-store/src/index.ts)
 - Omni Agent: [`docs/agent-run-artifacts.md`](../../docs/agent-run-artifacts.md)
