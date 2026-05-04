@@ -785,53 +785,516 @@ Subagent 的价值在于并行或分工：一个 worker 可以做只读调查，
 
 ## 4. 本地环境与第一次运行
 
-先不要急着接真实模型。一个稳健的学习路径应该从本地 mock 路径开始。原因很简单：如果本地构建、类型检查、doctor、workspace inspection 都还没跑通，就直接接远程模型，会把问题混在一起。你不知道失败是模型问题、密钥问题、网络问题、仓库问题，还是 runtime 本身问题。
+### 4.1 第一次运行的目标不是“立刻接模型”
 
-进入仓库根目录后，先安装依赖：
+第一次运行 Omni Agent 时，最重要的目标不是马上接入 DeepSeek、OpenAI、Anthropic 或本地模型，而是建立一个可解释的本地闭环。这个闭环应该回答几个基础问题：
+
+- 依赖能不能安装？
+- TypeScript monorepo 的类型合同有没有断？
+- CLI 能不能启动？
+- Runtime 能不能识别 model profile？
+- Doctor 能不能检查 workspace、存储、git、memory、gateway 和 route 状态？
+- 一个最小任务能不能穿过 CLI、runtime、workspace、model client 和 session store？
+- 如果失败，错误应该从哪里开始查？
+
+很多新手会跳过这些步骤，直接配置 API key，然后问“为什么模型跑不起来”。这种做法会把问题混在一起：可能是 Node 版本不对，可能是依赖没装完整，可能是 TypeScript 构建失败，可能是路径里有空格没加引号，可能是 API key 环境变量不存在，可能是 provider endpoint 不兼容，可能是 runtime 的 mock 路径就没跑通。问题混在一起以后，排查成本会迅速上升。
+
+所以本章采用一个保守顺序：先本地，后远程；先 mock，后真实模型；先 doctor，后 benchmark；先最小任务，后复杂任务。这个顺序看起来慢，但它能让你知道每一步在验证什么。
+
+### 4.2 进入正确目录
+
+所有命令默认从仓库根目录运行。仓库根目录应该能看到这些文件或目录：
+
+```text
+package.json
+package-lock.json
+apps/
+packages/
+scripts/
+examples/
+docs/
+tests/
+```
+
+在 Windows PowerShell 里，如果路径包含空格，要用引号包起来。例如本教程所在项目路径包含 `Paper Agent`，因此推荐这样进入：
+
+```powershell
+Set-Location "E:\Temporary\Paper Agent\omni-agent"
+```
+
+在 macOS 或 Linux 里，路径写法不同，但原则一样：
+
+```bash
+cd "/path/to/omni-agent"
+```
+
+确认当前目录是否正确，可以运行：
+
+```bash
+node -p "require('./package.json').name"
+```
+
+期望输出是：
+
+```text
+omni-agent
+```
+
+如果这里失败，说明你不在仓库根目录，或者文件缺失。不要继续往下跑。Agent 项目的很多命令都依赖相对路径、workspace root、package scripts 和 tsconfig。如果根目录错了，后面错误会越来越难读。
+
+### 4.3 确认 Node 与 npm
+
+Omni Agent 是 TypeScript/Node.js 项目。`package.json` 里声明了 `packageManager` 为 `npm@11.6.2`，依赖包括 `tsx`、`typescript`、`esbuild`、`ws` 等。实际运行时，你需要一个足够新的 Node.js 版本。
+
+先检查版本：
+
+```bash
+node --version
+npm --version
+```
+
+如果 Node 版本太旧，可能出现这些问题：`tsx` 无法正常加载 ESM，TypeScript build 报奇怪错误，依赖安装失败，或者某些现代 JavaScript API 不存在。实际项目通常使用 Node 20 或更新版本更稳妥。
+
+这里不要把“npm 版本”和“模型是否可用”混为一谈。`npm` 只负责安装和运行本地脚本；模型接入由 model profile、环境变量和 provider endpoint 决定。第一次运行时，先让本地脚本可用，再考虑远程模型。
+
+### 4.4 安装依赖：`npm install` 与 `npm ci`
+
+进入仓库根目录后，安装依赖：
 
 ```bash
 npm install
 ```
 
-如果你习惯严格复现锁文件环境，也可以用：
+这一步会读取 `package.json` 和 `package-lock.json`，安装 CLI、runtime、测试、构建所需依赖。安装完成后，仓库里会出现或更新 `node_modules/`。
+
+如果你想严格按照 lockfile 复现依赖，可以使用：
 
 ```bash
 npm ci
 ```
 
-然后跑类型检查：
+`npm install` 更适合本地开发，允许根据当前 package 信息调整 lockfile；`npm ci` 更适合 CI 或干净环境，会严格使用 lockfile，通常速度更可预测。如果 `npm ci` 因 lockfile 与 package 不一致失败，说明依赖元数据需要先修复。
+
+常见失败包括：
+
+- 网络无法访问 npm registry。
+- Node 版本太旧。
+- 本地代理或证书配置有问题。
+- `node_modules` 中已有损坏依赖。
+- Windows 上路径过长或文件被占用。
+
+遇到安装失败，不要直接改源码。先看错误是网络、权限、版本还是 lockfile。依赖没装好之前，后面的 typecheck、dev、test 都不可靠。
+
+### 4.5 类型检查：为什么第一道门是 `npm run typecheck`
+
+依赖安装后，先跑：
 
 ```bash
 npm run typecheck
 ```
 
-Typecheck 的意义不是“让 TypeScript 开心”，而是证明 monorepo 内部包之间的类型合同没有断。Agent runtime 往往由多个包组成：CLI 传入 runtime options，runtime 调 model-client，runtime 调 tools，tools 又依赖 workspace，最后 session-store 保存结果。任何一个类型合同断掉，都可能导致运行时错误。
+这个命令来自 `package.json`：
 
-接着查看模型配置：
+```json
+"typecheck": "tsc -b --pretty false --force"
+```
+
+它会用 TypeScript project references 检查 monorepo 内部包。对普通项目来说，typecheck 只是“检查类型”；对 Agent runtime 来说，typecheck 是第一道系统合同检查。
+
+原因是 Omni Agent 被拆成多个包。CLI 传 runtime options，runtime 调 model-client，runtime 调 tools，tools 调 workspace，session-store 保存 run 和 artifact，evals 读取 observed runs 和 suite schema。任何一个包的类型合同断掉，都可能在运行时变成更难排查的问题。
+
+比如：
+
+- Model profile 字段变了，但 CLI 还按旧字段传。
+- Tool result 类型变了，但 runtime 还按旧结构读取。
+- Eval score 类型新增了，但 report 没处理。
+- Session-store artifact schema 改了，但读取逻辑没同步。
+
+Typecheck 可以在运行前发现这类问题。它不能证明业务行为正确，但能证明很多跨包接口没有明显断裂。
+
+如果 typecheck 失败，先读第一条真实错误，不要被后续连锁错误吓到。TypeScript 常常因为一个类型定义错了导致几十个文件报错。修复时也要保持最小改动：先定位哪个包的公共类型变了，再看调用方是否应该同步。
+
+### 4.6 构建：什么时候需要 `npm run build`
+
+如果你只是学习源码、跑 CLI 开发入口，`npm run dev -- ...` 通常会通过 `tsx` 直接运行 TypeScript 源码，不一定需要先 build。但如果你要验证发布产物、运行 `npm start`、检查 dist 输出，就应该跑：
+
+```bash
+npm run build
+```
+
+`package.json` 里的 build 脚本是：
+
+```json
+"build": "npm run typecheck && node ./scripts/build.mjs"
+```
+
+这说明 build 会先跑 typecheck，再调用构建脚本生成 `dist/`。也就是说，build 比 typecheck 多验证一步：不仅类型要过，打包产物也要能生成。
+
+什么时候必须跑 build？
+
+- 你修改了 CLI 入口或发布产物相关代码。
+- 你想测试 `npm start`。
+- 你准备发布或打包。
+- 你修改了 `package.json` 的 bin/files/scripts。
+- 你想确认当前源码能生成可执行产物。
+
+什么时候可以先不跑完整 build？
+
+- 你只改文档。
+- 你只在写教程。
+- 你正在局部排查某个测试。
+- 你还处于第一次阅读阶段。
+
+验证要和改动风险匹配。文档改动不需要每次跑全套 release gate；runtime、model-client、tools、approvals、evals 的改动则应该更严格。
+
+### 4.7 查看模型配置：`npm run dev -- models`
+
+接下来运行：
 
 ```bash
 npm run dev -- models
 ```
 
-这个命令的作用是告诉你当前 runtime 能看到哪些 model profile。初学者常犯的错误是以为“我设置了环境变量，所以系统一定能用”。实际上，系统还需要知道 base URL、model id、协议、key env、tool support。`models` 命令就是用来把这些配置显式展示出来。
+这个命令的目标不是调用模型，而是查看 runtime 当前能识别哪些 model profile。它通常会显示 profile id、provider 协议、模型名称、是否支持 tools、是否支持 streaming、API key 环境变量是否缺失等信息。
 
-然后运行 doctor：
+第一次学习时，即使你还没有配置真实 API key，也应该运行它。因为它能帮你理解一个事实：模型接入不是“把 key 放进去”这么简单，而是一个 profile。
+
+一个 profile 至少要回答：
+
+- 用哪个协议？
+- base URL 是什么？
+- model id 是什么？
+- API key 从哪个环境变量读？
+- provider 是否支持原生 tool calling？
+- provider 是否支持 streaming？
+- 是否需要额外 headers 或 body？
+- 是否参与 failover？
+
+如果 `models` 命令显示 API key 缺失，不必紧张。第一次本地运行可以先用 mock 路径。等第 7 章讲 model profile 时，再安全接入真实模型。
+
+PowerShell 里设置环境变量的方式是：
+
+```powershell
+$env:OMNI_AGENT_API_KEY="your-key"
+$env:OMNI_AGENT_BASE_URL="https://api.openai.com/v1"
+$env:OMNI_AGENT_MODEL="gpt-4.1-mini"
+```
+
+macOS 或 Linux shell 里通常是：
+
+```bash
+export OMNI_AGENT_API_KEY="your-key"
+export OMNI_AGENT_BASE_URL="https://api.openai.com/v1"
+export OMNI_AGENT_MODEL="gpt-4.1-mini"
+```
+
+不要把真实 API key 写进 README、教程、测试 fixture、eval manifest 或 git tracked 文件。密钥应该通过环境变量、系统 secret store 或部署平台 secret 管理。
+
+### 4.8 运行 doctor：把问题显式化
+
+接着运行：
 
 ```bash
 npm run dev -- doctor --cwd "."
 ```
 
-`doctor` 是本地诊断命令。它会检查 workspace 是否存在、git 是否可用、本地存储是否可写、memory files 是否可读、model profile 是否配置完整、gateway daemon 状态是否正常、routes 和 automations 是否存在问题。你可以把 doctor 理解成“运行前体检”。如果 doctor 报 warning，不代表一定不能跑；但如果你要做 release 或 benchmark，就应该认真处理 warning。
+`doctor` 是 operator diagnostics。它不是业务任务，而是运行前体检。README 里列出的 doctor 检查包括：
 
-最后跑一个最小任务：
+- workspace inspection 和仓库可见性。
+- `MEMORY.md`、`USER.md`、`memory/YYYY-MM-DD.md` 等 workspace memory files。
+- 本地 SQLite/session storage。
+- git 可用性和当前仓库状态。
+- OpenAI-compatible profile 配置和缺失的 API key 环境变量。
+- gateway daemon 状态。
+- route safety 和 automation 数量。
+- extension/plugin directory 解析和加载。
+
+你可以把 doctor 的输出分成三类理解。
+
+第一类是 OK。它表示某个检查项当前正常。例如 workspace 可见、git 可用、本地存储可写。
+
+第二类是 warning。它表示系统还能运行，但有潜在问题。例如没有配置真实模型 key，或者某些 optional memory files 不存在。学习阶段不一定要立即处理所有 warning，但要知道它们意味着什么。
+
+第三类是 error。它表示某个基础条件不满足。例如 workspace 不存在、存储不可写、配置损坏、关键路径无法访问。遇到 error 时，不要继续跑复杂任务，先修 doctor。
+
+`doctor --strict` 可以把 warning 当成失败，适合 CI 或发布前检查：
+
+```bash
+npm run dev -- doctor --cwd "." --strict
+```
+
+`doctor --fix` 只处理安全的小修复，例如生成缺失 gateway token、恢复 starter workspace files、清理 stale daemon state、迁移 legacy routes。它不会替你编造 API key，也不会随意覆盖显式配置：
+
+```bash
+npm run dev -- doctor --cwd "." --fix
+```
+
+这体现了 Omni Agent 的安全取向：能自动修的小问题自动修；涉及密钥、外部 webhook、开放 route 的问题必须让操作者明确处理。
+
+### 4.9 第一次最小任务：不要一开始就让它修复杂 bug
+
+基础检查后，运行一个最小任务：
 
 ```bash
 npm run dev -- run --cwd "." --task "Summarize this repository"
 ```
 
-这条命令看起来简单，但它会穿过许多核心路径：CLI 解析参数，runtime 构造任务，workspace service 读取当前目录，model client 选择 mock 或真实模式，session store 记录结果。第一次跑通以后，你就有了一个最小闭环。
+这个任务比“修复所有测试”“重构 runtime”“跑完整 benchmark”更适合第一次运行。原因很简单：总结仓库通常以只读观察为主，风险低，能触发 CLI、runtime、workspace、model-client、session-store 等路径，又不会立刻进入复杂修改和验证循环。
 
-如果这一步失败，不要立刻怀疑模型。先按顺序检查：当前目录是不是仓库根目录；`npm install` 是否完成；`npm run typecheck` 是否通过；`doctor` 是否报告严重错误；命令里的路径是否被引号正确包住；Windows 下路径里的空格是否被正确处理。
+你应该观察几件事：
+
+- CLI 是否能解析参数。
+- Runtime 是否能启动一次 run。
+- Workspace 是否能读取当前目录。
+- 模型模式是 mock 还是真实 provider。
+- 是否有工具事件。
+- 是否生成最终总结。
+- 是否保存 run/thread 记录。
+- 是否有 warning 或 blocked action。
+
+如果这个最小任务成功，说明你已经跑通了最基础的 runtime path。注意，这还不证明真实模型能力，也不证明复杂代码修改能力。它证明的是：本地 CLI 到 runtime 的最小链路可用。
+
+如果这个任务失败，按顺序排查：
+
+1. 当前目录是否是仓库根目录。
+2. `npm install` 是否成功。
+3. `npm run typecheck` 是否通过。
+4. `npm run dev -- models` 是否能运行。
+5. `doctor` 是否有 error。
+6. `--cwd "."` 是否指向正确 workspace。
+7. Windows 路径是否因为空格缺少引号。
+8. 如果使用真实模型，API key、base URL、model id、protocol 是否正确。
+
+不要第一反应就说“模型太弱”。在最小任务阶段，很多失败和模型无关。
+
+### 4.10 保存本地配置：`onboard` 与 `setup`
+
+如果你准备长期使用 Omni Agent，而不是只跑一次命令，可以学习 `onboard` 和 `setup`。
+
+`onboard` 偏向快速初始化：
+
+```bash
+npm run dev -- onboard --storage-root "%USERPROFILE%\.omni-agent" --default-workspace "E:\repo"
+```
+
+`setup` 更完整，可以同时写入 model profile 相关配置：
+
+```bash
+npm run dev -- setup --storage-root "%USERPROFILE%\.omni-agent" --default-workspace "E:\repo" --profile-id primary --protocol openai --base-url "https://api.openai.com/v1" --api-key-env OPENAI_API_KEY --model gpt-4.1-mini
+```
+
+在 Windows PowerShell 中，路径建议加引号：
+
+```powershell
+npm run dev -- setup --storage-root "$env:USERPROFILE\.omni-agent" --default-workspace "E:\repo" --profile-id primary --protocol openai --base-url "https://api.openai.com/v1" --api-key-env OPENAI_API_KEY --model gpt-4.1-mini
+```
+
+这些命令会持久化本地配置、初始化默认 workspace、创建 starter context files，例如 `AGENTS.md`、`SOUL.md`、`TOOLS.md`、`MEMORY.md`、`USER.md`，并输出 setup checks。它们的价值是让后续运行不用每次重复输入所有配置。
+
+但第一次学习时，不必急着 setup。你可以先用仓库内命令理解系统，等第 7 章 model profile 和第 8 章 workspace 讲完后，再做长期配置。
+
+### 4.11 运行测试：什么时候用 `npm test`
+
+`npm test` 会自动发现 `tests/**/*.test.ts` 下的测试：
+
+```bash
+npm test
+```
+
+这是比 typecheck 更强的验证。Typecheck 验证类型合同，test 验证行为。Omni Agent 的测试覆盖 runtime、workspace、tools、approvals、evals、gateway、CLI、model-client、extensions、release check 等不同模块。
+
+但第一次运行时，不一定要立刻跑完整测试。完整测试可能耗时更长，也可能受平台、网络、端口、时间窗口影响。更推荐的顺序是：
+
+1. `npm run typecheck`
+2. `npm run dev -- models`
+3. `npm run dev -- doctor --cwd "."`
+4. `npm run dev -- run --cwd "." --task "Summarize this repository"`
+5. 如果要改代码，再跑相关测试。
+6. 如果要发布或声称能力成熟，再跑完整测试和 release gate。
+
+针对某个模块，可以跑更小的测试集合：
+
+```bash
+node ./scripts/run-tests.mjs tests/runtime.test.ts
+node ./scripts/run-tests.mjs tests/model-client.test.ts
+node ./scripts/run-tests.mjs tests/evals.test.ts
+node ./scripts/run-tests.mjs tests/gateway.test.ts
+```
+
+这种 targeted test 更适合开发过程。比如你只改 approval policy，就优先跑 approvals 和相关 runtime 测试；你只改文档，就不需要每次都跑完整 CI。
+
+### 4.12 Release gate：什么时候才需要 `npm run release:check`
+
+`docs/operations.md` 里写到，发布或声称 maturity parity 前应该运行：
+
+```bash
+npm run release:check
+```
+
+这个 gate 会验证 operational docs，然后运行 typecheck、build、release artifact smoke、release-local runtime eval、diagnostics、reference evidence smoke、strict reference parity、full tests、smoke/benchmark evals、maturity checks 等。
+
+这不是第一次学习时必须跑的命令。它更像发布前门禁。你只有在准备发布、公开声明能力成熟、修改 runtime 安全边界、改 eval/maturity/scorecard、改 release pipeline 时，才需要认真跑它。
+
+不要把学习阶段和发布阶段混在一起。学习阶段的目标是理解；开发阶段的目标是用最小验证证明改动；发布阶段的目标是跑完整门禁，避免对外输出不可靠结果。
+
+### 4.13 Windows PowerShell 常见问题
+
+本仓库路径里常见 Windows 风格路径，例如 `E:\Temporary\Paper Agent\omni-agent`。Windows 上最常见的问题是路径空格和 shell quoting。
+
+如果路径包含空格，一定加引号：
+
+```powershell
+Set-Location "E:\Temporary\Paper Agent\omni-agent"
+npm run dev -- doctor --cwd "."
+npm run dev -- run --cwd "." --task "Summarize this repository"
+```
+
+设置环境变量时，用 PowerShell 写法：
+
+```powershell
+$env:OMNI_AGENT_API_KEY="..."
+$env:OMNI_AGENT_BASE_URL="https://api.openai.com/v1"
+$env:OMNI_AGENT_MODEL="gpt-4.1-mini"
+```
+
+不要把 Linux 的 `export` 直接粘到 PowerShell。反过来，也不要把 PowerShell 的 `$env:` 粘到 bash。
+
+如果命令里有 JSON，PowerShell quoting 可能比较烦。复杂 JSON 更适合写到文件里，或者使用单引号包整段字符串，再注意内部引号。后面 model profile 章节会专门讲。
+
+另一个常见问题是文件被占用。Windows 上编辑器、杀毒软件、后台 node 进程可能占用文件或端口。遇到奇怪的删除失败、构建失败、端口占用，可以先检查是否有旧进程。
+
+### 4.14 第一次运行后的检查清单
+
+完成本章后，你应该能打勾：
+
+- 我知道仓库根目录在哪里。
+- 我能运行 `npm install` 或 `npm ci`。
+- 我知道 `npm run typecheck` 是跨包类型合同检查。
+- 我知道 `npm run build` 会先 typecheck 再生成 dist。
+- 我能运行 `npm run dev -- models` 并理解 profile、API key env、tool support、streaming support。
+- 我能运行 `npm run dev -- doctor --cwd "."` 并区分 OK、warning、error。
+- 我知道 `doctor --fix` 不会替我处理密钥和危险配置。
+- 我能运行一个最小任务。
+- 我知道最小任务成功不等于真实模型 benchmark 成功。
+- 我知道什么时候跑 targeted tests，什么时候跑 `npm test`，什么时候跑 `release:check`。
+- 我知道 Windows PowerShell 和 bash 的环境变量写法不同。
+
+如果这些都清楚，你已经完成了第一次运行的真正目标：不是“看见模型回答”，而是建立本地可解释闭环。
+
+### 4.15 第一次运行时如何读输出
+
+第一次跑命令时，不要只看最后一行。Agent runtime 的输出通常可以分成几类信息，每一类都对应一个排查方向。
+
+第一类是命令自身的启动信息。比如 `npm run dev -- ...` 会先经过 npm script，再由 `tsx` 加载 TypeScript CLI 入口。如果这里失败，常见原因是依赖没装好、`tsx` 找不到、tsconfig 路径不对、Node 版本不兼容。此时还没有进入 Omni Agent 的业务逻辑，不要去查 model profile。
+
+第二类是 CLI 参数解析信息。比如 `--cwd`、`--task`、`--mode`、`--model-profile`、`--verify`、`--execution-domain`。如果路径写错、参数缺失、引号不匹配，CLI 会在更早阶段失败。Windows 下尤其要注意路径空格。例如：
+
+```powershell
+npm run dev -- doctor --cwd "E:\Temporary\Paper Agent\omni-agent"
+```
+
+不要写成：
+
+```powershell
+npm run dev -- doctor --cwd E:\Temporary\Paper Agent\omni-agent
+```
+
+后一种写法会把路径拆成多个参数，CLI 可能收到错误的 `cwd`，后续 workspace 检查自然失败。
+
+第三类是 workspace 检查信息。Doctor 或 run 命令会检查当前目录是否存在、是否可读、是否是 git 仓库、是否能找到项目文件。如果 workspace 检查失败，通常和模型无关。你应该先确认路径、权限、当前 shell 所在位置、文件是否被删除、磁盘是否可访问。
+
+第四类是 model profile 信息。如果你运行 `models` 或 `doctor --mode openai`，输出里可能会提示某个 API key 环境变量缺失。缺失 key 不代表项目坏了，只代表真实 provider 还不能用。学习阶段可以继续用 mock 模式；真实模型章节再处理 key、base URL、protocol、model id、tool support。
+
+第五类是 tool 或 verification 信息。运行任务时，如果工具失败，要看失败发生在哪个工具。读文件失败，先看路径；运行命令失败，先看退出码和 stderr；写文件失败，先看审批和权限；verification 失败，先看失败命令本身是否是项目真实问题。不要把所有失败都归因于模型。
+
+第六类是 artifact 或 session 信息。一次 run 结束后，如果系统保存了 run record、usage、tool events 或 artifact，这些信息就是复盘入口。你可以用 `show-run`、`show-thread`、`usage` 等命令继续查看。初学者经常忽略这些命令，只看最终回答，这会错过最有价值的证据。
+
+第一次运行时，你应该训练自己按层次读输出：
+
+```text
+npm/tsx 是否启动
+  -> CLI 参数是否正确
+  -> workspace 是否可见
+  -> model profile 是否可用
+  -> tool call 是否执行
+  -> verification 是否通过
+  -> session/artifact 是否保存
+  -> final report 是否诚实说明结果
+```
+
+这个顺序能避免很多误判。比如如果 `npm run dev -- doctor --cwd "."` 都无法启动，问题就不在模型；如果 `models` 显示 API key 缺失，问题就不是 workspace；如果 `run` 能启动但验证命令失败，问题可能是代码或测试，而不是 CLI。
+
+### 4.16 四个典型失败场景
+
+下面用四个典型场景说明如何排查。
+
+**场景一：`npm run typecheck` 失败。**
+这通常表示 TypeScript 类型合同断了。先找到第一条错误，而不是最后一条错误。很多 TypeScript 错误是连锁反应，第一条最有价值。看错误属于哪个包：如果是 `packages/model-client`，可能是 model profile 或 provider response 类型；如果是 `packages/evals`，可能是 suite schema 或 score 类型；如果是 `apps/cli`，可能是命令参数与 runtime options 不匹配。修复时不要大面积改格式，先修最小类型合同。
+
+**场景二：`npm run dev -- models` 能跑，但提示 API key 缺失。**
+这不是本地环境失败。它只是说明真实模型 profile 不完整。你可以继续用 mock 模式学习 runtime。如果你确实要接真实模型，在 PowerShell 中设置环境变量，再重新运行 `models`。注意环境变量只在当前 shell 会话里生效，打开新终端后可能需要重新设置，除非你写入系统环境变量或使用持久化配置。
+
+**场景三：`doctor --cwd "."` 报 workspace 问题。**
+先确认你是否在仓库根目录。运行 `Get-Location` 或 `pwd` 看当前路径，再运行 `Get-ChildItem` 或 `ls` 看是否有 `package.json`。如果路径正确，再检查文件权限和 git 状态。如果 workspace 在同步盘、网络盘或权限受限目录，某些文件访问可能失败。把项目放到普通本地目录通常更稳定。
+
+**场景四：最小 `run` 任务失败。**
+先看失败发生在哪一层。如果 CLI 启动失败，回到依赖和 tsx；如果 workspace 读取失败，回到路径和权限；如果 model profile 失败，回到 mode 和 API key；如果工具失败，回到工具参数和 approval；如果最终总结说未完成，要看是否是验证缺失或达到最大轮数。不要只看“失败”两个字，要看失败的层级。
+
+### 4.17 第一次运行不要做的事
+
+第一次运行时，建议避免几类动作。
+
+不要一开始就跑完整真实模型 benchmark。真实模型 benchmark 会同时引入 provider、成本、网络、模型能力、tool contract、runtime、eval manifest、artifact 保存等变量。你还没建立本地闭环时，直接跑 benchmark 很难解释结果。
+
+不要一开始就让 Agent 大范围改代码。比如“重构整个 runtime”“修复所有 CI”“完善全部教程”。这种任务范围太大，会让模型和 runtime 同时承压。第一次任务应该只读或低风险。
+
+不要把 API key 写进仓库。即使只是本地测试，也不要把 key 写进 README、教程、测试 fixture、shell history 里可公开传播的命令片段。用环境变量。
+
+不要忽略 warning。学习阶段可以暂时接受 warning，但要知道 warning 的含义。发布阶段不能把 warning 当作无关信息。
+
+不要把 mock 成功当成真实模型成功。Mock 证明的是本地路径，不是模型能力。
+
+不要把最终回答当作唯一结果。要学会看 session、run、tool events、verification 和 artifact。
+
+### 4.18 什么才算第一次运行成功
+
+第一次运行成功，不是指你已经把所有功能都跑完，也不是指真实模型 benchmark 已经拿到高分。第一次运行成功有更朴素的标准。
+
+第一，你能解释每条命令的目的。`npm install` 是安装依赖，`typecheck` 是检查 TypeScript 合同，`models` 是查看 profile，`doctor` 是诊断本地运行条件，`run` 是启动一次任务，`test` 是行为验证，`release:check` 是发布门禁。如果你只是复制命令但说不出它验证了什么，说明还没有真正完成本章目标。
+
+第二，你能把错误归类。看到失败时，你能判断它属于依赖、类型、CLI 参数、workspace、model profile、tool execution、approval、verification 还是 artifact。归类能力比立刻修复更重要，因为它决定你下一步看哪里。
+
+第三，你知道哪些结果不能过度解读。最小 run 成功不等于复杂修复能力成熟；mock 成功不等于真实模型能力；typecheck 通过不等于行为正确；一次 benchmark 成功不等于长期趋势稳定。
+
+第四，你知道下一章该看什么。第一次运行让你知道命令入口和最小闭环，第 5 章会把这些命令背后的目录结构展开。你会看到为什么 CLI 在 `apps/cli`，runtime 在 `packages/core-runtime`，模型接入在 `packages/model-client`，工具在 `packages/tools`，评测在 `packages/evals`，证据和 session 在 `packages/session-store`。
+
+能做到这四点，你就已经从“把项目跑起来”进入“理解项目如何运行”的阶段。
+
+如果你还能把一次失败写成三句话：失败发生在哪一层、当前证据是什么、下一步要验证什么，那么你已经具备继续阅读后续源码章节的基本能力。
+
+### 4.19 本章参考资料
+
+#### 本项目参考
+
+- [package.json](../../package.json)：项目脚本、依赖、package manager、build/typecheck/test/eval/release 命令。
+- [README.zh.md](../../README.zh.md)：quickstart、runtime modes、doctor、evals、workspace memory、gateway 的用户入口说明。
+- [docs/operations.md](../operations.md)：release gate、model runtime、memory、automation、subagent、tool lifecycle 的运维说明。
+- [docs/release-checklist.md](../release-checklist.md)：发布前检查清单，包括 typecheck、build、tests、eval、maturity check。
+- [docs/live-testing.md](../live-testing.md)：真实 provider/live testing 的边界说明。
+- [packages/core-runtime/src/index.ts](../../packages/core-runtime/src/index.ts)：最小 run 最终会进入的 runtime 核心。
+- [packages/model-client/src/index.ts](../../packages/model-client/src/index.ts)：`models` 命令背后的 profile 与 provider 逻辑。
+- [packages/session-store/src/index.ts](../../packages/session-store/src/index.ts)：run/thread/session/artifact 的本地持久化支撑。
+- [scripts/run-tests.mjs](../../scripts/run-tests.mjs)：`npm test` 和 targeted test 的测试运行器。
+- [scripts/release-check.ts](../../scripts/release-check.ts)：release gate 的执行入口。
+
+#### 外部参考
+
+- [npm CLI: npm install](https://docs.npmjs.com/cli/v11/commands/npm-install)：理解 `npm install` 如何解析依赖和 lockfile。
+- [npm CLI: npm ci](https://docs.npmjs.com/cli/v11/commands/npm-ci)：理解 CI/干净环境中为什么常用 `npm ci`。
+- [TypeScript Handbook: Project References](https://www.typescriptlang.org/docs/handbook/project-references.html)：理解 monorepo 中 `tsc -b` 的意义。
+- [Node.js Documentation](https://nodejs.org/en/learn/getting-started/introduction-to-nodejs)：Node.js 基础运行环境参考。
+- [OpenAI Function Calling](https://platform.openai.com/docs/guides/function-calling)：理解真实模型接入后为什么还要声明 tool support。
+- [OpenAI Evaluation Best Practices](https://platform.openai.com/docs/guides/evaluation-best-practices)：理解为什么第一次运行、局部测试、完整 eval 和发布门禁应分层。
 
 ---
 
