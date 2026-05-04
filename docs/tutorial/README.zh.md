@@ -246,17 +246,285 @@ Run artifact 对三类人都有价值。
 
 ## 2. 先建立心智模型：Omni Agent 到底是什么
 
-Omni Agent 可以被理解成一个“本地优先的编码 Agent runtime”。这句话里有三个关键词：本地优先、编码 Agent、runtime。
+### 2.1 先用一句话建立整体图像
 
-“本地优先”表示它的第一运行场景是你的本地仓库，而不是云端黑盒。它会读取当前 workspace，检查文件，运行命令，保存本地 session 和 run record。这样的设计有几个好处。第一，开发者可以清楚知道 Agent 在哪个目录里工作。第二，运行证据可以落到本地 artifacts 或 session store 里。第三，安全边界可以围绕本地文件、命令、密钥、审批策略设计，而不是完全依赖远端服务。第四，调试成本低：你可以直接看源码、看测试、看输出。
+Omni Agent 可以先被理解成一句话：它是一个本地优先、面向仓库任务、以验证和证据为中心的编码 Agent runtime。
 
-“编码 Agent”表示它面向的是仓库任务，而不是单纯问答。仓库任务通常不是一句话能完成的。比如“修复一个 parser bug”，Agent 需要先理解项目结构，再定位文件，再修改代码，再运行测试，再根据失败信息修正，再总结结果。这个过程包含多轮模型调用、多个工具动作、多次验证和最后的证据整理。普通聊天模型只负责生成文本，而编码 Agent runtime 要负责把这些步骤组织起来。
+这句话看起来很长，但每个词都在限制它的边界。
 
-“runtime”可以翻译为运行时。它不是一个模型，也不是一个 prompt，而是包住模型的执行系统。Runtime 会做这些事：读取任务输入，加载 workspace 信息，加载 memory，选择 model profile，构造 prompt，调用模型，解析模型的 tool call，执行工具，应用 approval policy，处理失败，运行验证命令，写入 run artifact，返回总结。模型只是其中一个组件。Runtime 的质量，决定了模型能力能不能稳定落到真实工程任务里。
+`本地优先` 表示它首先服务于你的本地仓库。它不是把所有代码和状态都藏在云端黑盒里，而是从你指定的 `--cwd` 或 workspace 开始工作。它需要看见真实文件，需要理解项目目录，需要运行本地命令，需要保存 session、run、memory 和 artifact。你可以检查它读了什么、改了什么、跑了什么命令、留下了什么记录。
 
-把 Omni Agent 想象成一个小型工程指挥室，会更容易理解。模型像一个会推理的工程师；工具像它能使用的终端、文件系统、搜索器和插件；approval policy 像安全负责人；workspace service 像仓库管理员；session store 像审计日志；eval harness 像考试系统；gateway 像对外接口。一个成熟的 Agent 系统不是只让工程师说“我能做”，而是让每个动作都可见、可控、可复现。
+`面向仓库任务` 表示它不是一个普通聊天机器人。普通聊天机器人回答问题就可以结束；仓库任务通常包含多步动作：读文件、定位问题、编辑代码、运行测试、分析失败、再次修改、再次验证、总结残余风险。一个仓库任务不是一段回答，而是一条执行链。
 
-因此，学习 Omni Agent 的正确顺序不是先研究模型 prompt，而是先理解运行系统。Prompt 很重要，但 prompt 只是 runtime 的一部分。如果没有工具契约，模型不知道能做什么；如果没有 workspace 限制，工具可能越界；如果没有审批策略，危险命令可能自动执行；如果没有 run artifact，成功和失败都无法复盘；如果没有 eval harness，能力声明就没有稳定依据。
+`以验证和证据为中心` 表示 Omni Agent 不把“模型说完成了”当成完成。真正的完成需要 evidence。Evidence 可以是通过的测试、类型检查、benchmark、生成的报告、持久化 trace、run artifact，或者 eval scenario 的结果。没有证据的能力声明，在 Omni Agent 的语境里只是风险。
+
+`runtime` 是这句话的核心。Runtime 是模型外面的执行系统。模型负责推理和生成下一步意图；runtime 负责给模型提供上下文、声明工具、执行工具、约束权限、保存记录、处理验证和失败恢复。模型是大脑的一部分，但 runtime 是身体、神经系统、审计系统和安全边界。
+
+如果只记一个心智模型，可以记成这样：
+
+```text
+User Task
+  -> CLI / Gateway
+  -> Runtime
+  -> Context + Memory + Workspace
+  -> Model Profile
+  -> Tool Calls
+  -> Approval Policy
+  -> Tool Execution
+  -> Verification
+  -> Session Store / Run Artifact
+  -> Final Report
+```
+
+这条链路说明了一个关键事实：Omni Agent 的能力不是从某一个模块里冒出来的，而是由一组组件协作产生的。模型再强，如果没有工具，它只能建议；工具再多，如果没有审批，它就危险；验证再严格，如果没有 artifact，就难以复盘；memory 再丰富，如果没有 scope 和 review，就可能误导；benchmark 再高，如果没有说明 executor mode，就可能被误读。
+
+### 2.2 把 Agent 拆开：模型不是 Agent 的全部
+
+很多人会把 Agent 和模型混在一起说：“这个 Agent 用的是什么模型？”这个问题当然有意义，但它只问到了系统的一部分。更完整的问题应该是：
+
+- 它使用什么模型？
+- 它的 runtime 如何组织任务？
+- 它有哪些工具？
+- 工具参数是否有 schema？
+- 工具结果如何回传给模型？
+- 危险动作是否会被审批？
+- 它如何读取 workspace？
+- 它如何加载 memory？
+- 它如何判断任务完成？
+- 它如何保存 trace 和 artifact？
+- 它如何跑 eval？
+- 它如何区分 synthetic、mock 和真实模型 benchmark？
+
+如果这些问题回答不上来，就不能真正理解一个 Agent 系统。
+
+在 Omni Agent 里，模型只是 `packages/model-client` 负责的一层。模型 profile 会描述 provider 协议、base URL、API key 环境变量、model id、是否支持 tool calling、是否支持 streaming 等信息。这个设计的意义是把“模型配置”变成可检查的对象，而不是把 API 调用散落在各处。
+
+真正的 Agent 行为主要发生在 runtime 里。`packages/core-runtime` 会接收任务输入，构造执行上下文，准备工具，读取 memory，选择 model profile，调用模型，处理 tool call，收集 tool event，执行验证，保存结果。你可以把 runtime 想成一个任务调度器，但它不只是调度，还要承担安全、证据、恢复和总结职责。
+
+工具层则把模型的意图接到真实世界。模型想读文件，不是直接读磁盘，而是请求 `read_file` 这类工具；模型想跑测试，不是直接打开终端，而是请求命令工具；模型想搜索记忆，不是直接访问数据库，而是通过 memory 工具或 provider。这个中间层非常重要，因为它让动作变得结构化、可审计、可约束。
+
+审批层决定哪些工具动作可以自动运行，哪些必须提示人，哪些直接拒绝。没有审批层的本地 Agent 很危险，因为模型输出一条命令并不代表那条命令应该执行。Omni Agent 的 `packages/approvals` 会把工具调用分成只读、搜索、变更、可执行命令、控制面、交互式等类别，再结合风险等级和策略做出 allow、prompt 或 deny 决策。
+
+存储层让一次运行不会在终端关闭后消失。Session store 保存 session、thread、run、memory、route、automation 和 artifact。这个层很容易被初学者忽略，但它是“可复盘”的基础。没有持久化，系统就很难回答“上次为什么失败”“哪个模型产生了这次结果”“哪些工具被调用”“验证命令是什么”“成本和耗时是多少”。
+
+因此，Omni Agent 不是模型加一个 prompt，而是一整套本地执行系统。理解它时，要从系统边界看，而不是从单次回答看。
+
+### 2.3 用“工程指挥室”理解 Omni Agent
+
+为了更直观，可以把 Omni Agent 想象成一个小型工程指挥室。
+
+用户任务是工单。用户说“修复这个 bug”“解释这个仓库”“跑 benchmark”“接入 DeepSeek profile”，这些都不是简单提问，而是进入指挥室的任务单。
+
+CLI 和 Gateway 是入口。CLI 适合本地开发者直接操作；Gateway 适合把同一套 runtime 暴露成 HTTP、SSE 或 WebSocket 服务，供 workbench、外部路由、自动化任务或其他系统调用。
+
+Runtime 是调度负责人。它决定任务如何开始，如何准备上下文，如何和模型交互，如何处理工具调用，如何进入下一轮，什么时候停止，如何生成最终报告。
+
+Model profile 是外部专家名片。它告诉 runtime 要找哪个模型、通过哪个协议、用哪个 endpoint、从哪个环境变量读取密钥、这个模型是否支持 tool calling 和 streaming。没有 profile，runtime 就不知道如何可靠地调用模型。
+
+Workspace service 是仓库管理员。它知道当前项目目录在哪里，如何读文件，如何列目录，如何运行命令，如何遵守路径边界。它防止 Agent 把“当前仓库”误解成整个机器。
+
+Tools 是执行人员。它们负责读文件、搜索、运行命令、写文件、调用 extension、管理 subagent、读取 artifact 等具体动作。模型提出行动建议，工具真正接触环境。
+
+Approval policy 是安全负责人。它不会因为模型说“需要执行”就放行，而是根据动作类型、风险等级和当前策略做判断。它让 Agent 可控，而不是让模型裸奔。
+
+Memory 是项目经验库。它记录有用信息，比如用户偏好、项目习惯、之前验证过的模式、失败经验。但它不是法律条文。经验库的信息需要来源、范围、置信度和复核状态，不能覆盖当前源码。
+
+Session store 是审计日志。它保存会话、运行、工具事件、记忆、artifact。没有审计日志，指挥室就只能靠参与者的记忆复盘。
+
+Eval harness 是考试系统。它定义任务、fixture、期望行为、评分规则和能力门禁。它不是为了给项目贴一个好看的分数，而是为了持续发现退化、验证能力、支撑 release decision。
+
+Run artifact 是证据档案。它把一次任务的目标、工具轨迹、审批、diff、验证、摘要保存下来。它让成功可证明，也让失败可分析。
+
+Subagent 是受治理的协作者。它不是“多开几个聊天窗口”，而是带 authority、ownership、budget、scope 和 verification metadata 的 worker。父 Agent 可以把明确边界的任务分出去，但仍然需要控制权限和收集证据。
+
+这个比喻的价值在于，它能帮助你避免把 Omni Agent 看成单点能力。真实系统不是“模型回答得好”，而是“每个角色都知道自己的边界，并且协同完成一个可验证任务”。
+
+### 2.4 本地优先意味着什么
+
+“本地优先”不是一句产品口号，它会影响架构决策。
+
+第一，本地优先意味着 workspace 是中心。Agent 必须围绕当前仓库工作，而不是围绕一段孤立文本工作。仓库里有 `package.json`、测试目录、源码目录、配置文件、README、CI workflow、docs、examples、历史 artifact。一个本地 Agent 要能从这些文件里理解项目，而不是只依赖用户粘贴片段。
+
+第二，本地优先意味着路径边界很重要。Agent 不能随意读取整台机器，也不能把 workspace 外的敏感文件当作上下文。读文件、写文件、运行命令都必须知道当前 root 是什么，是否允许访问目标路径，是否需要进入 worktree 或 sandbox。
+
+第三，本地优先意味着命令执行是真实副作用。运行 `npm test` 是安全的概率较高，但运行删除、移动、上传、安装全局包、修改系统配置的命令就不一样。命令不是文本，它会改变环境。因此本地 Agent 需要审批策略、执行域、rollback、checkpoint、artifact 和明确的验证计划。
+
+第四，本地优先意味着调试成本可以降低。因为代码在本地，测试在本地，日志在本地，artifact 在本地，开发者可以直接打开文件检查。这也是 Omni Agent 教程要大量引用本仓库路径的原因。你不需要相信抽象描述，可以直接去看 `packages/core-runtime`、`packages/tools`、`packages/evals`、`docs/security.md` 和 `examples/evals/suite.json`。
+
+第五，本地优先不等于永远不接云模型。Omni Agent 可以通过 model profile 接入真实 provider，包括 OpenAI-compatible endpoint、Anthropic-style protocol 或本地兼容端点。本地优先讲的是运行边界和证据保存，不是拒绝远程模型。模型可以远程，workspace 和运行证据仍然可以本地受控。
+
+这种设计适合开发者学习和调试。你可以先用 mock 模式理解 runtime，再接真实模型；可以先跑 synthetic benchmark 确认 harness，再跑 mock runtime，再跑真实 provider；可以先看本地 artifact，再决定是否把结果写进公开报告。这个顺序比直接把所有东西交给远端黑盒更可控。
+
+### 2.5 编码 Agent 与普通问答的区别
+
+普通问答通常是单回合或少量回合。用户问：“这段代码是什么意思？”模型解释即可。用户问：“如何写一个排序函数？”模型给示例即可。即使回答不完整，风险也比较低。
+
+编码 Agent 面对的是执行任务。比如：
+
+```text
+修复 gateway 轮询测试在 Windows CI 上偶发失败的问题。
+```
+
+这个任务不能只靠回答。Agent 至少要做这些事：
+
+1. 读取测试文件，理解失败现象。
+2. 搜索相关 runtime 或 gateway 代码。
+3. 判断失败是逻辑问题、超时问题、异步竞态，还是环境问题。
+4. 修改最小必要代码。
+5. 运行目标测试。
+6. 如果失败，读取错误输出并继续修复。
+7. 运行类型检查或相关验证。
+8. 总结改动、验证结果和剩余风险。
+9. 保存 run artifact，供以后复盘。
+
+这就不是“生成文本”了，而是“执行闭环”。执行闭环里最重要的是观察、行动、验证和修复。ReAct 论文把这种模式抽象成 reasoning 与 action/observation 交替：模型不只是内心推理，还要通过行动从环境获得新信息。Coding agent 的仓库任务正是这种模式的工程化版本。
+
+如果没有工具，模型只能猜测文件内容；如果没有验证，模型只能声称代码应该可用；如果没有错误回传，模型无法根据测试失败修复；如果没有 artifact，后来的人不知道它到底做了哪些观察和行动。
+
+所以，当你评价 Omni Agent 或任何 coding agent 时，不要只看最终回答。要看它是否能稳定完成这个闭环：
+
+```text
+Observe -> Decide -> Act -> Verify -> Repair -> Record
+```
+
+观察来自 workspace、memory、tool output 和历史 context。决策来自模型和 runtime 规则。行动通过 tool calls 执行。验证通过测试、类型检查、lint、benchmark 或人工 review。修复来自失败反馈。记录则落到 session store 和 artifact。
+
+### 2.6 Runtime 为什么比 prompt 更底层
+
+Prompt 很重要，但 prompt 不是 Agent 的全部。很多新手会先问：“这个 Agent 的系统提示词怎么写？”这个问题可以问，但不应该最先问。因为同一个 prompt 放在不同 runtime 里，行为会完全不同。
+
+一个 prompt 说“请修改代码并运行测试”，如果 runtime 没有文件读写工具，模型只能输出建议。一个 prompt 说“遇到危险操作要请求确认”，如果 runtime 没有 approval policy，模型可能只是口头提醒，真正的工具执行仍然没有拦截。一个 prompt 说“请保存证据”，如果 session store 没有 artifact API，证据就只能停在最终回答里。一个 prompt 说“使用真实模型 benchmark”，如果 eval runner 不保存 trace、cost、duration 和 failure reason，结果仍然难以复盘。
+
+Runtime 决定了 prompt 里的规则能不能落地。Prompt 是意图和规范，runtime 是执行和约束。好的 Agent 需要二者配合：prompt 告诉模型如何思考和表达，runtime 提供可执行工具、权限边界、验证机制和持久化记录。
+
+在 Omni Agent 里，这种关系体现在很多地方。`packages/core-runtime` 接收 runtime options，如 approval policy、execution domain、verification mode、context engine、memory providers、event handler、subagent runtime 等。也就是说，运行行为不是全靠提示词，而是由明确配置和代码路径控制。`packages/model-client` 负责把 model profile 变成实际 provider 请求。`packages/approvals` 负责工具动作决策。`packages/session-store` 负责保存结果。`packages/evals` 负责评测和报告。
+
+因此，读源码时的顺序也应该调整。不要只找“system prompt 在哪里”。先看任务如何进入 runtime，再看 runtime 如何构造上下文，再看模型如何被调用，再看工具如何执行，再看验证和 artifact 如何保存。Prompt 是这条链路中的一个环节，而不是整个系统。
+
+### 2.7 Omni Agent 的五个范式
+
+仓库里的 `docs/omni-agent-paradigms.md` 把 Omni Agent 的差异化归纳成五个范式：Verification-Native Runtime、Capability-Backed Claims、Governed Subagents、Accountable Memory、Agent Runs As Artifacts。理解这五个范式，就等于抓住了项目心智模型的骨架。
+
+第一个范式是 Verification-Native Runtime。任务不能因为最终回复写得自信就算完成。完成应该绑定任务合同、验证计划、观察到的工具证据和最终报告。比如一个代码修改任务，至少应该能说明改了什么，运行了什么验证，验证是否通过，哪些风险还没证明。这个范式会影响 runtime、eval、release checklist 和文档写法。
+
+第二个范式是 Capability-Backed Claims。公开能力声明必须有证据。README 里说支持某项能力，应该能映射到 scorecard、benchmark scenario、测试或操作手册。没有证据的能力不是亮点，而是风险。这个范式让项目避免“功能清单很长，但没人知道哪些真的可用”的问题。
+
+第三个范式是 Governed Subagents。Subagent 不应该是无限制并行聊天。每个 delegated job 都需要 authority、budget、ownership 和 completion evidence。比如一个子 Agent 负责调查失败原因，它应该有只读权限和明确目标；一个子 Agent 负责修改某个模块，它应该有目标路径和验证要求。这样多 Agent 才是工程协作，而不是混乱并发。
+
+第四个范式是 Accountable Memory。Memory 应该带来源和适用范围。它需要说明为什么写入、适用于哪里、置信度如何、什么时候应该复查或忽略。这个范式防止 Agent 被旧信息误导，也让长期学习更可控。
+
+第五个范式是 Agent Runs As Artifacts。一次有意义的运行应该留下持久 artifact：任务合同、工具轨迹、审批、变更文件、验证证据和总结。这个范式让运行结果从“对话里的最后一句话”变成“可以检查的工程记录”。
+
+这五个范式不是装饰性的文档口号。后面章节会看到它们分别对应到代码和命令：verification 对应 eval 和 verification mode；capability claims 对应 scorecard 和 maturity check；governed subagents 对应 subagent control plane；accountable memory 对应 memory tags 和 provider；run artifacts 对应 session-store artifact API 和 benchmark outputs。
+
+### 2.8 把 Omni Agent 看成一组责任边界
+
+更工程化的理解方式，是把 Omni Agent 看成一组责任边界。
+
+CLI 的责任是把人的输入变成明确命令。它要解析参数、显示状态、提供 chat/run/evals/models/doctor/serve 等入口。CLI 不应该把所有业务逻辑塞进去，否则系统会难以复用。
+
+Runtime 的责任是执行任务。它要组织模型、工具、上下文、验证、审批和记录。Runtime 是最核心的协调层，但它不应该直接硬编码所有 provider、所有存储细节和所有工具实现。
+
+Model client 的责任是对接模型 provider。它要处理协议差异、请求格式、响应格式、streaming、tool calling、usage、错误和 fallback。它让 runtime 不必关心每个 provider 的底层 HTTP 细节。
+
+Workspace 的责任是管理本地项目视图。它要处理路径、文件、命令、git、执行域和隔离。它给 runtime 一个受控的工作环境。
+
+Tools 的责任是暴露可执行能力。每个工具都应该有清晰输入、清晰输出、清晰失败模式。工具越含糊，模型越容易误用。
+
+Approvals 的责任是控制风险。它不负责推理任务，但负责决定工具动作是否允许。它是 runtime 和真实环境之间的安全阀。
+
+Context 的责任是选择模型该看什么。它要在有限窗口里放入任务、规则、相关文件、memory、历史摘要和工具结果。上下文太少，模型没信息；上下文太多，模型会混乱。
+
+Session store 的责任是保存事实。它保存 session、run、memory、artifact、routes、automations。事实一旦保存，系统才能跨任务学习、复盘和报告。
+
+Evals 的责任是定义和执行评测合同。它不只是跑测试，而是把任务、fixture、期望、评分和报告变成可重复流程。
+
+Gateway 的责任是把本地 runtime 服务化。它让外部系统可以通过 API 创建任务、查看状态、订阅事件、管理路线和自动化。
+
+理解这些边界以后，读代码就不会迷路。你看到一个问题时，可以先判断它属于哪个责任边界。模型返回格式错，可能在 model-client；工具执行不安全，可能在 tools 或 approvals；运行记录缺失，可能在 runtime 或 session-store；benchmark 结果解释不清，可能在 evals 或 scripts；远程控制面问题，可能在 gateway。
+
+### 2.9 一个简单任务在心智模型中的流动
+
+我们用一个任务来串起来：
+
+```bash
+npm run dev -- run --cwd "." --task "Summarize this repository"
+```
+
+第一步，CLI 解析命令。它知道用户要运行 `run`，工作目录是当前目录，任务是总结仓库。
+
+第二步，CLI 把参数交给 runtime。Runtime 形成一次 run 的配置：cwd、mode、model profile、verification mode、最大轮数、memory providers、approval policy 等。
+
+第三步，runtime 读取 workspace。它可能查看目录结构、项目文件、instruction files、memory files，形成初始上下文。
+
+第四步，runtime 选择模型。如果是 mock 模式，它走本地模拟；如果是 openai 模式，它通过 model profile 找到 provider、model 和 API key env。
+
+第五步，runtime 构造 prompt。Prompt 包含任务、系统规则、工具说明、workspace 摘要、可用 memory、当前运行边界。
+
+第六步，模型返回响应或工具调用。如果模型需要更多信息，可能请求读取文件或列目录。
+
+第七步，runtime 对工具调用进行审批判断。只读操作可能自动通过；高风险动作会被提示或拒绝。
+
+第八步，工具执行并返回 observation。模型获得新的真实信息，而不是继续猜。
+
+第九步，runtime 继续循环，直到任务完成、达到最大轮数、被阻止或失败。
+
+第十步，runtime 记录 run。它保存工具事件、模型 profile、耗时、验证信息、summary 或 artifact。
+
+第十一步，CLI 把最终报告展示给用户。报告应该说明做了什么、依据是什么、是否还有未验证部分。
+
+这个流程看似简单，却包含了 Omni Agent 的大部分核心。后面每一章都会拆解其中一段：第 6 章讲 runtime 主循环，第 7 章讲 model profile，第 8 章讲 workspace，第 9 章讲 tools，第 10 章讲 approval，第 11 章讲 context 和 memory，第 12 章讲 session store 和 artifact。
+
+### 2.10 初学者最该避免的三个错误心智模型
+
+第一个错误心智模型是“Agent = 强模型”。强模型当然重要，但它不是系统的全部。很多失败来自上下文不足、工具不清楚、审批缺失、验证不严、artifact 不完整，而不是模型本身不够聪明。反过来，一个运行边界清晰的系统可以让模型表现更稳定。
+
+第二个错误心智模型是“工具越多越好”。工具多不等于能力强。工具太多、名称混乱、参数含糊、输出冗长、失败信息不清，会让模型更难选择。好的工具应该少而清晰，边界明确，输出适合继续推理，并且能被 approval policy 管控。
+
+第三个错误心智模型是“benchmark 高分就说明完成”。前一章已经讲过，benchmark 必须看模式、数据、trace 和失败样本。Synthetic 高分可能只是说明 harness 没坏；mock 成功说明 runtime 路径能走通；真实模型表现还要看 provider、模型、工具契约、成本、上下文和重复运行。不要把一个数字当成全部真相。
+
+还有一个常见误区是“memory 越多越聪明”。Memory 多了以后，如果没有来源、范围、过期和复核，它会变成噪音。真正有用的 memory 应该能帮助当前任务，而不是用旧结论覆盖当前事实。
+
+### 2.11 本章小结
+
+本章的目标不是让你记住所有模块名称，而是让你建立一个稳定心智模型：
+
+```text
+Omni Agent = Model + Runtime + Workspace + Tools + Approval + Context + Memory + Store + Evals + Artifacts + Gateway
+```
+
+其中 model 负责推理，runtime 负责编排，workspace 提供本地环境，tools 提供动作能力，approval 约束风险，context 决定模型看见什么，memory 提供长期经验，store 保存事实，evals 提供评测合同，artifacts 保存证据，gateway 提供服务入口。
+
+这个心智模型会贯穿整本教程。后面你读任何源码，都可以先问：这段代码属于哪个责任边界？它在一次 run 中处于哪一步？它产生的证据在哪里？它会不会影响安全边界？它是否能被 eval 或测试证明？
+
+如果你能这样问问题，你就已经开始从“使用一个聊天模型”转向“理解一个 Agent runtime”。
+
+### 2.12 本章参考资料
+
+#### 本项目参考
+
+- [README.zh.md](../../README.zh.md)：项目主张、教程入口、runtime modes、evals、workspace memory、gateway 和能力概览。
+- [docs/omni-agent-paradigms.md](../omni-agent-paradigms.md)：五个核心范式：verification-native runtime、capability-backed claims、governed subagents、accountable memory、agent runs as artifacts。
+- [docs/verification-native-runtime.md](../verification-native-runtime.md)：定义 verification-native completion 和 evidence kinds。
+- [docs/capability-backed-claims.md](../capability-backed-claims.md)：说明能力声明如何映射到 scorecard、scenario 和 maturity check。
+- [docs/accountable-memory.md](../accountable-memory.md)：说明 memory 为什么需要 source、scope、confidence、expiry、review。
+- [docs/agent-run-artifacts.md](../agent-run-artifacts.md)：说明一次 agent run 应该留下哪些可检查证据。
+- [docs/governed-subagents.md](../governed-subagents.md)：说明 subagent 的 authority、ownership、budget、scope 和 verification metadata。
+- [packages/core-runtime/src/index.ts](../../packages/core-runtime/src/index.ts)：runtime 主循环和 runtime options 的核心位置。
+- [packages/model-client/src/index.ts](../../packages/model-client/src/index.ts)：model profile 和 provider 调用路径。
+- [packages/approvals/src/index.ts](../../packages/approvals/src/index.ts)：工具动作分类和 approval decision。
+- [packages/session-store/src/index.ts](../../packages/session-store/src/index.ts)：session、run、memory、artifact 的持久化层。
+- [packages/evals/src/index.ts](../../packages/evals/src/index.ts)：eval suite、score type 和 report 逻辑。
+
+#### 外部参考
+
+- [Anthropic: Building Effective AI Agents](https://www.anthropic.com/engineering/building-effective-agents)：解释何时使用 agent、workflow 与 agent 的区别，以及 agent 系统中工具、反馈和控制的重要性。
+- [OpenAI Agents SDK](https://platform.openai.com/docs/guides/agents-sdk/)：官方 agent runtime 参考，覆盖 tools、handoffs、guardrails、streaming 和 tracing。
+- [OpenAI Function Calling](https://platform.openai.com/docs/guides/function-calling)：解释结构化工具调用和 function schema。
+- [Anthropic Tool Use with Claude](https://docs.anthropic.com/en/docs/agents-and-tools/tool-use/overview)：解释模型请求工具、客户端执行工具、工具结果回传的基本循环。
+- [ReAct: Synergizing Reasoning and Acting in Language Models](https://arxiv.org/abs/2210.03629)：提出 reasoning 与 action/observation 交替的 agent loop 思想。
+- [Toolformer: Language Models Can Teach Themselves to Use Tools](https://arxiv.org/abs/2302.04761)：研究语言模型如何学习使用外部工具。
+- [OpenTelemetry GenAI Agent and Framework Spans](https://opentelemetry.io/docs/specs/semconv/gen-ai/gen-ai-agent-spans/)：agent trace 和 tool span 的标准化观测参考。
 
 ---
 
