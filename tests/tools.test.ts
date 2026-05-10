@@ -3998,3 +3998,450 @@ test("browser_run close clears stale browser observations with the session", asy
     rmSync(storeRoot, { recursive: true, force: true });
   }
 });
+
+test("Genesis tools compose a safe HTX, Web3, and B.AI paper workflow", async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "omni-agent-genesis-workflow-workspace-"));
+  const storeRoot = mkdtempSync(join(tmpdir(), "omni-agent-genesis-workflow-store-"));
+
+  try {
+    writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({ name: "fixture" }, null, 2), "utf8");
+    const toolRegistry = new ToolRegistry();
+    registerBuiltInTools(toolRegistry);
+    const context = {
+      workspace: new LocalWorkspaceService(workspaceRoot, join(storeRoot, "artifacts", "workspace")),
+      executionDomain: "workspace" as const,
+    };
+
+    const market = await toolRegistry.execute("htx_market_data", context, { symbol: "BTC/USDT" });
+    assert.equal(market.ok, true);
+    const marketData = market.data as { venue?: string; symbol?: string; mode?: string; price?: number };
+    assert.equal(marketData.venue, "htx");
+    assert.equal(marketData.symbol, "btcusdt");
+    assert.equal(marketData.mode, "mock");
+    assert.equal(typeof marketData.price, "number");
+
+    const account = await toolRegistry.execute("htx_account_snapshot", context, {
+      accountFixture: {
+        balances: [
+          { asset: "USDT", available: 125, locked: 0 },
+          { asset: "HTX", available: 2000, locked: 0 },
+        ],
+      },
+    });
+    assert.equal(account.ok, true);
+    const accountData = account.data as { balances?: Array<{ asset?: string; available?: number }> };
+    assert.equal(accountData.balances?.[0]?.asset, "USDT");
+    assert.equal(accountData.balances?.[0]?.available, 125);
+
+    const wallet = await toolRegistry.execute("web3_wallet_snapshot", context, {
+      address: "0x1111111111111111111111111111111111111111",
+      tokenBalances: [{ asset: "USDT", available: 100 }],
+    });
+    assert.equal(wallet.ok, true);
+    const walletData = wallet.data as { address?: string; tokenBalances?: Array<{ asset?: string }> };
+    assert.equal(walletData.address, "0x1111111111111111111111111111111111111111");
+    assert.equal(walletData.tokenBalances?.[0]?.asset, "USDT");
+
+    const risk = await toolRegistry.execute("web3_contract_risk", context, {
+      tokenSymbol: "USDT",
+      contractAddress: "0x2222222222222222222222222222222222222222",
+      spender: "0x3333333333333333333333333333333333333333",
+      spenderAllowlist: ["0x3333333333333333333333333333333333333333"],
+      allowance: 100,
+      simulated: true,
+    });
+    assert.equal(risk.ok, true);
+    const riskData = risk.data as { riskLevel?: string };
+    assert.equal(riskData.riskLevel, "low");
+
+    const tronAccount = await toolRegistry.execute("web3_tron_account_snapshot", context, {
+      address: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf",
+      accountFixture: {
+        tokenBalances: [{ asset: "USDT", available: 100 }],
+      },
+    });
+    assert.equal(tronAccount.ok, true);
+    const tronAccountData = tronAccount.data as {
+      chain?: string;
+      mode?: string;
+      nativeSymbol?: string;
+      tokenBalances?: Array<{ asset?: string; available?: number }>;
+    };
+    assert.equal(tronAccountData.chain, "tron");
+    assert.equal(tronAccountData.mode, "mock");
+    assert.equal(tronAccountData.nativeSymbol, "TRX");
+    assert.equal(tronAccountData.tokenBalances?.[0]?.asset, "USDT");
+
+    const allowance = await toolRegistry.execute("web3_trc20_allowance", context, {
+      token: "USDT",
+      owner: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf",
+      spender: "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7",
+      allowance: "250.5",
+      decimals: 6,
+    });
+    assert.equal(allowance.ok, true);
+    const allowanceData = allowance.data as {
+      chain?: string;
+      tokenSymbol?: string;
+      tokenAddress?: string;
+      allowance?: string;
+      allowanceRaw?: string;
+    };
+    assert.equal(allowanceData.chain, "tron");
+    assert.equal(allowanceData.tokenSymbol, "USDT");
+    assert.equal(allowanceData.tokenAddress, "TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t");
+    assert.equal(allowanceData.allowance, "250.5");
+    assert.equal(allowanceData.allowanceRaw, "250500000");
+
+    const revokePreview = await toolRegistry.execute("web3_revoke_approval_preview", context, {
+      token: "USDT",
+      owner: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf",
+      spender: "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7",
+      currentAllowance: 250.5,
+      spenderAllowlist: ["TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"],
+    });
+    assert.equal(revokePreview.ok, true);
+    const revokeData = revokePreview.data as {
+      approvalRequired?: boolean;
+      liveTransactionBuilt?: boolean;
+      signed?: boolean;
+      broadcast?: boolean;
+      amountRaw?: string;
+      encodedParameter?: string | null;
+    };
+    assert.equal(revokeData.approvalRequired, true);
+    assert.equal(revokeData.liveTransactionBuilt, false);
+    assert.equal(revokeData.signed, false);
+    assert.equal(revokeData.broadcast, false);
+    assert.equal(revokeData.amountRaw, "0");
+    assert.equal(typeof revokeData.encodedParameter, "string");
+
+    const transferPreview = await toolRegistry.execute("web3_transfer_preview", context, {
+      token: "USDT",
+      from: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf",
+      to: "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7",
+      amount: "10",
+      maxAmount: 100,
+      recipientAllowlist: ["TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7"],
+    });
+    assert.equal(transferPreview.ok, true);
+    const transferData = transferPreview.data as {
+      allowed?: boolean;
+      asset?: string;
+      amountRaw?: string;
+      signed?: boolean;
+      broadcast?: boolean;
+    };
+    assert.equal(transferData.allowed, true);
+    assert.equal(transferData.asset, "USDT");
+    assert.equal(transferData.amountRaw, "10000000");
+    assert.equal(transferData.signed, false);
+    assert.equal(transferData.broadcast, false);
+
+    const simulation = await toolRegistry.execute("web3_transaction_simulation", context, {
+      action: "transfer_preview",
+      preview: transferPreview.data,
+      riskReport: { riskLevel: "low", findings: [] },
+      allowance: 100,
+    });
+    assert.equal(simulation.ok, true);
+    const simulationData = simulation.data as {
+      decision?: string;
+      riskLevel?: string;
+      simulated?: boolean;
+      networkSimulation?: boolean;
+      broadcast?: boolean;
+    };
+    assert.equal(simulationData.decision, "approval_required");
+    assert.equal(simulationData.riskLevel, "low");
+    assert.equal(simulationData.simulated, true);
+    assert.equal(simulationData.networkSimulation, false);
+    assert.equal(simulationData.broadcast, false);
+
+    const bai = await toolRegistry.execute("bai_capability_probe", context, {});
+    assert.equal(bai.ok, true);
+    const baiData = bai.data as { provider?: string; openAiCompatible?: boolean };
+    assert.equal(baiData.provider, "b.ai");
+    assert.equal(baiData.openAiCompatible, true);
+
+    const baiChat = await toolRegistry.execute("bai_chat_completion", context, {
+      prompt: "Summarize the Genesis risk gate.",
+    });
+    assert.equal(baiChat.ok, true);
+    const baiChatData = baiChat.data as { provider?: string; mode?: string; status?: string; model?: string; content?: string };
+    assert.equal(baiChatData.provider, "b.ai");
+    assert.equal(baiChatData.mode, "mock");
+    assert.equal(baiChatData.status, "completed");
+    assert.equal(baiChatData.model, "gpt-5.2");
+    assert.match(baiChatData.content ?? "", /Genesis risk gate/);
+
+    const plan = await toolRegistry.execute("genesis_finance_plan", context, {
+      intent: "Evaluate a guarded 25 USDT HTX buy with Web3 risk evidence.",
+      symbol: "btcusdt",
+      amountUsdt: 25,
+      market: market.data,
+      account: account.data,
+      wallet: wallet.data,
+      riskReport: risk.data,
+    });
+    assert.equal(plan.ok, true);
+    const planData = plan.data as { decision?: string; approvalRequired?: boolean; liveExecutionEnabled?: boolean };
+    assert.equal(planData.decision, "approval_required");
+    assert.equal(planData.approvalRequired, true);
+    assert.equal(planData.liveExecutionEnabled, false);
+
+    const preview = await toolRegistry.execute("htx_order_preview", context, {
+      symbol: "btcusdt",
+      side: "buy",
+      quoteAmountUsdt: 25,
+      price: marketData.price,
+    });
+    assert.equal(preview.ok, true);
+    const previewData = preview.data as { allowed?: boolean; approvalRequired?: boolean; liveOrderPlaced?: boolean };
+    assert.equal(previewData.allowed, true);
+    assert.equal(previewData.approvalRequired, true);
+    assert.equal(previewData.liveOrderPlaced, false);
+
+    const paper = await toolRegistry.execute("htx_paper_order", context, {
+      symbol: "btcusdt",
+      side: "buy",
+      quoteAmountUsdt: 25,
+      price: marketData.price,
+      approved: true,
+    });
+    assert.equal(paper.ok, true);
+    const paperData = paper.data as { id?: string; status?: string; liveOrderPlaced?: boolean; approved?: boolean };
+    assert.match(paperData.id ?? "", /^paper-/);
+    assert.equal(paperData.status, "filled_paper");
+    assert.equal(paperData.liveOrderPlaced, false);
+    assert.equal(paperData.approved, true);
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(storeRoot, { recursive: true, force: true });
+  }
+});
+
+test("B.AI live chat tool blocks without configured API key and redacts secret-like prompts", async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "omni-agent-bai-chat-workspace-"));
+  const storeRoot = mkdtempSync(join(tmpdir(), "omni-agent-bai-chat-store-"));
+  const originalBaiKey = process.env.BAI_API_KEY;
+  const originalBAiKey = process.env.B_AI_API_KEY;
+  const originalOmniBaiKey = process.env.OMNI_AGENT_BAI_API_KEY;
+
+  try {
+    delete process.env.BAI_API_KEY;
+    delete process.env.B_AI_API_KEY;
+    delete process.env.OMNI_AGENT_BAI_API_KEY;
+    writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({ name: "fixture" }, null, 2), "utf8");
+    const toolRegistry = new ToolRegistry();
+    registerBuiltInTools(toolRegistry);
+    const context = {
+      workspace: new LocalWorkspaceService(workspaceRoot, join(storeRoot, "artifacts", "workspace")),
+      executionDomain: "workspace" as const,
+    };
+
+    const blocked = await toolRegistry.execute("bai_chat_completion", context, {
+      mode: "live",
+      prompt: "Hello World",
+    });
+    assert.equal(blocked.ok, false);
+    const blockedData = blocked.data as {
+      status?: string;
+      reason?: string;
+      source?: string;
+      apiKeyConfigured?: boolean;
+    };
+    assert.equal(blockedData.status, "blocked");
+    assert.equal(blockedData.apiKeyConfigured, false);
+    assert.equal(blockedData.source, "https://api.b.ai/v1/chat/completions");
+    assert.match(blockedData.reason ?? "", /BAI_API_KEY/);
+
+    const fakeKey = `sk-${"1234567890abcdef1234567890abcdef"}`;
+    const mock = await toolRegistry.execute("bai_chat_completion", context, {
+      prompt: `Never echo ${fakeKey}`,
+    });
+    assert.equal(mock.ok, true);
+    assert.doesNotMatch(JSON.stringify(mock.data), new RegExp(fakeKey));
+    assert.match(JSON.stringify(mock.data), /\[redacted-api-key\]/);
+  } finally {
+    if (originalBaiKey === undefined) {
+      delete process.env.BAI_API_KEY;
+    } else {
+      process.env.BAI_API_KEY = originalBaiKey;
+    }
+    if (originalBAiKey === undefined) {
+      delete process.env.B_AI_API_KEY;
+    } else {
+      process.env.B_AI_API_KEY = originalBAiKey;
+    }
+    if (originalOmniBaiKey === undefined) {
+      delete process.env.OMNI_AGENT_BAI_API_KEY;
+    } else {
+      process.env.OMNI_AGENT_BAI_API_KEY = originalOmniBaiKey;
+    }
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(storeRoot, { recursive: true, force: true });
+  }
+});
+
+test("Genesis tools block oversized, unapproved, and unallowlisted financial actions", async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "omni-agent-genesis-guards-workspace-"));
+  const storeRoot = mkdtempSync(join(tmpdir(), "omni-agent-genesis-guards-store-"));
+
+  try {
+    writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({ name: "fixture" }, null, 2), "utf8");
+    const toolRegistry = new ToolRegistry();
+    registerBuiltInTools(toolRegistry);
+    const context = {
+      workspace: new LocalWorkspaceService(workspaceRoot, join(storeRoot, "artifacts", "workspace")),
+      executionDomain: "workspace" as const,
+    };
+
+    const oversized = await toolRegistry.execute("htx_order_preview", context, {
+      symbol: "btcusdt",
+      side: "buy",
+      quoteAmountUsdt: 250,
+      maxOrderUsdt: 100,
+    });
+    assert.equal(oversized.ok, false);
+    const oversizedData = oversized.data as { allowed?: boolean; rejectionReasons?: string[] };
+    assert.equal(oversizedData.allowed, false);
+    assert.ok(oversizedData.rejectionReasons?.some((entry) => /exceeds maxOrderUsdt/.test(entry)));
+
+    const unapprovedPaper = await toolRegistry.execute("htx_paper_order", context, {
+      symbol: "btcusdt",
+      side: "buy",
+      quoteAmountUsdt: 25,
+    });
+    assert.equal(unapprovedPaper.ok, false);
+    assert.match(unapprovedPaper.summary, /approved=true/);
+
+    const unallowlistedRisk = await toolRegistry.execute("web3_contract_risk", context, {
+      contractAddress: "0x2222222222222222222222222222222222222222",
+      spender: "0x9999999999999999999999999999999999999999",
+      spenderAllowlist: ["0x3333333333333333333333333333333333333333"],
+      allowance: 10,
+      simulated: true,
+    });
+    assert.equal(unallowlistedRisk.ok, false);
+    const riskData = unallowlistedRisk.data as { riskLevel?: string; findings?: string[] };
+    assert.equal(riskData.riskLevel, "blocked");
+    assert.ok(riskData.findings?.some((entry) => /not in the allowlist/.test(entry)));
+
+    const blockedTransfer = await toolRegistry.execute("web3_transfer_preview", context, {
+      token: "USDT",
+      from: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf",
+      to: "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7",
+      amount: "150",
+      maxAmount: 100,
+      recipientAllowlist: ["TPYmHEhy5n8TCEfYGqW2rPxsghSfzghPDn"],
+    });
+    assert.equal(blockedTransfer.ok, false);
+    const blockedTransferData = blockedTransfer.data as { allowed?: boolean; rejectionReasons?: string[] };
+    assert.equal(blockedTransferData.allowed, false);
+    assert.ok(blockedTransferData.rejectionReasons?.some((entry) => /exceeds maxAmount/.test(entry)));
+    assert.ok(blockedTransferData.rejectionReasons?.some((entry) => /recipient is not in the allowlist/.test(entry)));
+
+    const blockedSimulation = await toolRegistry.execute("web3_transaction_simulation", context, {
+      action: "transfer_preview",
+      preview: blockedTransfer.data,
+      riskReport: { riskLevel: "blocked", findings: ["recipient is not in the allowlist"] },
+    });
+    assert.equal(blockedSimulation.ok, false);
+    const blockedSimulationData = blockedSimulation.data as { decision?: string; riskLevel?: string };
+    assert.equal(blockedSimulationData.decision, "blocked");
+    assert.equal(blockedSimulationData.riskLevel, "blocked");
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(storeRoot, { recursive: true, force: true });
+  }
+});
+
+test("omni workflow tools cover the four assistant capability categories", async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "omni-agent-workflow-catalog-workspace-"));
+  const storeRoot = mkdtempSync(join(tmpdir(), "omni-agent-workflow-catalog-store-"));
+  const originalSocialKey = process.env.SOCIAL_PUBLISH_API_KEY;
+
+  try {
+    delete process.env.SOCIAL_PUBLISH_API_KEY;
+    writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({ name: "fixture" }, null, 2), "utf8");
+    const toolRegistry = new ToolRegistry();
+    registerBuiltInTools(toolRegistry);
+    const context = {
+      workspace: new LocalWorkspaceService(workspaceRoot, join(storeRoot, "artifacts", "workspace")),
+      executionDomain: "workspace" as const,
+    };
+
+    const catalog = await toolRegistry.execute("omni_workflow_catalog", context, { includeDetails: true });
+    assert.equal(catalog.ok, true);
+    const catalogData = catalog.data as {
+      workflowCount?: number;
+      categories?: Array<{ id?: string; count?: number; workflows?: Array<{ id?: string }> }>;
+    };
+    assert.equal(catalogData.workflowCount, 16);
+    assert.deepEqual(
+      catalogData.categories?.map((entry) => entry.id).sort(),
+      ["content_creation", "development_workflow", "intelligent_automation", "personal_efficiency"],
+    );
+    assert.ok(catalogData.categories?.every((entry) => entry.count === 4));
+
+    const socialPlan = await toolRegistry.execute("omni_workflow_plan", context, {
+      workflowId: "multi_platform_social_publish",
+      mode: "live",
+      intent: "Publish approved article snippets to social platforms.",
+    });
+    assert.equal(socialPlan.ok, true);
+    const planData = socialPlan.data as {
+      approvalRequired?: boolean;
+      missingSecrets?: string[];
+      steps?: Array<{ id?: string; approvalRequired?: boolean }>;
+      warnings?: string[];
+    };
+    assert.equal(planData.approvalRequired, true);
+    assert.ok(planData.missingSecrets?.includes("SOCIAL_PUBLISH_API_KEY"));
+    assert.ok(planData.steps?.some((entry) => entry.id === "approval_gate" && entry.approvalRequired));
+    assert.ok(planData.warnings?.some((entry) => /Missing connector secrets/.test(entry)));
+
+    const dryRun = await toolRegistry.execute("omni_workflow_dry_run", context, {
+      workflowId: "multi_platform_social_publish",
+      mode: "live",
+      approved: false,
+      evidence: {
+        draft: "hello",
+        apiToken: "secret-value",
+      },
+    });
+    assert.equal(dryRun.ok, true);
+    const dryRunData = dryRun.data as {
+      executedMode?: string;
+      externalCallsMade?: boolean;
+      liveBlocked?: boolean;
+      liveBlockedReasons?: string[];
+      evidence?: Record<string, unknown>;
+    };
+    assert.equal(dryRunData.executedMode, "dry_run");
+    assert.equal(dryRunData.externalCallsMade, false);
+    assert.equal(dryRunData.liveBlocked, true);
+    assert.ok(dryRunData.liveBlockedReasons?.some((entry) => /approved=true/.test(entry)));
+    assert.equal(dryRunData.evidence?.apiToken, "[redacted]");
+
+    const probe = await toolRegistry.execute("omni_connector_probe", context, {
+      workflowId: "multi_platform_social_publish",
+    });
+    assert.equal(probe.ok, true);
+    const probeData = probe.data as {
+      connectors?: Array<{ name?: string; configured?: boolean; missingSecrets?: string[] }>;
+    };
+    const socialConnector = probeData.connectors?.find((entry) => entry.name === "social_publish");
+    assert.equal(socialConnector?.configured, false);
+    assert.deepEqual(socialConnector?.missingSecrets, ["SOCIAL_PUBLISH_API_KEY"]);
+  } finally {
+    if (originalSocialKey === undefined) {
+      delete process.env.SOCIAL_PUBLISH_API_KEY;
+    } else {
+      process.env.SOCIAL_PUBLISH_API_KEY = originalSocialKey;
+    }
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(storeRoot, { recursive: true, force: true });
+  }
+});

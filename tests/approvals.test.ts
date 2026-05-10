@@ -38,6 +38,43 @@ test("tool classifier covers the primary approval classes", () => {
   expectAssessment("ask_user", "interactive", 0);
 });
 
+test("Genesis finance tools keep previews read-only and paper execution explicit", () => {
+  expectAssessment("htx_market_data", "readonly_search", 1);
+  expectAssessment("htx_account_snapshot", "readonly_search", 1);
+  expectAssessment("web3_wallet_snapshot", "readonly_search", 1);
+  expectAssessment("web3_tron_account_snapshot", "readonly_search", 1);
+  expectAssessment("web3_trc20_allowance", "readonly_search", 1);
+  expectAssessment("bai_capability_probe", "readonly_search", 1);
+  expectAssessment("bai_chat_completion", "readonly_search", 1);
+  expectAssessment("web3_contract_risk", "readonly_scoped", 1);
+  expectAssessment("web3_revoke_approval_preview", "readonly_scoped", 1);
+  expectAssessment("web3_transfer_preview", "readonly_scoped", 1);
+  expectAssessment("web3_transaction_simulation", "readonly_scoped", 1);
+  expectAssessment("genesis_finance_plan", "readonly_scoped", 1);
+  expectAssessment("htx_order_preview", "readonly_scoped", 1);
+  expectAssessment("htx_paper_order", "mutating", 1);
+
+  const preview = classifyToolCall({ toolName: "htx_order_preview", args: { quoteAmountUsdt: 25 } });
+  const paper = classifyToolCall({ toolName: "htx_paper_order", args: { quoteAmountUsdt: 25 } });
+  assert.equal(preview.mutating, false);
+  assert.equal(paper.mutating, true);
+  assert.match(preview.reason, /no external trade/i);
+  assert.match(paper.reason, /live order placement remains unsupported/i);
+});
+
+test("omni workflow tools stay approval-aware without external side effects", () => {
+  expectAssessment("omni_workflow_catalog", "readonly_search", 1);
+  expectAssessment("omni_connector_probe", "readonly_search", 1);
+  expectAssessment("omni_workflow_plan", "readonly_scoped", 1);
+  expectAssessment("omni_workflow_dry_run", "readonly_scoped", 1);
+
+  const plan = classifyToolCall({ toolName: "omni_workflow_plan", args: { workflowId: "remote_dialogue" } });
+  const dryRun = classifyToolCall({ toolName: "omni_workflow_dry_run", args: { workflowId: "remote_dialogue", mode: "live" } });
+  assert.equal(plan.mutating, false);
+  assert.equal(dryRun.mutating, false);
+  assert.match(dryRun.reason, /no external write/i);
+});
+
 test("approval grant store persists always grants to disk", () => {
   const root = mkdtempSync(join(tmpdir(), "omni-agent-approval-grants-"));
   try {

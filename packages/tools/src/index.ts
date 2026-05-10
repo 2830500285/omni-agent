@@ -37,6 +37,8 @@ import {
   snapshotBrowserSession,
   typeIntoBrowserSession,
 } from "./browser.js";
+import { registerGenesisTools } from "./genesis.js";
+import { registerOmniWorkflowTools } from "./omni-workflows.js";
 
 export { setBrowserAutomationAdapterFactoryForTests } from "./browser.js";
 
@@ -1163,6 +1165,9 @@ function formatSecretScanWarnings(findings: readonly SecretScanFinding[]): strin
 }
 
 export function registerBuiltInTools(registry: ToolRegistry): void {
+  registerGenesisTools(registry);
+  registerOmniWorkflowTools(registry);
+
   registry.register({
     name: "workspace_info",
     description: "Return repository and workspace metadata.",

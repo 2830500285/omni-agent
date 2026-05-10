@@ -332,16 +332,47 @@ export function classifyToolCall(operation: OperationDescriptor): ToolRiskAssess
     case "read_extension_resource":
     case "render_extension_prompt":
       return buildAssessment(toolName, "readonly_scoped", 0, false, "Read-only inspection tool.");
+    case "web3_contract_risk":
+    case "web3_revoke_approval_preview":
+    case "web3_transfer_preview":
+    case "web3_transaction_simulation":
+    case "genesis_finance_plan":
+    case "htx_order_preview":
+      return buildAssessment(
+        toolName,
+        "readonly_scoped",
+        1,
+        false,
+        "Financial planning or risk preview only; no external trade or chain write is executed.",
+      );
+    case "omni_workflow_plan":
+    case "omni_workflow_dry_run":
+      return buildAssessment(
+        toolName,
+        "readonly_scoped",
+        1,
+        false,
+        "Planning or dry-run preview only; no external write is executed.",
+      );
     case "web_search":
     case "browser_search":
     case "web_fetch":
     case "browser_fetch":
+    case "htx_market_data":
+    case "htx_account_snapshot":
+    case "web3_wallet_snapshot":
+    case "web3_tron_account_snapshot":
+    case "web3_trc20_allowance":
+    case "bai_capability_probe":
+    case "bai_chat_completion":
+    case "omni_workflow_catalog":
+    case "omni_connector_probe":
       return buildAssessment(
         toolName,
         "readonly_search",
         1,
         false,
-        "Network read-only fetch outside the local workspace.",
+        "Network read-only fetch or model inference outside the local workspace.",
       );
     case "ask_user":
       return buildAssessment(
@@ -374,6 +405,14 @@ export function classifyToolCall(operation: OperationDescriptor): ToolRiskAssess
           : "Persists memory for future runs without editing workspace files.",
       );
     }
+    case "htx_paper_order":
+      return buildAssessment(
+        toolName,
+        "mutating",
+        1,
+        true,
+        "Records paper-trading state only; live order placement remains unsupported.",
+      );
     case "python_execute":
     case "run_verification":
     case "run_command":

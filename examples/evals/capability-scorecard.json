@@ -1237,6 +1237,93 @@
         "tests/tools.test.ts",
         "tests/evals.test.ts"
       ]
+    },
+    {
+      "id": "genesis-finance-agent",
+      "title": "Genesis HTX/Web3/B.AI finance agent",
+      "status": "usable",
+      "referenceProject": [
+        "openclaw-main",
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "The reference projects have broader ecosystem routing and memory behavior, but do not provide this HTX/Web3/B.AI finance-agent adapter surface.",
+      "evidenceFiles": [
+        "packages/tools/src/genesis.ts",
+        "packages/approvals/src/index.ts",
+        "examples/evals/htx-genesis.json",
+        "docs/htx-genesis.md"
+      ],
+      "requiredTests": [
+        "tests/tools.test.ts",
+        "tests/approvals.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Replace mock HTX account fixtures with signed HTX read-only account gateway credentials; keep Web3 write support preview-only until a signer, simulator, and approval provider are audited.",
+      "scenarioIds": [
+        "genesis-htx-web3-bai-paper-trade",
+        "genesis-tron-preview-risk-gate",
+        "genesis-oversized-order-blocked"
+      ],
+      "matureCriteria": [
+        "HTX market/account, Web3 wallet/risk, TRON account, TRC20 allowance, and B.AI readiness evidence are collected before planning.",
+        "B.AI chat-completions can produce a live model summary through the configured OpenAI-compatible endpoint without storing API keys.",
+        "TRON revoke and transfer previews produce approval-required artifacts with signed=false and broadcast=false.",
+        "Local Web3 transaction simulation summarizes preview/risk evidence before any live chain adapter can run.",
+        "Order previews enforce symbol allowlists and quote-size caps, while paper execution requires explicit approval and never places live orders.",
+        "Demo traces retain approval and paper-execution artifacts for replay and review."
+      ],
+      "blockedBy": [
+        "Live private HTX account reads require an external signed read-only gateway or official SDK wiring.",
+        "Live chain write support is intentionally unavailable until signer custody, transaction simulation, approval policy, and post-broadcast verification are audited.",
+        "B.AI live use requires BAI_API_KEY, B_AI_API_KEY, or OMNI_AGENT_BAI_API_KEY to be supplied through the environment."
+      ],
+      "liveOrContractTests": [
+        "tests/tools.test.ts",
+        "tests/approvals.test.ts"
+      ]
+    },
+    {
+      "id": "omni-workflow-capability-pack",
+      "title": "Omni workflow capability pack",
+      "status": "usable",
+      "referenceProject": [
+        "openclaw-main",
+        "hermes-agent-main"
+      ],
+      "referenceStrength": "The reference projects expose channel, skill, and automation primitives; this pack maps them into product-facing personal efficiency, content, development, and automation workflows.",
+      "evidenceFiles": [
+        "packages/tools/src/omni-workflows.ts",
+        "packages/tools/src/index.ts",
+        "packages/approvals/src/index.ts",
+        "examples/evals/omni-workflows.json",
+        "docs/omni-workflows.md"
+      ],
+      "requiredTests": [
+        "tests/tools.test.ts",
+        "tests/approvals.test.ts",
+        "tests/evals.test.ts"
+      ],
+      "nextMilestone": "Replace dry-run handoffs with connector-specific live adapters for Telegram, Discord, Apple Shortcuts, social publishing, GitHub, and alert delivery.",
+      "scenarioIds": [
+        "workflows-personal-remote-dialogue",
+        "workflows-content-social-publish",
+        "workflows-dev-browser-review",
+        "workflows-automation-anomaly-alert"
+      ],
+      "matureCriteria": [
+        "All 16 product-card capabilities are discoverable in a single catalog.",
+        "Connector-gated workflows report missing credentials without leaking secret values.",
+        "External writes are represented as approval-gated dry-run artifacts unless a downstream connector is explicitly invoked."
+      ],
+      "blockedBy": [
+        "Live platform writes require user-owned connector credentials and provider-specific adapters.",
+        "Apple Notes and Reminders require an Apple Shortcuts or iCloud bridge outside this repository.",
+        "Always-on operation still needs deployment-specific supervisor configuration for production."
+      ],
+      "liveOrContractTests": [
+        "tests/tools.test.ts",
+        "tests/approvals.test.ts"
+      ]
     }
   ],
   "scenarios": [
@@ -2030,6 +2117,142 @@
               "process_logs",
               "process_list",
               "process_stop"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "genesis-htx-web3-bai-paper-trade",
+      "title": "Genesis HTX Web3 B.AI Paper Trade",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Use HTX, Web3, and B.AI adapter evidence to plan and record a paper-only financial action.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "htx_market_data",
+              "htx_account_snapshot",
+              "web3_wallet_snapshot",
+              "web3_contract_risk",
+              "web3_tron_account_snapshot",
+              "web3_trc20_allowance",
+              "web3_revoke_approval_preview",
+              "web3_transfer_preview",
+              "web3_transaction_simulation",
+              "bai_capability_probe",
+              "bai_chat_completion",
+              "genesis_finance_plan",
+              "htx_order_preview",
+              "htx_paper_order"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "genesis-tron-preview-risk-gate",
+      "title": "Genesis TRON Preview Risk Gate",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Read TRON account and TRC20 allowance evidence, generate revoke and transfer previews, and simulate the Web3 action without signing or broadcasting.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "web3_tron_account_snapshot",
+              "web3_trc20_allowance",
+              "web3_revoke_approval_preview",
+              "web3_transfer_preview",
+              "web3_transaction_simulation"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "genesis-oversized-order-blocked",
+      "title": "Genesis Oversized Order Blocked",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Reject an oversized HTX order preview and preserve the blocked decision as risk evidence.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "htx_order_preview",
+              "genesis_finance_plan"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "workflows-personal-remote-dialogue",
+      "title": "Workflows Personal Remote Dialogue",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Plan Telegram/Discord remote dialogue with connector probes, approval gates, and no live outbound message.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "omni_workflow_plan",
+              "omni_connector_probe",
+              "omni_workflow_dry_run"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "workflows-content-social-publish",
+      "title": "Workflows Content Social Publish",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Prepare a multi-platform social publishing dry run with credential and approval gates.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "omni_workflow_plan",
+              "omni_connector_probe",
+              "omni_workflow_dry_run"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "workflows-dev-browser-review",
+      "title": "Workflows Development Browser Review",
+      "category": "mcp_tool_use",
+      "steps": [
+        {
+          "objective": "Plan browser automation testing with screenshot, trace, and approval boundaries.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "omni_workflow_plan"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "workflows-automation-anomaly-alert",
+      "title": "Workflows Automation Anomaly Alert",
+      "category": "long_running_automation",
+      "steps": [
+        {
+          "objective": "Plan anomaly alerting with thresholding, connector probing, and a dry-run alert artifact.",
+          "expectation": {
+            "verificationStatus": "passed",
+            "requiredToolNames": [
+              "omni_workflow_plan",
+              "omni_connector_probe",
+              "omni_workflow_dry_run"
             ]
           }
         }
