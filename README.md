@@ -17,12 +17,65 @@ Languages: [English](README.en.md) | [中文](README.zh.md)
 
 Local-first CLI/TUI coding agent for repository work.
 
+Current competition profile: **Omni Agent Genesis**, a verifiable HTX + Web3 +
+B.AI financial-agent workflow that reads evidence, prepares guarded plans,
+requires approval, and records replayable artifacts before any execution.
+
 ## Project thesis
 
 Omni Agent is a verification-native multi-agent runtime: tasks, subagents,
 memory, capability claims, and run records are designed around reproducible
 evidence instead of unsupported feature claims. The five core project paradigms
 are documented in `docs/omni-agent-paradigms.md`.
+
+## Genesis competition profile
+
+Omni Agent Genesis is the current HTX/Web3/B.AI demo profile. It is designed to
+show an auditable AI finance agent, not an autonomous trading bot. The agent can
+collect evidence, create a plan, request approval, and produce a replayable run
+record.
+
+Implemented surfaces:
+
+- HTX market reads, read-only account snapshots, order previews, and paper-only
+  order records.
+- Web3 wallet reads, TRON account snapshots, TRC20 allowance reads, contract
+  risk reports, revoke/transfer previews, and local transaction simulation.
+- B.AI provider probing and OpenAI-compatible chat-completions calls when a key
+  is supplied through the environment.
+- Approval policy, amount caps, allowlists, eval manifests, maturity scorecards,
+  and run artifacts.
+
+Safety boundary:
+
+- Live HTX order placement is not enabled.
+- Wallet signing and transaction broadcasting are not enabled.
+- Arbitrary contract calls, leverage, derivatives, and withdrawals are not
+  enabled.
+- Real execution should only be added behind audited signer custody, explicit
+  approval policy, small spot-only limits, and post-execution verification.
+
+Main Genesis files:
+
+- [Genesis guide](docs/htx-genesis.md)
+- [Genesis eval](examples/evals/htx-genesis.json)
+- [Genesis tools](packages/tools/src/genesis.ts)
+- [Capability scorecard](examples/evals/capability-scorecard.json)
+
+Fast Genesis verification:
+
+```bash
+node ./scripts/run-tests.mjs tests/tools.test.ts tests/approvals.test.ts tests/evals.test.ts
+npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode synthetic --no-save
+npm run maturity:check
+npm run build
+```
+
+Optional live endpoints are configured through environment variables such as
+`BAI_API_KEY`, `OMNI_AGENT_BAI_BASE_URL`, `OMNI_AGENT_TRONSCAN_BASE_URL`,
+`OMNI_AGENT_TRON_FULL_NODE_URL`, and `OMNI_AGENT_HTX_ACCOUNT_ENDPOINT`. Keep
+private exchange keys, wallet seed phrases, and signer credentials out of the
+demo adapter.
 
 ## Tutorials
 
