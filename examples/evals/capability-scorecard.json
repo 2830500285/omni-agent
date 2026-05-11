@@ -1253,11 +1253,13 @@
         "examples/evals/htx-genesis.json",
         "examples/evals/htx-live-guarded.json",
         "docs/htx-genesis.md",
+        "docs/live-testing.md",
         "docs/trading-safety.md",
         "docs/htx-readonly-gateway-contract.md"
       ],
       "requiredTests": [
         "tests/tools.test.ts",
+        "tests/tools-live.test.ts",
         "tests/approvals.test.ts",
         "tests/evals.test.ts"
       ],
@@ -1283,6 +1285,7 @@
       ],
       "liveOrContractTests": [
         "tests/tools.test.ts",
+        "tests/tools-live.test.ts",
         "tests/approvals.test.ts"
       ]
     },

@@ -212,6 +212,8 @@ npm run maturity:check
 
 能力映射：`model-runtime`, `gateway-channels`, `mcp-runtime`, `genesis-finance-agent`
 
+状态：部分完成。`tests/model-live.test.ts` 已覆盖 opt-in 的真实模型和 B.AI 小请求；`tests/channel-live.test.ts` 与 `tests/mcp-live.test.ts` 已有本地 roundtrip fixture。本轮新增 `tests/tools-live.test.ts`，在 `OMNI_LIVE_TRON_TESTS=1` 时执行 Genesis TRON 只读 account/allowance live checks，在 `OMNI_LIVE_BAI_TESTS=1` 时通过 Genesis `bai_chat_completion` 工具执行 B.AI live 小请求。
+
 问题：
 
 当前 live test 文件主要是 opt-in 和 required env 检查：

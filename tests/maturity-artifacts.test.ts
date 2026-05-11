@@ -10,6 +10,7 @@ const files = {
   evals: "packages/evals/src/index.ts",
   scorecard: "examples/evals/capability-scorecard.json",
   releaseLocal: "examples/evals/release-local.json",
+  toolsLive: "tests/tools-live.test.ts",
   gatewayPlugin: "packages/gateway/src/channel-plugin.ts",
   extensions: "packages/extensions/src/index.ts",
   modelClient: "packages/model-client/src/index.ts",
@@ -97,6 +98,11 @@ test("M0-M8 maturity upgrade artifacts are present", () => {
   assert.ok(hookCapability.matureBenchmarkScenarioIds?.includes("compat.tool_lifecycle_hooks"));
   assert.match(hookCapability.operationalRunbook ?? "", /docs\/operations\.md#tool-lifecycle-hooks/);
   assert.ok(hookCapability.failureRecoveryTests?.includes("tests/runtime.test.ts"));
+
+  const genesisCapability = scorecard.capabilities.find((entry) => entry.id === "genesis-finance-agent");
+  assert.ok(genesisCapability, "Missing Genesis finance capability");
+  assert.ok(genesisCapability.requiredTests?.includes(files.toolsLive));
+  assert.ok(genesisCapability.liveOrContractTests?.includes(files.toolsLive));
 
   const releaseLocal = JSON.parse(readFileSync(files.releaseLocal, "utf8")) as {
     scenarios: Array<{
