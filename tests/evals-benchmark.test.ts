@@ -160,10 +160,12 @@ test("eval benchmark script persists synthetic run history and trend artifacts",
     assert.equal(result.status, 0, result.stderr || result.stdout);
     const latestPath = join(root, "latest.json");
     const historyPath = join(root, "history.json");
+    const jsonlPath = join(root, "runs.jsonl");
     const trendPath = join(root, "trend.json");
     const reportPath = join(root, "report.md");
     assert.ok(existsSync(latestPath));
     assert.ok(existsSync(historyPath));
+    assert.ok(existsSync(jsonlPath));
     assert.ok(existsSync(trendPath));
     assert.ok(existsSync(reportPath));
 
@@ -175,6 +177,7 @@ test("eval benchmark script persists synthetic run history and trend artifacts",
       failureSummary?: unknown[];
     };
     const history = JSON.parse(readFileSync(historyPath, "utf8")) as unknown[];
+    const jsonl = readFileSync(jsonlPath, "utf8").trim().split(/\r?\n/);
     const trend = JSON.parse(readFileSync(trendPath, "utf8")) as { runCount?: number; latestRunId?: string | null };
 
     assert.equal(latest.id, "test-synthetic-run");
@@ -184,6 +187,8 @@ test("eval benchmark script persists synthetic run history and trend artifacts",
     assert.ok((latest.usage?.durationMs ?? 0) > 0);
     assert.deepEqual(latest.failureSummary, []);
     assert.equal(history.length, 1);
+    assert.equal(jsonl.length, 1);
+    assert.equal((JSON.parse(jsonl[0]!) as { id?: string }).id, "test-synthetic-run");
     assert.equal(trend.runCount, 1);
     assert.equal(trend.latestRunId, "test-synthetic-run");
     assert.match(result.stdout, /"artifactPaths"/);

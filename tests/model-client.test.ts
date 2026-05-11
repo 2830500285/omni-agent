@@ -5,6 +5,7 @@ import {
   AnthropicMessagesModelClient,
   CredentialPoolModelClient,
   FailoverModelClient,
+  MockModelClient,
   ModelRequestError,
   ModelProviderExtensionRegistry,
   ModelRouter,
@@ -2614,6 +2615,55 @@ test("B.AI built-in provider template creates an OpenAI-compatible profile", () 
   assert.equal(overridden.credentials?.[0]?.apiKeyEnv, "OMNI_LIVE_BAI_API_KEY");
 });
 
+test("mock Genesis model covers blocked and fallback risk scenarios", async () => {
+  const client = new MockModelClient();
+
+  const missingApprovalObjective = "Block an HTX paper order when approval is missing; require approved=true.";
+  const missingApproval = await client.generateTurn(createGenesisTurnInput(missingApprovalObjective));
+  assert.deepEqual(
+    missingApproval.toolCalls.map((call) => call.toolName),
+    ["genesis_finance_plan", "htx_order_preview", "htx_paper_order"],
+  );
+  assert.equal(missingApproval.toolCalls[2]?.args.approved, undefined);
+
+  const missingApprovalFinal = await client.generateTurn(createGenesisTurnInput(missingApprovalObjective, [
+    { toolName: "genesis_finance_plan", ok: true, summary: "Plan produced." },
+    { toolName: "htx_order_preview", ok: true, summary: "Preview produced." },
+    { toolName: "htx_paper_order", ok: false, summary: "Paper order blocked because approved=true was not supplied." },
+  ]));
+  assert.match(missingApprovalFinal.assistantText, /approved=true/);
+  assert.match(missingApprovalFinal.assistantText, /blocked/);
+
+  const missingTron = await client.generateTurn(
+    createGenesisTurnInput("Block a live TRON account snapshot when address is required."),
+  );
+  assert.equal(missingTron.toolCalls[0]?.toolName, "web3_tron_account_snapshot");
+  assert.deepEqual(missingTron.toolCalls[0]?.args, { mode: "live" });
+
+  const missingBai = await client.generateTurn(createGenesisTurnInput("Block B.AI key missing live chat completion."));
+  assert.equal(missingBai.toolCalls[0]?.toolName, "bai_chat_completion");
+  assert.equal(missingBai.toolCalls[0]?.args.apiKeyEnv, "OMNI_AGENT_MISSING_BAI_KEY_FOR_EVAL");
+  assert.doesNotMatch(JSON.stringify(missingBai.toolCalls[0]?.args), /sk-/);
+
+  const timeoutObjective = "Handle a live endpoint timeout fallback for HTX market data.";
+  const timeoutFirst = await client.generateTurn(createGenesisTurnInput(timeoutObjective));
+  assert.equal(timeoutFirst.toolCalls[0]?.toolName, "htx_market_data");
+  assert.equal(timeoutFirst.toolCalls[0]?.args.mode, "live");
+
+  const timeoutFallback = await client.generateTurn(createGenesisTurnInput(timeoutObjective, [
+    { toolName: "htx_market_data", ok: false, summary: "The live endpoint timed out." },
+  ]));
+  assert.equal(timeoutFallback.toolCalls[0]?.toolName, "htx_market_data");
+  assert.equal(timeoutFallback.toolCalls[0]?.args.mode, "mock");
+
+  const timeoutFinal = await client.generateTurn(createGenesisTurnInput(timeoutObjective, [
+    { toolName: "htx_market_data", ok: false, summary: "The live endpoint timed out." },
+    { toolName: "htx_market_data", ok: true, summary: "Read HTX BTCUSDT market snapshot from mock." },
+  ]));
+  assert.match(timeoutFinal.assistantText, /timeout fallback/);
+  assert.match(timeoutFinal.assistantText, /mock HTX evidence/);
+});
+
 test("default model profile loads streaming and provider overrides from env", () => {
   const originalProtocol = process.env.OMNI_AGENT_MODEL_PROTOCOL;
   const originalApiPath = process.env.OMNI_AGENT_MODEL_API_PATH;
@@ -2828,6 +2878,30 @@ function createTurnInput(
       },
     ],
     toolResults: [],
+  };
+}
+
+function createGenesisTurnInput(objective: string, toolResults: ModelTurnInput["toolResults"] = []): ModelTurnInput {
+  const input = createTurnInput();
+  const taskContract = {
+    ...input.taskContract,
+    objective,
+  };
+  return {
+    ...input,
+    context: {
+      ...input.context,
+      taskContract,
+    },
+    taskContract,
+    availableTools: [
+      { name: "htx_market_data", description: "Read HTX market data", inputHint: "{}", riskHint: "read-only" },
+      { name: "htx_order_preview", description: "Preview HTX order", inputHint: "{}", riskHint: "preview-only" },
+      { name: "htx_paper_order", description: "Record paper order", inputHint: "{}", riskHint: "paper-only" },
+      { name: "web3_tron_account_snapshot", description: "Read TRON account", inputHint: "{}", riskHint: "read-only" },
+      { name: "bai_chat_completion", description: "Call B.AI chat completion", inputHint: "{}", riskHint: "model-call" },
+    ],
+    toolResults,
   };
 }
 

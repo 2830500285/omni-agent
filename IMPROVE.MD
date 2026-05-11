@@ -43,7 +43,13 @@ npm run build
 - Genesis benchmark: 3/3 scenarios completed, verificationPassRate 1, toolSafetyViolationRate 0
 - Build/typecheck: passed
 
-注意：Genesis benchmark 当前仍是 synthetic executor，不等同于真实模型、真实交易所、真实链上环境验证。
+注意：Genesis benchmark 已有 runtime executor 覆盖，但当前 runtimeMode 仍使用 mock model，不等同于真实模型、真实交易所、真实链上环境验证。
+
+追加进展（2026-05-11）：
+
+- Genesis benchmark 已扩展为 7 个 runtime 场景：正常 HTX/Web3/B.AI paper workflow、TRON preview risk gate、oversized order blocked、missing approval blocked、missing TRON address blocked、B.AI key missing blocked、live endpoint timeout fallback。
+- 已运行并通过 `npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode runtime --run-id genesis-runtime-risk-gates-2026-05-11`，结果为 7/7 completed、verificationPassRate 1、toolSafetyViolationRate 0、overallScore 0.9722。
+- benchmark 持久化已补充 `runs.jsonl`，同时继续输出 `eval-result.json`、`summary.json`、`quality.json`、`history.json`、`latest.json`、`trend.json` 和 `report.md`。
 
 ## 2. P0 必须优先改
 
@@ -164,6 +170,8 @@ git rev-list --left-right --count HEAD...origin/main
 ## 3. P1 高价值改进
 
 ### P1.1 把 synthetic benchmark 推进到 real-runtime benchmark
+
+状态：核心 runtime 覆盖已完成。后续只需要把 `.artifacts/benchmarks` 接入 CI artifact 上传策略，不需要再扩 Genesis 风险场景数量。
 
 问题：
 

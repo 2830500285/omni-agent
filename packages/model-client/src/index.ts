@@ -638,7 +638,7 @@ export class MockModelClient implements ModelClient {
       if (input.availableTools.length > 0) {
         const nextGenesisToolCalls = buildMockGenesisToolCalls(
           objective,
-          new Set(input.toolResults.map((result) => result.toolName)),
+          input.toolResults,
         );
         if (nextGenesisToolCalls.length > 0) {
           return {
@@ -654,9 +654,7 @@ export class MockModelClient implements ModelClient {
         .join("\n");
       return {
         assistantText: [
-          /oversized|max order cap|250 USDT/i.test(objective)
-            ? "Genesis decision: blocked by maxOrderUsdt guardrail."
-            : "Genesis decision: paper-only action requires approval.",
+          buildMockGenesisDecision(objective),
           "Live execution remains disabled.",
           "No Web3 signing or broadcast was attempted.",
           "Tool evidence:",
@@ -705,12 +703,15 @@ export class MockModelClient implements ModelClient {
   }
 }
 
-function buildMockGenesisToolCalls(objective: string, existingToolNames: ReadonlySet<string>): ModelToolCall[] {
+function buildMockGenesisToolCalls(objective: string, toolResults: readonly ToolObservation[]): ModelToolCall[] {
+  const existingToolNames = new Set(toolResults.map((result) => result.toolName));
+  const hasTool = (toolName: string) => existingToolNames.has(toolName);
+  const hasSuccessfulTool = (toolName: string) => toolResults.some((result) => result.toolName === toolName && result.ok);
   const tronOwner = "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf";
   const tronSpender = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7";
 
   if (/oversized|max order cap|250 USDT/i.test(objective)) {
-    if (existingToolNames.has("htx_order_preview") && existingToolNames.has("genesis_finance_plan")) {
+    if (hasTool("htx_order_preview") && hasTool("genesis_finance_plan")) {
       return [];
     }
     return [
@@ -726,8 +727,63 @@ function buildMockGenesisToolCalls(objective: string, existingToolNames: Readonl
       },
     ];
   }
+  if (/missing approval|approved=true/i.test(objective)) {
+    if (hasTool("htx_paper_order")) {
+      return [];
+    }
+    return [
+      { id: randomUUID(), toolName: "genesis_finance_plan", args: { intent: objective, symbol: "btcusdt", amountUsdt: 25 } },
+      { id: randomUUID(), toolName: "htx_order_preview", args: { symbol: "btcusdt", side: "buy", quoteAmountUsdt: 25 } },
+      { id: randomUUID(), toolName: "htx_paper_order", args: { symbol: "btcusdt", side: "buy", quoteAmountUsdt: 25 } },
+    ];
+  }
+  if (/missing TRON address|address is required/i.test(objective)) {
+    if (hasTool("web3_tron_account_snapshot")) {
+      return [];
+    }
+    return [
+      { id: randomUUID(), toolName: "web3_tron_account_snapshot", args: { mode: "live" } },
+    ];
+  }
+  if (/B\.AI key missing|missing B\.AI API key|missing BAI API key/i.test(objective)) {
+    if (hasTool("bai_chat_completion")) {
+      return [];
+    }
+    return [
+      {
+        id: randomUUID(),
+        toolName: "bai_chat_completion",
+        args: {
+          mode: "live",
+          apiKeyEnv: "OMNI_AGENT_MISSING_BAI_KEY_FOR_EVAL",
+          prompt: "Summarize Genesis approval risk without echoing secrets.",
+        },
+      },
+    ];
+  }
+  if (/live endpoint timeout|timeout fallback|fallback after timeout/i.test(objective)) {
+    if (!hasTool("htx_market_data")) {
+      return [
+        {
+          id: randomUUID(),
+          toolName: "htx_market_data",
+          args: { symbol: "BTC/USDT", mode: "live", baseUrl: "http://10.255.255.1", timeoutMs: 1 },
+        },
+      ];
+    }
+    if (!hasSuccessfulTool("htx_market_data")) {
+      return [
+        {
+          id: randomUUID(),
+          toolName: "htx_market_data",
+          args: { symbol: "BTC/USDT", mode: "mock" },
+        },
+      ];
+    }
+    return [];
+  }
   if (/TRON Preview Risk Gate|TRON wallet|TRC20 allowance/i.test(objective)) {
-    if (!existingToolNames.has("web3_tron_account_snapshot")) {
+    if (!hasTool("web3_tron_account_snapshot")) {
       return [
         { id: randomUUID(), toolName: "web3_tron_account_snapshot", args: { address: tronOwner } },
         {
@@ -747,7 +803,7 @@ function buildMockGenesisToolCalls(objective: string, existingToolNames: Readonl
         },
       ];
     }
-    if (!existingToolNames.has("web3_transaction_simulation")) {
+    if (!hasTool("web3_transaction_simulation")) {
       return [
         {
           id: randomUUID(),
@@ -763,7 +819,7 @@ function buildMockGenesisToolCalls(objective: string, existingToolNames: Readonl
     }
     return [];
   }
-  if (!existingToolNames.has("htx_market_data")) {
+  if (!hasTool("htx_market_data")) {
     return [
       { id: randomUUID(), toolName: "htx_market_data", args: { symbol: "BTC/USDT" } },
       {
@@ -787,7 +843,7 @@ function buildMockGenesisToolCalls(objective: string, existingToolNames: Readonl
       { id: randomUUID(), toolName: "web3_tron_account_snapshot", args: { address: tronOwner } },
     ];
   }
-  if (!existingToolNames.has("web3_transaction_simulation")) {
+  if (!hasTool("web3_transaction_simulation")) {
     return [
       {
         id: randomUUID(),
@@ -818,7 +874,7 @@ function buildMockGenesisToolCalls(objective: string, existingToolNames: Readonl
       { id: randomUUID(), toolName: "bai_chat_completion", args: { prompt: "Summarize Genesis approval risk." } },
     ];
   }
-  if (!existingToolNames.has("htx_paper_order")) {
+  if (!hasTool("htx_paper_order")) {
     return [
       { id: randomUUID(), toolName: "genesis_finance_plan", args: { intent: objective, symbol: "btcusdt", amountUsdt: 25 } },
       { id: randomUUID(), toolName: "htx_order_preview", args: { symbol: "btcusdt", side: "buy", quoteAmountUsdt: 25 } },
@@ -826,6 +882,25 @@ function buildMockGenesisToolCalls(objective: string, existingToolNames: Readonl
     ];
   }
   return [];
+}
+
+function buildMockGenesisDecision(objective: string): string {
+  if (/oversized|max order cap|250 USDT/i.test(objective)) {
+    return "Genesis decision: blocked by maxOrderUsdt guardrail.";
+  }
+  if (/missing approval|approved=true/i.test(objective)) {
+    return "Genesis decision: blocked because htx_paper_order requires approved=true; no live order was attempted.";
+  }
+  if (/missing TRON address|address is required/i.test(objective)) {
+    return "Genesis decision: blocked because required TRON address is required.";
+  }
+  if (/B\.AI key missing|missing B\.AI API key|missing BAI API key/i.test(objective)) {
+    return "Genesis decision: blocked because missing B.AI API key prevents live provider execution.";
+  }
+  if (/live endpoint timeout|timeout fallback|fallback after timeout/i.test(objective)) {
+    return "Genesis decision: live endpoint timeout fallback used mock HTX evidence; no execution attempted.";
+  }
+  return "Genesis decision: paper-only action requires approval.";
 }
 
 function extractMockCheckpointId(summary: string): string {

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -301,6 +301,7 @@ function persistBenchmarkRun(input: {
   const qualityPath = resolve(input.runDir, "quality.json");
   const summaryPath = resolve(input.runDir, "summary.json");
   const historyPath = resolve(artifactsRoot, "history.json");
+  const jsonlPath = resolve(artifactsRoot, "runs.jsonl");
   const trendPath = resolve(artifactsRoot, "trend.json");
   const latestPath = resolve(artifactsRoot, "latest.json");
   const reportPath = resolve(artifactsRoot, "report.md");
@@ -327,6 +328,7 @@ function persistBenchmarkRun(input: {
     },
   };
   writeJson(summaryPath, persistedRun);
+  appendFileSync(jsonlPath, `${JSON.stringify(persistedRun)}\n`, "utf8");
 
   const history = readHistory(historyPath)
     .filter((entry) => entry.id !== persistedRun.id)
@@ -345,6 +347,7 @@ function persistBenchmarkRun(input: {
     summary: relative(repoRoot, summaryPath),
     quality: relative(repoRoot, qualityPath),
     history: relative(repoRoot, historyPath),
+    jsonl: relative(repoRoot, jsonlPath),
     trend: relative(repoRoot, trendPath),
     latest: relative(repoRoot, latestPath),
     report: relative(repoRoot, reportPath),

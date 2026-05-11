@@ -82,8 +82,11 @@ Do not commit B.AI keys. Keep them in the shell environment, CI secret store, or
 ## Verification
 
 ```bash
-node ./scripts/run-tests.mjs tests/tools.test.ts tests/approvals.test.ts
+node ./scripts/run-tests.mjs tests/tools.test.ts tests/approvals.test.ts tests/model-client.test.ts tests/evals-benchmark.test.ts
 npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode synthetic --no-save
 npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode runtime --no-save
+npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode runtime --run-id genesis-runtime-risk-gates-2026-05-11
 npm run maturity:check
 ```
+
+The runtime Genesis suite covers seven demo gates: the normal HTX/Web3/B.AI paper workflow, TRON preview risk gate, oversized order block, missing approval block, missing TRON address block, missing B.AI key block, and live HTX market timeout fallback. Saved benchmark runs write JSON artifacts and append a compact `runs.jsonl` record under `.artifacts/benchmarks`.
