@@ -55,6 +55,8 @@ npm run build
 
 ### P0.1 取消 Genesis/Web3 必填地址的隐式默认值
 
+能力映射：`genesis-finance-agent`, `shell-file-safety`
+
 问题：
 
 `packages/tools/src/genesis.ts` 里 `normalizeTronAddress()` 在缺少地址时会返回 `DEFAULT_TRON_ADDRESS`。这对 mock demo 方便，但对 live read、allowance read、transfer/revoke preview 来说风险较高。缺少 `owner`、`spender`、`to`、`address` 时应该直接返回结构化错误，而不是悄悄使用默认地址。
@@ -82,6 +84,8 @@ npm run build
 
 ### P0.2 把“本地交易模拟”改名或升级，避免误导
 
+能力映射：`genesis-finance-agent`, `verification-native-runtime`
+
 问题：
 
 `web3_transaction_simulation` 当前是本地规则聚合，不是真正的链上 transaction simulation。它不会调用 full node、不会做 estimate energy、不会执行 callStatic，也不会模拟合约状态变化。
@@ -101,6 +105,8 @@ npm run build
 - 文档不再把本地规则判断写成真实链上模拟。
 
 ### P0.3 Genesis 工具需要拆分，避免单文件继续膨胀
+
+能力映射：`genesis-finance-agent`, `shell-file-safety`
 
 问题：
 
@@ -122,6 +128,8 @@ npm run build
 - `genesis.ts` 只保留聚合导出或删除。
 
 ### P0.4 真实交易执行必须继续默认关闭
+
+能力映射：`genesis-finance-agent`, `shell-file-safety`
 
 问题：
 
@@ -145,6 +153,8 @@ npm run build
 - `examples/evals/htx-live-guarded.json`
 
 ### P0.5 清理本地 Git/GitHub 状态
+
+能力映射：`production-operations`
 
 问题：
 
@@ -170,6 +180,8 @@ git rev-list --left-right --count HEAD...origin/main
 ## 3. P1 高价值改进
 
 ### P1.1 把 synthetic benchmark 推进到 real-runtime benchmark
+
+能力映射：`benchmark-quality`, `genesis-finance-agent`
 
 状态：核心 runtime 覆盖已完成。后续只需要把 `.artifacts/benchmarks` 接入 CI artifact 上传策略，不需要再扩 Genesis 风险场景数量。
 
@@ -198,6 +210,8 @@ npm run maturity:check
 
 ### P1.2 live tests 不能只检查环境变量
 
+能力映射：`model-runtime`, `gateway-channels`, `mcp-runtime`, `genesis-finance-agent`
+
 问题：
 
 当前 live test 文件主要是 opt-in 和 required env 检查：
@@ -225,6 +239,8 @@ node ./scripts/run-tests.mjs tests/model-live.test.ts
 
 ### P1.3 把大文件模块化
 
+能力映射：`coding-runtime`, `mcp-runtime`, `gateway-channels`, `memory-lifecycle`, `operator-workbench`
+
 当前最大维护风险来自几个超大文件：
 
 - `packages/tools/src/index.ts`
@@ -251,6 +267,8 @@ node ./scripts/run-tests.mjs tests/model-live.test.ts
 
 ### P1.4 让 capability scorecard 成为改进路线的唯一真源
 
+能力映射：`benchmark-quality`, `eval-program-governance`, `verification-native-runtime`
+
 问题：
 
 README、docs、scorecard、IMPROVE 很容易重复描述能力状态。以后必须以 scorecard 为能力状态真源，其他文档只引用或解释。
@@ -269,6 +287,8 @@ node ./scripts/run-tests.mjs tests/evals.test.ts
 ```
 
 ### P1.5 增强 operator UX，而不是继续堆工具
+
+能力映射：`coding-runtime`, `operator-workbench`, `cli-checkpoint-slash-surface`, `workspace-checkpoints`, `subagents`
 
 问题：
 
@@ -300,6 +320,8 @@ node ./scripts/run-tests.mjs tests/evals.test.ts
 
 ### P2.1 B.AI 应作为一等 model profile
 
+能力映射：`model-runtime`, `genesis-finance-agent`, `credential-pool-rotation`
+
 当前 B.AI 已有 `bai_capability_probe` 和 `bai_chat_completion` 工具，但更自然的长期位置是 model profile provider。
 
 改进要求：
@@ -311,6 +333,8 @@ node ./scripts/run-tests.mjs tests/evals.test.ts
 
 ### P2.2 真正的 HTX read-only account gateway
 
+能力映射：`genesis-finance-agent`, `gateway-channels`, `production-operations`
+
 当前 `htx_account_snapshot` 依赖 fixture 或用户自备 read-only gateway endpoint。比赛 demo 足够，但要提高可信度，应提供一个最小 gateway contract。
 
 改进要求：
@@ -321,6 +345,8 @@ node ./scripts/run-tests.mjs tests/evals.test.ts
 - 明确错误模型：auth missing、permission denied、rate limit、invalid account、network timeout。
 
 ### P2.3 Memory/Skill 的长期治理
+
+能力映射：`memory-lifecycle`, `skill-lifecycle`, `skill-platform-gates`
 
 项目已有 memory provider 和 skill_manage，但距离 Hermes 式长期治理仍差：
 
@@ -337,6 +363,8 @@ node ./scripts/run-tests.mjs tests/evals.test.ts
 - stale-memory benchmark
 
 ### P2.4 生产部署和 release 成熟度
+
+能力映射：`production-operations`, `extension-package-contracts`
 
 当前有 deploy template、security docs、release checklist，但 mature 还需要：
 

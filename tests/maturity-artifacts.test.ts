@@ -17,6 +17,7 @@ const files = {
   releaseCheck: "scripts/release-check.ts",
   releaseDiagnostics: "scripts/release-diagnostics.ts",
   maturityCheck: "scripts/maturity-check.ts",
+  improve: "IMPROVE.MD",
   security: "docs/security.md",
   operations: "docs/operations.md",
   releaseChecklist: "docs/release-checklist.md",
@@ -163,8 +164,24 @@ test("M0-M8 maturity upgrade artifacts are present", () => {
   }
 
   const maturityCheck = readFileSync(files.maturityCheck, "utf8");
-  for (const token of ["validateCapabilityBackedClaims", "docs/capability-backed-claims.md", "severity: \"risk\""]) {
+  for (const token of [
+    "validateCapabilityBackedClaims",
+    "validateImproveCapabilityMap",
+    "IMPROVE.MD",
+    "docs/capability-backed-claims.md",
+    "severity: \"risk\"",
+  ]) {
     assert.match(maturityCheck, new RegExp(token.replaceAll("/", "\\/")));
+  }
+
+  const improve = readFileSync(files.improve, "utf8");
+  for (const token of [
+    "能力映射：`genesis-finance-agent`",
+    "能力映射：`benchmark-quality`",
+    "能力映射：`production-operations`",
+    "能力映射：`memory-lifecycle`",
+  ]) {
+    assert.match(improve, new RegExp(token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 
   const capabilityBackedClaims = readFileSync(files.capabilityBackedClaims, "utf8");
@@ -310,10 +327,24 @@ test("capability-backed README and doc claims pass maturity validation", () => {
       issues?: Array<{ severity?: string }>;
       claims?: Array<{ claimId?: string; minimumStatus?: string }>;
     };
+    improveCapabilityMap?: {
+      sectionCount?: number;
+      mappedSectionCount?: number;
+      issues?: Array<{ severity?: string }>;
+      mappings?: Array<{ sectionId?: string; capabilityIds?: string[] }>;
+    };
   };
 
   assert.ok((report.claimEvidence?.claimCount ?? 0) >= 5);
   assert.equal(report.claimEvidence?.issues?.some((issue) => issue.severity === "error"), false);
   assert.ok(report.claimEvidence?.risks?.some((issue) => issue.claimId === "local-coding-runtime-usable"));
   assert.ok(report.claimEvidence?.claims?.some((claim) => claim.claimId === "workspace-checkpoints-mature" && claim.minimumStatus === "mature"));
+  assert.ok((report.improveCapabilityMap?.sectionCount ?? 0) >= 14);
+  assert.equal(report.improveCapabilityMap?.mappedSectionCount, report.improveCapabilityMap?.sectionCount);
+  assert.equal(report.improveCapabilityMap?.issues?.some((issue) => issue.severity === "error"), false);
+  assert.ok(
+    report.improveCapabilityMap?.mappings?.some(
+      (mapping) => mapping.sectionId === "P1.4" && mapping.capabilityIds?.includes("eval-program-governance"),
+    ),
+  );
 });

@@ -15,6 +15,7 @@ const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const scorecardPath = resolve(repoRoot, "examples/evals/capability-scorecard.json");
 const benchmarkSuitePath = resolve(repoRoot, "examples/evals/suite.json");
 const claimsDocumentPath = resolve(repoRoot, "docs/capability-backed-claims.md");
+const improveDocumentPath = resolve(repoRoot, "IMPROVE.MD");
 
 const scorecardDefinition = JSON.parse(readFileSync(scorecardPath, "utf8")) as CapabilityScorecardDefinition;
 const benchmarkSuiteDefinition = JSON.parse(readFileSync(benchmarkSuitePath, "utf8")) as EvalSuiteDefinition;
@@ -44,6 +45,8 @@ const report = buildCapabilityMaturityReport(scorecard, {
 const claimEvidence = validateCapabilityBackedClaims();
 const errorIssues = report.issues.filter((issue) => issue.severity === "error");
 const claimErrorIssues = claimEvidence.issues.filter((issue) => issue.severity === "error");
+const improveCapabilityMap = validateImproveCapabilityMap();
+const improveErrorIssues = improveCapabilityMap.issues.filter((issue) => issue.severity === "error");
 
 console.log(
   JSON.stringify(
@@ -51,15 +54,17 @@ console.log(
       scorecard: scorecardPath,
       benchmarkSuite: benchmarkSuitePath,
       claimsDocument: claimsDocumentPath,
+      improveDocument: improveDocumentPath,
       capabilityMaturity: report,
       claimEvidence,
+      improveCapabilityMap,
     },
     null,
     2,
   ),
 );
 
-if (errorIssues.length > 0 || claimErrorIssues.length > 0) {
+if (errorIssues.length > 0 || claimErrorIssues.length > 0 || improveErrorIssues.length > 0) {
   process.exitCode = 1;
 }
 
@@ -77,6 +82,102 @@ interface CapabilityBackedClaimIssue {
   readonly capabilityId?: string;
   readonly severity: "error" | "risk";
   readonly reason: string;
+}
+
+interface ImproveCapabilityMapping {
+  readonly sectionId: string;
+  readonly title: string;
+  readonly capabilityIds: readonly string[];
+}
+
+interface ImproveCapabilityMapIssue {
+  readonly sectionId: string;
+  readonly capabilityId?: string;
+  readonly severity: "error";
+  readonly reason: string;
+}
+
+function validateImproveCapabilityMap(): {
+  readonly sectionCount: number;
+  readonly mappedSectionCount: number;
+  readonly mappings: readonly ImproveCapabilityMapping[];
+  readonly issues: readonly ImproveCapabilityMapIssue[];
+} {
+  const mappings = parseImproveCapabilityMappings(improveDocumentPath);
+  const issues: ImproveCapabilityMapIssue[] = [];
+  const capabilitiesById = new Set(scorecard.capabilities.map((capability) => capability.id));
+
+  if (mappings.length === 0) {
+    issues.push({
+      sectionId: "IMPROVE.MD",
+      severity: "error",
+      reason: "IMPROVE.MD must include at least one Pn.n section with capability mappings.",
+    });
+  }
+
+  for (const mapping of mappings) {
+    if (mapping.capabilityIds.length === 0) {
+      issues.push({
+        sectionId: mapping.sectionId,
+        severity: "error",
+        reason: "IMPROVE.MD section must include a capability mapping line.",
+      });
+      continue;
+    }
+    for (const capabilityId of mapping.capabilityIds) {
+      if (!capabilitiesById.has(capabilityId)) {
+        issues.push({
+          sectionId: mapping.sectionId,
+          capabilityId,
+          severity: "error",
+          reason: "IMPROVE.MD section references a capability id that is not present in the scorecard.",
+        });
+      }
+    }
+  }
+
+  return {
+    sectionCount: mappings.length,
+    mappedSectionCount: mappings.filter((mapping) => mapping.capabilityIds.length > 0).length,
+    mappings,
+    issues,
+  };
+}
+
+function parseImproveCapabilityMappings(filePath: string): ImproveCapabilityMapping[] {
+  if (!existsSync(filePath)) {
+    return [];
+  }
+  const mappings: ImproveCapabilityMapping[] = [];
+  const lines = readFileSync(filePath, "utf8").split(/\r?\n/);
+  let current: { sectionId: string; title: string; capabilityIds: string[] } | null = null;
+
+  for (const line of lines) {
+    const heading = line.match(/^###\s+(P\d+\.\d+)\s+(.+)$/);
+    if (heading) {
+      if (current) {
+        mappings.push(current);
+      }
+      current = {
+        sectionId: heading[1]!,
+        title: heading[2]!,
+        capabilityIds: [],
+      };
+      continue;
+    }
+
+    if (!current) {
+      continue;
+    }
+    if (/^(能力映射|Capability ids)[:：]/.test(line.trim())) {
+      current.capabilityIds = Array.from(line.matchAll(/`([^`]+)`/g), (match) => match[1]!).filter(Boolean);
+    }
+  }
+
+  if (current) {
+    mappings.push(current);
+  }
+  return mappings;
 }
 
 function validateCapabilityBackedClaims(): {
