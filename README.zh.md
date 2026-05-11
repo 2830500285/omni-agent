@@ -235,25 +235,54 @@ npm run eval:benchmark -- --manifest examples/evals/omni-workflows.json --mode s
 
 Capability scorecard 位于 [examples/evals/capability-scorecard.json](examples/evals/capability-scorecard.json)。
 
-## 项目结构
+## 整体架构
 
 ```text
-apps/
-  cli/                  CLI、chat shell、daemon 命令、gateway 入口
-  mobile-node/          轻量 node client 示例
-  mobile-native/        native shell 占位
-packages/
-  core-runtime/         task loop、工具执行、验证、run metadata
-  workspace/            workspace、worktree、sandbox、SSH、cloud backend
-  model-client/         model profiles 和 provider transports
-  tools/                内置工具和 Genesis adapters
-  approvals/            审批策略和动作分类
-  context/              上下文构建和压缩
-  evals/                manifest-driven scoring
-docs/                   安全、运维、教程、范式、发布文档
-examples/evals/         benchmark manifests 和 scorecards
-deploy/                 Dockerfile 和环境模板
-tests/                  runtime、gateway、CLI、tools、evals、ops 覆盖
+omni-agent/
+├── 操作者入口/
+│   ├── apps/cli/                 CLI、chat shell、daemon 命令、gateway 启动入口
+│   ├── apps/workbench/           gateway 提供的本地浏览器 workbench
+│   ├── apps/mobile-node/         轻量远程 node client
+│   └── apps/mobile-native/       native mobile shell 占位
+├── Gateway 控制面/
+│   ├── packages/gateway/         HTTP API、SSE events、WebSocket control plane
+│   ├── packages/gateway/src/routes.ts
+│   │                              route 定义、inbox 接入、outbound delivery
+│   ├── packages/gateway/src/jobs.ts
+│   │                              async run jobs 和 batch status
+│   └── packages/automation/      持久化 interval/manual automations
+├── Agent 运行时/
+│   ├── packages/core-runtime/    task loop、tool calls、verification、run metadata
+│   ├── packages/context/         上下文构建、压缩、handoff summaries
+│   ├── packages/model-client/    model profiles、provider transports、failover
+│   ├── packages/tools/           内置工具、browser tools、Genesis adapters
+│   ├── packages/approvals/       approval policy、action classes、risk tiers
+│   ├── packages/safety/          safety checks 和 guardrail helpers
+│   └── packages/workspace/       workspace、worktree、sandbox、SSH、cloud execution
+├── 持久化和学习/
+│   ├── packages/session-store/   SQLite sessions、threads、runs、artifacts、usage
+│   ├── packages/core-runtime/src/memory-provider.ts
+│   │                              memory providers、learned patterns、recall hooks
+│   └── workspace files           AGENTS.md、MEMORY.md、USER.md、memory/*.md
+├── 扩展和集成层/
+│   ├── packages/extensions/      local extension manifests、prompts、resources
+│   ├── packages/reference-native/
+│   │                              generated native-reference integration evidence
+│   ├── packages/reference-translated/
+│   │                              translated reference-source evidence
+│   └── deploy/                   Dockerfile 和环境模板
+├── 证据、eval 和发布门禁/
+│   ├── examples/evals/           eval manifests、fixtures、capability scorecards
+│   ├── packages/evals/           manifest scoring 和 benchmark primitives
+│   ├── scripts/                  build、tests、evals、maturity、release checks
+│   ├── tests/                    runtime、gateway、CLI、safety、tools、eval coverage
+│   └── .github/workflows/        CI gates
+└── 文档/
+    ├── docs/security.md          security model 和 operator guidance
+    ├── docs/operations.md        gateway/workbench operating guide
+    ├── docs/tutorial/            guided tutorial book
+    ├── docs/htx-genesis.md       Genesis demo profile
+    └── CAPABILITY_COMPARISON.md  verified comparison state
 ```
 
 ## 从源码开发

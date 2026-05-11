@@ -252,25 +252,54 @@ npm run eval:benchmark -- --manifest examples/evals/omni-workflows.json --mode s
 Capability scorecards live in
 [examples/evals/capability-scorecard.json](examples/evals/capability-scorecard.json).
 
-## Project Layout
+## Architecture Map
 
 ```text
-apps/
-  cli/                  CLI, chat shell, daemon commands, gateway entrypoints
-  mobile-node/          lightweight node client example
-  mobile-native/        native shell placeholder
-packages/
-  core-runtime/         task loop, tool execution, verification, run metadata
-  workspace/            workspace, worktree, sandbox, SSH, and cloud backends
-  model-client/         model profiles and provider transports
-  tools/                built-in tools and Genesis adapters
-  approvals/            approval policy and action classification
-  context/              context construction and compression
-  evals/                manifest-driven scoring
-docs/                   security, operations, tutorials, paradigms, release docs
-examples/evals/         benchmark manifests and scorecards
-deploy/                 Dockerfile and environment template
-tests/                  runtime, gateway, CLI, tools, evals, and ops coverage
+omni-agent/
+├── operator surfaces/
+│   ├── apps/cli/                 CLI, chat shell, daemon commands, gateway startup
+│   ├── apps/workbench/           local browser workbench served by the gateway
+│   ├── apps/mobile-node/         lightweight remote node client
+│   └── apps/mobile-native/       native mobile shell placeholder
+├── gateway control plane/
+│   ├── packages/gateway/         HTTP API, SSE events, WebSocket control plane
+│   ├── packages/gateway/src/routes.ts
+│   │                              route definitions, inbox intake, outbound delivery
+│   ├── packages/gateway/src/jobs.ts
+│   │                              async run jobs and batch status
+│   └── packages/automation/      persisted interval/manual automations
+├── agent runtime/
+│   ├── packages/core-runtime/    task loop, tool calls, verification, run metadata
+│   ├── packages/context/         context construction, compression, handoff summaries
+│   ├── packages/model-client/    model profiles, provider transports, failover
+│   ├── packages/tools/           built-in tools, browser tools, Genesis adapters
+│   ├── packages/approvals/       approval policy, action classes, risk tiers
+│   ├── packages/safety/          safety checks and guardrail helpers
+│   └── packages/workspace/       workspace, worktree, sandbox, SSH, cloud execution
+├── persistence and learning/
+│   ├── packages/session-store/   SQLite sessions, threads, runs, artifacts, usage
+│   ├── packages/core-runtime/src/memory-provider.ts
+│   │                              memory providers, learned patterns, recall hooks
+│   └── workspace files           AGENTS.md, MEMORY.md, USER.md, memory/*.md
+├── extension and integration layer/
+│   ├── packages/extensions/      local extension manifests, prompts, resources
+│   ├── packages/reference-native/
+│   │                              generated native-reference integration evidence
+│   ├── packages/reference-translated/
+│   │                              translated reference-source evidence
+│   └── deploy/                   Dockerfile and environment templates
+├── evidence, evals, and release gates/
+│   ├── examples/evals/           eval manifests, fixtures, capability scorecards
+│   ├── packages/evals/           manifest scoring and benchmark primitives
+│   ├── scripts/                  build, tests, evals, maturity, release checks
+│   ├── tests/                    runtime, gateway, CLI, safety, tools, eval coverage
+│   └── .github/workflows/        CI gates
+└── documentation/
+    ├── docs/security.md          security model and operator guidance
+    ├── docs/operations.md        gateway/workbench operating guide
+    ├── docs/tutorial/            guided tutorial book
+    ├── docs/htx-genesis.md       Genesis demo profile
+    └── CAPABILITY_COMPARISON.md  verified comparison state
 ```
 
 ## Development From Source
