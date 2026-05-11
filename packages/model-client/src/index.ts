@@ -6,6 +6,7 @@ import type { ToolSpec } from "@omni-agent/tools";
 
 export type BuiltInModelProtocol = "anthropic" | "openai" | "responses";
 export type ModelProtocol = BuiltInModelProtocol | (string & {});
+export type BuiltInModelProfileProvider = "bai";
 
 export interface ModelProfile {
   readonly id: string;
@@ -242,6 +243,16 @@ export interface ModelProviderExtensionDescriptor {
   createModelClient(profile: ModelProfile): ModelClient;
 }
 
+export interface ModelProfileTemplateOptions {
+  readonly id?: string;
+  readonly name?: string;
+  readonly baseUrl?: string;
+  readonly apiKeyEnv?: string;
+  readonly model?: string;
+  readonly supportsTools?: boolean;
+  readonly supportsStreaming?: boolean;
+}
+
 interface ChatCompletionContentPart {
   readonly text?: string;
   readonly type?: string;
@@ -348,6 +359,40 @@ const ANTHROPIC_COMMON_BETAS = [
 const ANTHROPIC_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const ANTHROPIC_OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"];
 const CLAUDE_CODE_VERSION_FALLBACK = "2.1.74";
+const BAI_API_KEY_ENV_CANDIDATES = ["BAI_API_KEY", "B_AI_API_KEY", "OMNI_AGENT_BAI_API_KEY"] as const;
+
+export function isBuiltInModelProfileProvider(value: string | undefined): value is BuiltInModelProfileProvider {
+  return resolveBuiltInModelProfileProvider(value) !== null;
+}
+
+export function resolveBuiltInModelProfileProvider(value: unknown): BuiltInModelProfileProvider | null {
+  return normalizeModelProfileProvider(value);
+}
+
+export function createModelProfileForProvider(
+  provider: BuiltInModelProfileProvider,
+  options: ModelProfileTemplateOptions = {},
+): ModelProfile {
+  if (provider === "bai") {
+    const apiKeyEnv = options.apiKeyEnv?.trim() || BAI_API_KEY_ENV_CANDIDATES[0];
+    const credentialEnvs = Array.from(new Set([apiKeyEnv, ...BAI_API_KEY_ENV_CANDIDATES]));
+    return {
+      id: options.id?.trim() || "bai",
+      name: options.name?.trim() || "B.AI",
+      protocol: "openai",
+      baseUrl: options.baseUrl?.trim() || "https://api.b.ai/v1",
+      apiKeyEnv,
+      credentials: credentialEnvs.map((envName) => ({ id: envName, apiKeyEnv: envName })),
+      model: options.model?.trim() || "gpt-5.2",
+      supportsTools: options.supportsTools ?? true,
+      supportsStreaming: options.supportsStreaming ?? true,
+    };
+  }
+
+  const exhaustive: never = provider;
+  throw new Error(`Unsupported model profile provider template: ${exhaustive}`);
+}
+
 const MODEL_PRICING_SNAPSHOT: readonly ModelTokenPricing[] = [
   { model: "gpt-5.2", source: "openai-official", inputUsdPerMillion: 1.75, cachedInputUsdPerMillion: 0.175, outputUsdPerMillion: 14 },
   { model: "gpt-5.1", source: "openai-official", inputUsdPerMillion: 1.25, cachedInputUsdPerMillion: 0.125, outputUsdPerMillion: 10 },
@@ -589,6 +634,40 @@ export class MockModelClient implements ModelClient {
       }
     }
 
+    if (/HTX|Web3|B\.AI|TRON|Genesis/i.test(objective)) {
+      if (input.availableTools.length > 0) {
+        const nextGenesisToolCalls = buildMockGenesisToolCalls(
+          objective,
+          new Set(input.toolResults.map((result) => result.toolName)),
+        );
+        if (nextGenesisToolCalls.length > 0) {
+          return {
+            assistantText: "Collecting Genesis HTX, Web3, TRON, and B.AI evidence before planning.",
+            toolCalls: nextGenesisToolCalls,
+            provider: createMockProviderInfo(),
+            raw: { mode: "mock", stage: "genesis-tools" },
+          };
+        }
+      }
+      const evidence = input.toolResults
+        .map((result) => `- ${result.toolName}: ${result.ok ? "ok" : "blocked"} (${result.summary})`)
+        .join("\n");
+      return {
+        assistantText: [
+          /oversized|max order cap|250 USDT/i.test(objective)
+            ? "Genesis decision: blocked by maxOrderUsdt guardrail."
+            : "Genesis decision: paper-only action requires approval.",
+          "Live execution remains disabled.",
+          "No Web3 signing or broadcast was attempted.",
+          "Tool evidence:",
+          evidence,
+        ].join("\n"),
+        toolCalls: [],
+        provider: createMockProviderInfo(),
+        raw: { mode: "mock", stage: "genesis-complete" },
+      };
+    }
+
     if (input.toolResults.length === 0) {
       return {
         assistantText: "Inspecting the workspace before proposing a change.",
@@ -624,6 +703,129 @@ export class MockModelClient implements ModelClient {
       raw: { mode: "mock", stage: "complete" },
     };
   }
+}
+
+function buildMockGenesisToolCalls(objective: string, existingToolNames: ReadonlySet<string>): ModelToolCall[] {
+  const tronOwner = "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf";
+  const tronSpender = "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7";
+
+  if (/oversized|max order cap|250 USDT/i.test(objective)) {
+    if (existingToolNames.has("htx_order_preview") && existingToolNames.has("genesis_finance_plan")) {
+      return [];
+    }
+    return [
+      {
+        id: randomUUID(),
+        toolName: "htx_order_preview",
+        args: { symbol: "btcusdt", side: "buy", quoteAmountUsdt: 250, maxOrderUsdt: 100 },
+      },
+      {
+        id: randomUUID(),
+        toolName: "genesis_finance_plan",
+        args: { intent: objective, symbol: "btcusdt", amountUsdt: 250, maxOrderUsdt: 100 },
+      },
+    ];
+  }
+  if (/TRON Preview Risk Gate|TRON wallet|TRC20 allowance/i.test(objective)) {
+    if (!existingToolNames.has("web3_tron_account_snapshot")) {
+      return [
+        { id: randomUUID(), toolName: "web3_tron_account_snapshot", args: { address: tronOwner } },
+        {
+          id: randomUUID(),
+          toolName: "web3_trc20_allowance",
+          args: { token: "USDT", owner: tronOwner, spender: tronSpender, allowance: "25" },
+        },
+        {
+          id: randomUUID(),
+          toolName: "web3_revoke_approval_preview",
+          args: { token: "USDT", owner: tronOwner, spender: tronSpender, currentAllowance: 25 },
+        },
+        {
+          id: randomUUID(),
+          toolName: "web3_transfer_preview",
+          args: { token: "USDT", from: tronOwner, to: tronSpender, amount: "10", maxAmount: 100 },
+        },
+      ];
+    }
+    if (!existingToolNames.has("web3_transaction_simulation")) {
+      return [
+        {
+          id: randomUUID(),
+          toolName: "web3_transaction_simulation",
+          args: {
+            action: "transfer_preview",
+            preview: { chain: "tron", action: "transfer_preview", allowed: true, amount: "10", maxAmount: 100 },
+            riskReport: { riskLevel: "low", findings: [] },
+            allowance: 25,
+          },
+        },
+      ];
+    }
+    return [];
+  }
+  if (!existingToolNames.has("htx_market_data")) {
+    return [
+      { id: randomUUID(), toolName: "htx_market_data", args: { symbol: "BTC/USDT" } },
+      {
+        id: randomUUID(),
+        toolName: "htx_account_snapshot",
+        args: { accountFixture: { balances: [{ asset: "USDT", available: 125, locked: 0 }] } },
+      },
+      { id: randomUUID(), toolName: "web3_wallet_snapshot", args: { address: "0x1111111111111111111111111111111111111111" } },
+      {
+        id: randomUUID(),
+        toolName: "web3_contract_risk",
+        args: {
+          tokenSymbol: "USDT",
+          contractAddress: "0x2222222222222222222222222222222222222222",
+          spender: "0x3333333333333333333333333333333333333333",
+          spenderAllowlist: ["0x3333333333333333333333333333333333333333"],
+          allowance: 25,
+          simulated: true,
+        },
+      },
+      { id: randomUUID(), toolName: "web3_tron_account_snapshot", args: { address: tronOwner } },
+    ];
+  }
+  if (!existingToolNames.has("web3_transaction_simulation")) {
+    return [
+      {
+        id: randomUUID(),
+        toolName: "web3_trc20_allowance",
+        args: { token: "USDT", owner: tronOwner, spender: tronSpender, allowance: "25" },
+      },
+      {
+        id: randomUUID(),
+        toolName: "web3_revoke_approval_preview",
+        args: { token: "USDT", owner: tronOwner, spender: tronSpender, currentAllowance: 25 },
+      },
+      {
+        id: randomUUID(),
+        toolName: "web3_transfer_preview",
+        args: { token: "USDT", from: tronOwner, to: tronSpender, amount: "10", maxAmount: 100 },
+      },
+      {
+        id: randomUUID(),
+        toolName: "web3_transaction_simulation",
+        args: {
+          action: "transfer_preview",
+          preview: { chain: "tron", action: "transfer_preview", allowed: true, amount: "10", maxAmount: 100 },
+          riskReport: { riskLevel: "low", findings: [] },
+          allowance: 25,
+        },
+      },
+      { id: randomUUID(), toolName: "bai_capability_probe", args: {} },
+      { id: randomUUID(), toolName: "bai_chat_completion", args: { prompt: "Summarize Genesis approval risk." } },
+    ];
+  }
+  if (!existingToolNames.has("htx_paper_order")) {
+    return [
+      { id: randomUUID(), toolName: "genesis_finance_plan", args: { intent: objective, symbol: "btcusdt", amountUsdt: 25 } },
+      { id: randomUUID(), toolName: "htx_order_preview", args: { symbol: "btcusdt", side: "buy", quoteAmountUsdt: 25 } },
+      { id: randomUUID(), toolName: "htx_paper_order", args: { symbol: "btcusdt", side: "buy", quoteAmountUsdt: 25, approved: true } },
+    ];
+  }
+  return [];
 }
 
 function extractMockCheckpointId(summary: string): string {
@@ -3617,6 +3819,11 @@ function normalizeModelProtocol(value: unknown): ModelProtocol {
 
 function isBuiltInModelProtocol(protocol: ModelProtocol): protocol is BuiltInModelProtocol {
   return protocol === "anthropic" || protocol === "openai" || protocol === "responses";
+}
+
+function normalizeModelProfileProvider(value: unknown): BuiltInModelProfileProvider | null {
+  const normalized = String(value ?? "").trim().toLowerCase().replace(/[_-]+/g, "-");
+  return normalized === "bai" || normalized === "b-ai" || normalized === "b.ai" ? "bai" : null;
 }
 
 function normalizeProviderExtensionId(value: unknown): string {

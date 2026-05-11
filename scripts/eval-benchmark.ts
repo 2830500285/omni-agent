@@ -20,7 +20,8 @@ import {
 } from "../packages/evals/src/index.ts";
 import { estimateModelUsageCost } from "../packages/model-client/src/index.ts";
 
-type BenchmarkMode = "mock" | "openai" | "synthetic";
+type BenchmarkMode = "mock" | "openai" | "runtime" | "synthetic";
+type CliEvalMode = "mock" | "openai";
 
 interface BenchmarkOptions {
   readonly mode: BenchmarkMode;
@@ -111,6 +112,7 @@ const suite = normalizeEvalSuiteDefinition(suiteDefinition, {
   baseDir: dirname(suitePath),
   defaultWorkspaceCwd: repoRoot,
 });
+const runtimeOptions = applyRuntimeBenchmarkDefaults(options, suite);
 const scorecardDefinition = readJsonFile<CapabilityScorecardDefinition>(scorecardPath);
 const scorecard = normalizeCapabilityScorecardDefinition(scorecardDefinition, {
   baseDir: dirname(scorecardPath),
@@ -124,17 +126,18 @@ if (manifestErrors.length > 0) {
 }
 
 const executor = {
-  ...(options.mode === "synthetic" ? syntheticExecutor : { mode: options.mode, implementation: "cli-runtime-evals" }),
-  modelProfileId: options.modelProfileId ?? null,
+  ...(runtimeOptions.mode === "synthetic" ? syntheticExecutor : { mode: runtimeOptions.mode, implementation: "cli-runtime-evals" }),
+  ...(runtimeOptions.mode === "runtime" ? { runtimeMode: resolveRuntimeCliMode(runtimeOptions) } : {}),
+  modelProfileId: runtimeOptions.modelProfileId ?? null,
 } as const;
 
-const runDir = resolve(options.artifactsDir, "runs", options.runId);
-if (options.saveArtifacts) {
+const runDir = resolve(runtimeOptions.artifactsDir, "runs", runtimeOptions.runId);
+if (runtimeOptions.saveArtifacts || runtimeOptions.mode !== "synthetic") {
   mkdirSync(runDir, { recursive: true });
 }
 
-const runtimeExitCode = options.mode === "synthetic" ? 0 : runRuntimeBenchmark(options, runDir);
-const result = options.mode === "synthetic" ? await runSyntheticBenchmark() : readRuntimeResult(runDir);
+const runtimeExitCode = runtimeOptions.mode === "synthetic" ? 0 : runRuntimeBenchmark(runtimeOptions, runDir);
+const result = runtimeOptions.mode === "synthetic" ? await runSyntheticBenchmark() : readRuntimeResult(runDir);
 const report = buildBenchmarkQualityReport(result, result.qualityThresholds);
 const capabilityMaturity = isDefaultSuite
   ? buildCapabilityMaturityReport(scorecard, {
@@ -144,9 +147,9 @@ const capabilityMaturity = isDefaultSuite
   : null;
 const usage = summarizeBenchmarkUsage(result);
 const failureSummary = summarizeBenchmarkFailures(result);
-const artifactPaths = options.saveArtifacts
+const artifactPaths = runtimeOptions.saveArtifacts
   ? persistBenchmarkRun({
-      options,
+      options: runtimeOptions,
       result,
       report,
       usage,
@@ -212,6 +215,7 @@ async function runSyntheticBenchmark(): Promise<EvalSuiteResult> {
 
 function runRuntimeBenchmark(options: BenchmarkOptions, runDir: string): number {
   const outputPath = resolve(runDir, "eval-result.json");
+  const cliMode = resolveRuntimeCliMode(options);
   const args = [
     "--import",
     "tsx",
@@ -224,7 +228,7 @@ function runRuntimeBenchmark(options: BenchmarkOptions, runDir: string): number 
     "--output",
     outputPath,
     "--mode",
-    options.mode,
+    cliMode,
   ];
   appendOption(args, "--storage-root", options.storageRoot);
   appendOption(args, "--model-profile", options.modelProfileId);
@@ -262,7 +266,7 @@ function runRuntimeBenchmark(options: BenchmarkOptions, runDir: string): number 
     });
   }
   if (spawned.stdout) {
-    process.stdout.write(spawned.stdout);
+    process.stderr.write(spawned.stdout);
   }
   if (spawned.stderr) {
     process.stderr.write(spawned.stderr);
@@ -466,6 +470,17 @@ function parseOptions(): BenchmarkOptions {
   };
 }
 
+function applyRuntimeBenchmarkDefaults(options: BenchmarkOptions, suite: EvalSuiteDefinition): BenchmarkOptions {
+  const requiresVerificationEvidence = (suite.qualityThresholds?.verificationPassRate ?? 0) > 0;
+  if (options.mode !== "runtime" || options.verificationCommands.length > 0 || !requiresVerificationEvidence) {
+    return options;
+  }
+  return {
+    ...options,
+    verificationCommands: ['node -e "require(\'fs\').accessSync(\'package.json\')"'],
+  };
+}
+
 function parseMode(value: string | undefined, modelProfileId: string | undefined): BenchmarkMode {
   if (!value && modelProfileId) {
     return "openai";
@@ -473,10 +488,20 @@ function parseMode(value: string | undefined, modelProfileId: string | undefined
   if (!value || value === "synthetic") {
     return "synthetic";
   }
-  if (value === "mock" || value === "openai") {
+  if (value === "mock" || value === "openai" || value === "runtime") {
     return value;
   }
-  throw new Error(`Unsupported benchmark mode ${value}. Expected synthetic, mock, or openai.`);
+  throw new Error(`Unsupported benchmark mode ${value}. Expected synthetic, runtime, mock, or openai.`);
+}
+
+function resolveRuntimeCliMode(options: Pick<BenchmarkOptions, "mode" | "modelProfileId">): CliEvalMode {
+  if (options.mode === "runtime") {
+    return options.modelProfileId ? "openai" : "mock";
+  }
+  if (options.mode === "openai") {
+    return "openai";
+  }
+  return "mock";
 }
 
 function readOption(name: string): string | undefined {

@@ -44,13 +44,16 @@ import {
   MockModelClient,
   OpenAiCompatibleModelClient,
   buildModelProfileDiagnostics,
+  createModelProfileForProvider,
   estimateModelUsageCost,
   hasModelProfileApiKey,
   inspectModelProfilesFromJson,
   inspectModelProfilesFromEnv,
   loadModelProfilesFromJson,
   loadModelProfilesFromEnv,
+  resolveBuiltInModelProfileProvider,
   selectModelProfiles,
+  type BuiltInModelProfileProvider,
   type ModelProtocol,
   type ModelProfile,
   type ModelClient,
@@ -174,6 +177,7 @@ interface SetupCliOptions extends BaseCliOptions {
   readonly gatewayToken?: string;
   readonly profileId?: string;
   readonly profileName?: string;
+  readonly profileProvider?: BuiltInModelProfileProvider;
   readonly profileProtocol?: ModelProtocol;
   readonly profileBaseUrl?: string;
   readonly profileApiKeyEnv?: string;
@@ -2325,7 +2329,20 @@ function runSetupCommand(options: SetupCliOptions): void {
   const requestedGatewayToken = normalizeOptionalText(options.gatewayToken);
   const existingGatewayToken = normalizeOptionalText(existingConfig.gatewayToken);
   const generatedGatewayToken = !requestedGatewayToken && !existingGatewayToken;
-  const profiles = options.profileModel && options.profileBaseUrl && options.profileApiKeyEnv
+  const providerProfile = options.profileProvider
+    ? createModelProfileForProvider(options.profileProvider, {
+        id: options.profileId,
+        name: options.profileName,
+        baseUrl: options.profileBaseUrl,
+        apiKeyEnv: options.profileApiKeyEnv,
+        model: options.profileModel,
+        supportsTools: options.supportsTools,
+        supportsStreaming: options.supportsStreaming,
+      })
+    : null;
+  const profiles = providerProfile
+    ? upsertConfiguredProfile(existingConfig.modelProfiles ?? [], providerProfile)
+    : options.profileModel && options.profileBaseUrl && options.profileApiKeyEnv
     ? upsertConfiguredProfile(existingConfig.modelProfiles ?? [], {
         id: options.profileId ?? "primary",
         name: options.profileName ?? options.profileId ?? "primary",
@@ -2489,6 +2506,10 @@ function validateSetupProfileOptions(options: SetupCliOptions): void {
     return;
   }
 
+  if (options.profileProvider) {
+    return;
+  }
+
   if (options.profileBaseUrl && options.profileApiKeyEnv && options.profileModel) {
     return;
   }
@@ -2502,6 +2523,7 @@ function hasAnySetupProfileOption(options: SetupCliOptions): boolean {
   return (
     options.profileId !== undefined ||
     options.profileName !== undefined ||
+    options.profileProvider !== undefined ||
     options.profileProtocol !== undefined ||
     options.profileBaseUrl !== undefined ||
     options.profileApiKeyEnv !== undefined ||
@@ -4589,6 +4611,12 @@ function parseArgs(argv: string[]): CliOptions {
     .filter(Boolean);
 
   if (command === "onboard" || command === "setup") {
+    const provider = lastValue(values, "--provider");
+    const profileProvider = provider ? resolveBuiltInModelProfileProvider(provider) : null;
+    if (provider && !profileProvider) {
+      throw new SetupConfigurationError(`Unsupported setup provider "${provider}". Supported providers: bai.`);
+    }
+
     return {
       command,
       cwd,
@@ -4598,6 +4626,7 @@ function parseArgs(argv: string[]): CliOptions {
       gatewayToken: lastValue(values, "--gateway-token"),
       profileId: lastValue(values, "--profile-id"),
       profileName: lastValue(values, "--profile-name"),
+      profileProvider: profileProvider ?? undefined,
       profileProtocol:
         lastValue(values, "--protocol") === "anthropic" || lastValue(values, "--protocol") === "openai"
           ? (lastValue(values, "--protocol") as ModelProtocol)

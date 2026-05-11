@@ -12,11 +12,13 @@ import {
   OpenAiResponsesModelClient,
   buildModelProfileDiagnostics,
   classifyModelError,
+  createModelProfileForProvider,
   estimateModelUsageCost,
   hasModelProfileApiKey,
   inspectModelProfilesFromEnv,
   loadModelProfileFromEnv,
   loadModelProfilesFromEnv,
+  resolveBuiltInModelProfileProvider,
   type ModelClient,
   type ModelProfile,
   selectModelProfiles,
@@ -2576,6 +2578,40 @@ test("model profiles can be loaded as a failover chain from environment JSON", (
   } finally {
     process.env.OMNI_AGENT_MODEL_PROFILES_JSON = originalProfiles;
   }
+});
+
+test("B.AI built-in provider template creates an OpenAI-compatible profile", () => {
+  const profile = createModelProfileForProvider("bai");
+
+  assert.equal(resolveBuiltInModelProfileProvider("b.ai"), "bai");
+  assert.equal(profile.id, "bai");
+  assert.equal(profile.name, "B.AI");
+  assert.equal(profile.protocol, "openai");
+  assert.equal(profile.baseUrl, "https://api.b.ai/v1");
+  assert.equal(profile.apiKeyEnv, "BAI_API_KEY");
+  assert.equal(profile.model, "gpt-5.2");
+  assert.equal(profile.supportsTools, true);
+  assert.equal(profile.supportsStreaming, true);
+  assert.deepEqual(
+    profile.credentials?.map((credential) => credential.apiKeyEnv),
+    ["BAI_API_KEY", "B_AI_API_KEY", "OMNI_AGENT_BAI_API_KEY"],
+  );
+
+  const overridden = createModelProfileForProvider("bai", {
+    id: "bai-test",
+    name: "B.AI Test",
+    baseUrl: "https://provider.example/v1",
+    apiKeyEnv: "OMNI_LIVE_BAI_API_KEY",
+    model: "gpt-5.2-mini",
+    supportsTools: false,
+  });
+  assert.equal(overridden.id, "bai-test");
+  assert.equal(overridden.name, "B.AI Test");
+  assert.equal(overridden.baseUrl, "https://provider.example/v1");
+  assert.equal(overridden.apiKeyEnv, "OMNI_LIVE_BAI_API_KEY");
+  assert.equal(overridden.model, "gpt-5.2-mini");
+  assert.equal(overridden.supportsTools, false);
+  assert.equal(overridden.credentials?.[0]?.apiKeyEnv, "OMNI_LIVE_BAI_API_KEY");
 });
 
 test("default model profile loads streaming and provider overrides from env", () => {

@@ -21,6 +21,9 @@ const files = {
   operations: "docs/operations.md",
   releaseChecklist: "docs/release-checklist.md",
   liveTesting: "docs/live-testing.md",
+  tradingSafety: "docs/trading-safety.md",
+  htxReadonlyGateway: "docs/htx-readonly-gateway-contract.md",
+  htxLiveGuarded: "examples/evals/htx-live-guarded.json",
   capabilityBackedClaims: "docs/capability-backed-claims.md",
   referenceTranslated: "packages/reference-translated/src/index.ts",
   referenceTranslateScript: "scripts/translate-reference-source-lines.ts",
@@ -198,6 +201,27 @@ test("M0-M8 maturity upgrade artifacts are present", () => {
     "Deployment Security Review",
   ]) {
     assert.match(security, new RegExp(token));
+  }
+
+  const tradingSafety = readFileSync(files.tradingSafety, "utf8");
+  for (const token of [
+    "OMNI_AGENT_ENABLE_LIVE_HTX_SPOT=1",
+    "spot-trade scope only",
+    "Withdrawal, margin, loan, leverage, derivatives, futures, and contract scopes are disabled",
+    "human approval",
+    "post-order status payload",
+  ]) {
+    assert.match(tradingSafety, new RegExp(token.replaceAll(".", "\\.")));
+  }
+
+  const htxReadonlyGateway = readFileSync(files.htxReadonlyGateway, "utf8");
+  for (const token of ["GET /htx/account-snapshot", "auth_missing", "permission_denied", "rate_limit", "network_timeout"]) {
+    assert.match(htxReadonlyGateway, new RegExp(token.replaceAll("/", "\\/")));
+  }
+
+  const htxLiveGuarded = readFileSync(files.htxLiveGuarded, "utf8");
+  for (const token of ["htx.live_spot_disabled_by_default", "OMNI_AGENT_ENABLE_LIVE_HTX_SPOT", "missing_approval"]) {
+    assert.match(htxLiveGuarded, new RegExp(token));
   }
 
   const releaseChecklist = readFileSync(files.releaseChecklist, "utf8");

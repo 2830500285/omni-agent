@@ -171,6 +171,7 @@ Fast Genesis verification:
 ```bash
 node ./scripts/run-tests.mjs tests/tools.test.ts tests/approvals.test.ts tests/evals.test.ts
 npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode synthetic --no-save
+npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode runtime --no-save
 npm run maturity:check
 npm run build
 ```
@@ -246,6 +247,7 @@ Focused evals:
 ```bash
 npm run eval:benchmark -- --manifest examples/evals/verification-native-runtime.json --mode synthetic --no-save
 npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode synthetic --no-save
+npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode runtime --no-save
 npm run eval:benchmark -- --manifest examples/evals/omni-workflows.json --mode synthetic --no-save
 ```
 

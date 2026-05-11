@@ -25,14 +25,14 @@ The first implementation is deliberately thin and safe:
 - `web3_trc20_allowance`: reads TRC20 allowance through mock data or TRON `triggerconstantcontract`.
 - `web3_revoke_approval_preview`: previews `approve(spender,0)` without signing or broadcasting.
 - `web3_transfer_preview`: previews TRX/TRC20 transfer intent with amount caps and recipient allowlists.
-- `web3_transaction_simulation`: produces a local risk decision for a Web3 preview without network simulation, signing, or broadcast.
+- `web3_transaction_simulation`: compatibility tool name that produces a local risk summary for a Web3 preview; it sets `localRiskSummary=true` and `networkSimulation=false` and does not perform full-node or contract-state simulation.
 - `bai_capability_probe`: probes mock B.AI readiness or the live OpenAI-compatible B.AI endpoint.
 - `bai_chat_completion`: calls B.AI `/v1/chat/completions` in live mode when `BAI_API_KEY`, `B_AI_API_KEY`, or `OMNI_AGENT_BAI_API_KEY` is configured.
 - `genesis_finance_plan`: composes the evidence into a guarded action plan.
 
 ## Safety Defaults
 
-Live trading and live chain writes are not enabled. The demo supports mock data, read-only public data, read-only gateway data, EVM native balance reads, TRON account/allowance reads, Web3 transaction previews, local simulation, and paper execution.
+Live trading and live chain writes are not enabled. The demo supports mock data, read-only public data, read-only gateway data, EVM native balance reads, TRON account/allowance reads, Web3 transaction previews, local risk summaries, and paper execution.
 
 Financial write actions must stay behind these gates:
 
@@ -72,7 +72,7 @@ Do not commit B.AI keys. Keep them in the shell environment, CI secret store, or
 1. Read HTX market data for the target symbol.
 2. Read a safe HTX account snapshot.
 3. Read wallet state, TRON account state, TRC20 allowance, and Web3 contract risk.
-4. Generate revoke/transfer previews and run local Web3 transaction simulation.
+4. Generate revoke/transfer previews and run a local Web3 risk summary.
 5. Probe B.AI readiness and optionally request a live B.AI model summary through `bai_chat_completion`.
 6. Build a Genesis finance plan.
 7. Generate an HTX order preview.
@@ -84,5 +84,6 @@ Do not commit B.AI keys. Keep them in the shell environment, CI secret store, or
 ```bash
 node ./scripts/run-tests.mjs tests/tools.test.ts tests/approvals.test.ts
 npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode synthetic --no-save
+npm run eval:benchmark -- --manifest examples/evals/htx-genesis.json --mode runtime --no-save
 npm run maturity:check
 ```

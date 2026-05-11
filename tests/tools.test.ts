@@ -4148,12 +4148,14 @@ test("Genesis tools compose a safe HTX, Web3, and B.AI paper workflow", async ()
     const simulationData = simulation.data as {
       decision?: string;
       riskLevel?: string;
+      localRiskSummary?: boolean;
       simulated?: boolean;
       networkSimulation?: boolean;
       broadcast?: boolean;
     };
     assert.equal(simulationData.decision, "approval_required");
     assert.equal(simulationData.riskLevel, "low");
+    assert.equal(simulationData.localRiskSummary, true);
     assert.equal(simulationData.simulated, true);
     assert.equal(simulationData.networkSimulation, false);
     assert.equal(simulationData.broadcast, false);
@@ -4215,6 +4217,118 @@ test("Genesis tools compose a safe HTX, Web3, and B.AI paper workflow", async ()
     assert.equal(paperData.status, "filled_paper");
     assert.equal(paperData.liveOrderPlaced, false);
     assert.equal(paperData.approved, true);
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(storeRoot, { recursive: true, force: true });
+  }
+});
+
+test("Genesis Web3 tools block missing required TRON and preview addresses", async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "omni-agent-genesis-required-inputs-workspace-"));
+  const storeRoot = mkdtempSync(join(tmpdir(), "omni-agent-genesis-required-inputs-store-"));
+
+  try {
+    writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({ name: "fixture" }, null, 2), "utf8");
+    const toolRegistry = new ToolRegistry();
+    registerBuiltInTools(toolRegistry);
+    const context = {
+      workspace: new LocalWorkspaceService(workspaceRoot, join(storeRoot, "artifacts", "workspace")),
+      executionDomain: "workspace" as const,
+    };
+
+    const missingAccountAddress = await toolRegistry.execute("web3_tron_account_snapshot", context, {
+      mode: "live",
+    });
+    assert.equal(missingAccountAddress.ok, false);
+    assert.match(missingAccountAddress.summary, /address is required/);
+    assert.equal((missingAccountAddress.data as { field?: string; blocked?: boolean }).field, "address");
+
+    for (const [field, args] of [
+      ["owner", { token: "USDT", spender: "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7" }],
+      ["spender", { token: "USDT", owner: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf" }],
+      ["token", { owner: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf", spender: "TLa2f6VPqDgRE67v1736s7bJ8Ray5wYjU7" }],
+    ] as const) {
+      const allowance = await toolRegistry.execute("web3_trc20_allowance", context, args);
+      assert.equal(allowance.ok, false);
+      assert.equal((allowance.data as { field?: string; blocked?: boolean }).field, field);
+      assert.equal((allowance.data as { blocked?: boolean }).blocked, true);
+    }
+
+    const missingRecipient = await toolRegistry.execute("web3_transfer_preview", context, {
+      token: "USDT",
+      from: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf",
+      amount: "10",
+    });
+    assert.equal(missingRecipient.ok, false);
+    const missingRecipientData = missingRecipient.data as {
+      allowed?: boolean;
+      to?: string;
+      rejectionReasons?: string[];
+    };
+    assert.equal(missingRecipientData.allowed, false);
+    assert.equal(missingRecipientData.to, "");
+    assert.notEqual(missingRecipientData.to, "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf");
+    assert.ok(missingRecipientData.rejectionReasons?.some((entry) => /recipient address is required/.test(entry)));
+
+    const missingSpender = await toolRegistry.execute("web3_revoke_approval_preview", context, {
+      token: "USDT",
+      owner: "TDqSquXBgUCLYvYC4XZgrprLK589dkhSCf",
+    });
+    assert.equal(missingSpender.ok, false);
+    const missingSpenderData = missingSpender.data as {
+      allowed?: boolean;
+      spender?: string;
+      rejectionReasons?: string[];
+    };
+    assert.equal(missingSpenderData.allowed, false);
+    assert.equal(missingSpenderData.spender, "");
+    assert.ok(missingSpenderData.rejectionReasons?.some((entry) => /spender address is required/.test(entry)));
+  } finally {
+    rmSync(workspaceRoot, { recursive: true, force: true });
+    rmSync(storeRoot, { recursive: true, force: true });
+  }
+});
+
+test("Genesis Web3 transaction simulation reports local risk summary semantics", async () => {
+  const workspaceRoot = mkdtempSync(join(tmpdir(), "omni-agent-genesis-risk-summary-workspace-"));
+  const storeRoot = mkdtempSync(join(tmpdir(), "omni-agent-genesis-risk-summary-store-"));
+
+  try {
+    writeFileSync(join(workspaceRoot, "package.json"), JSON.stringify({ name: "fixture" }, null, 2), "utf8");
+    const toolRegistry = new ToolRegistry();
+    registerBuiltInTools(toolRegistry);
+    const context = {
+      workspace: new LocalWorkspaceService(workspaceRoot, join(storeRoot, "artifacts", "workspace")),
+      executionDomain: "workspace" as const,
+    };
+
+    const summary = await toolRegistry.execute("web3_transaction_simulation", context, {
+      action: "transfer_preview",
+      preview: {
+        chain: "tron",
+        action: "transfer_preview",
+        allowed: true,
+        amount: "10",
+        maxAmount: 100,
+      },
+      riskReport: { riskLevel: "low", findings: [] },
+      allowance: 100,
+    });
+
+    assert.equal(summary.ok, true);
+    assert.match(summary.summary, /local risk summary/);
+    const data = summary.data as {
+      localRiskSummary?: boolean;
+      networkSimulation?: boolean;
+      simulationType?: string;
+      signed?: boolean;
+      broadcast?: boolean;
+    };
+    assert.equal(data.localRiskSummary, true);
+    assert.equal(data.networkSimulation, false);
+    assert.equal(data.simulationType, "local_risk_summary");
+    assert.equal(data.signed, false);
+    assert.equal(data.broadcast, false);
   } finally {
     rmSync(workspaceRoot, { recursive: true, force: true });
     rmSync(storeRoot, { recursive: true, force: true });
@@ -4348,9 +4462,16 @@ test("Genesis tools block oversized, unapproved, and unallowlisted financial act
       riskReport: { riskLevel: "blocked", findings: ["recipient is not in the allowlist"] },
     });
     assert.equal(blockedSimulation.ok, false);
-    const blockedSimulationData = blockedSimulation.data as { decision?: string; riskLevel?: string };
+    const blockedSimulationData = blockedSimulation.data as {
+      decision?: string;
+      riskLevel?: string;
+      localRiskSummary?: boolean;
+      networkSimulation?: boolean;
+    };
     assert.equal(blockedSimulationData.decision, "blocked");
     assert.equal(blockedSimulationData.riskLevel, "blocked");
+    assert.equal(blockedSimulationData.localRiskSummary, true);
+    assert.equal(blockedSimulationData.networkSimulation, false);
   } finally {
     rmSync(workspaceRoot, { recursive: true, force: true });
     rmSync(storeRoot, { recursive: true, force: true });

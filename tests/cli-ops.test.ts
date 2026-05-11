@@ -285,6 +285,61 @@ test("setup command bootstraps config and workspace starter files", () => {
   }
 });
 
+test("setup command creates a B.AI model profile from provider template", () => {
+  const tempRoot = mkdtempSync(join(tmpdir(), "omni-agent-setup-bai-"));
+  const workspaceRoot = join(tempRoot, "workspace");
+  const storageRoot = join(tempRoot, "store");
+
+  try {
+    const result = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        "tsx",
+        resolve("apps/cli/src/index.ts"),
+        "setup",
+        "--cwd",
+        workspaceRoot,
+        "--storage-root",
+        storageRoot,
+        "--provider",
+        "b.ai",
+      ],
+      {
+        cwd: resolve("."),
+        encoding: "utf8",
+        env: cliTestEnv,
+        timeout: 20_000,
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    assert.match(result.stdout, /Profiles: bai:openai:gpt-5\.2/);
+    const config = JSON.parse(readFileSync(join(storageRoot, "config.json"), "utf8")) as {
+      modelProfiles?: Array<{
+        id?: string;
+        protocol?: string;
+        baseUrl?: string;
+        apiKeyEnv?: string;
+        model?: string;
+        credentials?: Array<{ apiKeyEnv?: string }>;
+      }>;
+    };
+    const profile = config.modelProfiles?.[0];
+    assert.equal(profile?.id, "bai");
+    assert.equal(profile?.protocol, "openai");
+    assert.equal(profile?.baseUrl, "https://api.b.ai/v1");
+    assert.equal(profile?.apiKeyEnv, "BAI_API_KEY");
+    assert.equal(profile?.model, "gpt-5.2");
+    assert.deepEqual(
+      profile?.credentials?.map((credential) => credential.apiKeyEnv),
+      ["BAI_API_KEY", "B_AI_API_KEY", "OMNI_AGENT_BAI_API_KEY"],
+    );
+  } finally {
+    rmSync(tempRoot, { recursive: true, force: true });
+  }
+});
+
 test("setup rejects partial profile configuration flags", () => {
   const tempRoot = mkdtempSync(join(tmpdir(), "omni-agent-setup-invalid-profile-"));
   const workspaceRoot = join(tempRoot, "workspace");

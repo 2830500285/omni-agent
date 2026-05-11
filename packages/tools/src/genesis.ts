@@ -300,7 +300,11 @@ export function registerGenesisTools(registry: GenesisToolRegistry): void {
     riskHint: "network read-only TRON account data",
     async execute(context, args) {
       const mode = normalizeMode(args.mode);
-      const address = normalizeTronAddress(args.address);
+      const requiredAddress = mode === "live" ? normalizeRequiredTronAddress(args.address, "address") : null;
+      if (requiredAddress && !requiredAddress.ok) {
+        return buildBlockedInputResult("TRON account snapshot blocked.", requiredAddress.reason, "address");
+      }
+      const address = requiredAddress?.address ?? normalizeTronAddress(args.address);
       const snapshot = mode === "live"
         ? await fetchTronAccountSnapshot(context, args, address)
         : buildMockTronAccountSnapshot(args, address);
@@ -323,6 +327,10 @@ export function registerGenesisTools(registry: GenesisToolRegistry): void {
     riskHint: "network read-only TRC20 allowance data",
     async execute(context, args) {
       const mode = normalizeMode(args.mode);
+      const inputCheck = validateTrc20AllowanceInputs(args);
+      if (!inputCheck.ok) {
+        return buildBlockedInputResult("TRC20 allowance read blocked.", inputCheck.reason, inputCheck.field);
+      }
       const allowance = mode === "live"
         ? await fetchTrc20Allowance(context, args)
         : buildMockTrc20Allowance(args);
@@ -376,14 +384,14 @@ export function registerGenesisTools(registry: GenesisToolRegistry): void {
 
   registry.register({
     name: "web3_transaction_simulation",
-    description: "Simulate a Web3 preview locally and return a deterministic risk decision without signing or broadcasting.",
+    description: "Summarize local Web3 preview risk with deterministic rules; this is not a full-node or contract-state network simulation.",
     inputHint: "{ action: string, chain?: string, preview?: object, riskReport?: object, balance?: string|number, allowance?: string|number, maxAmount?: number }",
-    riskHint: "local transaction simulation and risk summary only",
+    riskHint: "local risk summary only; no full-node simulation, signing, or broadcast",
     async execute(_context, args) {
       const simulation = buildWeb3TransactionSimulation(args);
       return {
         ok: simulation.decision !== "blocked",
-        summary: `Web3 transaction simulation decision=${simulation.decision}; riskLevel=${simulation.riskLevel}.`,
+        summary: `Web3 local risk summary decision=${simulation.decision}; riskLevel=${simulation.riskLevel}; networkSimulation=false.`,
         data: simulation,
         warnings: simulation.findings,
       };
@@ -1130,19 +1138,21 @@ function buildRevokeApprovalPreview(args: Record<string, unknown>) {
   const token = chain === "tron"
     ? resolveTronToken(args.token ?? args.tokenAddress ?? args.tokenSymbol, args.decimals)
     : resolveEvmLikeToken(args.token ?? args.tokenAddress ?? args.tokenSymbol, args.decimals);
-  const owner = chain === "tron" ? normalizeTronAddress(args.owner) : normalizeAddress(args.owner);
-  const spender = chain === "tron" ? normalizeTronAddress(args.spender) : normalizeAddress(args.spender);
+  const ownerInput = normalizeString(args.owner);
+  const spenderInput = normalizeString(args.spender);
+  const owner = ownerInput ? chain === "tron" ? normalizeTronAddress(args.owner) : normalizeAddress(args.owner) : "";
+  const spender = spenderInput ? chain === "tron" ? normalizeTronAddress(args.spender) : normalizeAddress(args.spender) : "";
   const allowlist = normalizeAddressList(args.spenderAllowlist);
   const currentAllowance = normalizeNumber(args.currentAllowance ?? args.allowance) ?? 0;
   const rejectionReasons: string[] = [];
   const findings: string[] = [];
-  if (!normalizeString(args.spender)) {
+  if (!spenderInput) {
     rejectionReasons.push("spender address is required");
   }
-  if (!isValidAddressForChain(chain, spender)) {
+  if (spender && !isValidAddressForChain(chain, spender)) {
     rejectionReasons.push("spender address is invalid");
   }
-  if (owner && owner !== "0x0000000000000000000000000000000000000000" && !isValidAddressForChain(chain, owner)) {
+  if (owner && !isValidAddressForChain(chain, owner)) {
     rejectionReasons.push("owner address is invalid");
   }
   if (allowlist.length > 0 && !allowlist.includes(spender.toLowerCase())) {
@@ -1188,14 +1198,15 @@ function buildTransferPreview(args: Record<string, unknown>) {
       ? resolveTronToken(assetInput, args.decimals)
       : resolveEvmLikeToken(assetInput, args.decimals);
   const fromInput = normalizeString(args.from);
+  const toInput = normalizeString(args.to);
   const from = fromInput ? chain === "tron" ? normalizeTronAddress(args.from) : normalizeAddress(args.from) : "";
-  const to = chain === "tron" ? normalizeTronAddress(args.to) : normalizeAddress(args.to);
+  const to = toInput ? chain === "tron" ? normalizeTronAddress(args.to) : normalizeAddress(args.to) : "";
   const amountRaw = parseTokenAmountRaw(args.amount ?? 0, token.decimals);
   const amount = formatTokenAmount(amountRaw, token.decimals);
   const maxAmount = normalizeNumber(args.maxAmount) ?? DEFAULT_MAX_TRANSFER_AMOUNT;
   const recipientAllowlist = normalizeAddressList(args.recipientAllowlist);
   const rejectionReasons: string[] = [];
-  if (!normalizeString(args.to)) {
+  if (!toInput) {
     rejectionReasons.push("recipient address is required");
   }
   if (amountRaw <= 0n) {
@@ -1204,7 +1215,7 @@ function buildTransferPreview(args: Record<string, unknown>) {
   if (Number(amount) > maxAmount) {
     rejectionReasons.push(`amount ${amount} exceeds maxAmount ${maxAmount}`);
   }
-  if (!isValidAddressForChain(chain, to)) {
+  if (to && !isValidAddressForChain(chain, to)) {
     rejectionReasons.push("recipient address is invalid");
   }
   if (from && !isValidAddressForChain(chain, from)) {
@@ -1278,6 +1289,8 @@ function buildWeb3TransactionSimulation(args: Record<string, unknown>) {
     riskLevel,
     findings,
     approvalRequired: true,
+    localRiskSummary: true,
+    simulationType: "local_risk_summary",
     simulated: true,
     networkSimulation: false,
     signed: false,
@@ -1463,6 +1476,51 @@ function normalizeBalances(value: unknown): AssetBalance[] {
 function normalizeTronAddress(value: unknown): string {
   const normalized = normalizeString(value);
   return normalized ?? DEFAULT_TRON_ADDRESS;
+}
+
+function normalizeRequiredTronAddress(
+  value: unknown,
+  field: string,
+): { readonly ok: true; readonly address: string } | { readonly ok: false; readonly reason: string; readonly field: string } {
+  const normalized = normalizeString(value);
+  if (!normalized) {
+    return { ok: false, field, reason: `${field} address is required` };
+  }
+  if (!isLikelyTronAddress(normalized)) {
+    return { ok: false, field, reason: `${field} address is invalid` };
+  }
+  return { ok: true, address: normalized };
+}
+
+function validateTrc20AllowanceInputs(
+  args: Record<string, unknown>,
+): { readonly ok: true } | { readonly ok: false; readonly reason: string; readonly field: string } {
+  const owner = normalizeRequiredTronAddress(args.owner, "owner");
+  if (!owner.ok) {
+    return owner;
+  }
+  const spender = normalizeRequiredTronAddress(args.spender, "spender");
+  if (!spender.ok) {
+    return spender;
+  }
+  if (!normalizeString(args.token ?? args.tokenAddress ?? args.tokenSymbol)) {
+    return { ok: false, field: "token", reason: "token is required" };
+  }
+  return { ok: true };
+}
+
+function buildBlockedInputResult(summary: string, reason: string, field: string): GenesisToolResult {
+  return {
+    ok: false,
+    summary: `${summary} ${reason}.`,
+    data: {
+      blocked: true,
+      reason: "missing_or_invalid_required_input",
+      field,
+      detail: reason,
+    },
+    warnings: [reason],
+  };
 }
 
 function normalizeChain(value: unknown): "tron" | "evm" {

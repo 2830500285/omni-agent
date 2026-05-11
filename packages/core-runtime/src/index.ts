@@ -144,6 +144,7 @@ const MUTATION_RECOVERY_TOOL_NAMES = new Set([
   "run_verification",
 ]);
 const NON_WORKSPACE_MUTATION_TOOL_NAMES = new Set([
+  "htx_paper_order",
   "todo_write",
   "write_plan",
 ]);

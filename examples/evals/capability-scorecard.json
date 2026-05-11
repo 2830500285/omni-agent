@@ -1251,14 +1251,17 @@
         "packages/tools/src/genesis.ts",
         "packages/approvals/src/index.ts",
         "examples/evals/htx-genesis.json",
-        "docs/htx-genesis.md"
+        "examples/evals/htx-live-guarded.json",
+        "docs/htx-genesis.md",
+        "docs/trading-safety.md",
+        "docs/htx-readonly-gateway-contract.md"
       ],
       "requiredTests": [
         "tests/tools.test.ts",
         "tests/approvals.test.ts",
         "tests/evals.test.ts"
       ],
-      "nextMilestone": "Replace mock HTX account fixtures with signed HTX read-only account gateway credentials; keep Web3 write support preview-only until a signer, simulator, and approval provider are audited.",
+      "nextMilestone": "Replace mock HTX account fixtures with a signed HTX read-only account gateway and keep live HTX spot disabled by default until docs/trading-safety.md guardrails are implemented and tested.",
       "scenarioIds": [
         "genesis-htx-web3-bai-paper-trade",
         "genesis-tron-preview-risk-gate",
@@ -1268,12 +1271,13 @@
         "HTX market/account, Web3 wallet/risk, TRON account, TRC20 allowance, and B.AI readiness evidence are collected before planning.",
         "B.AI chat-completions can produce a live model summary through the configured OpenAI-compatible endpoint without storing API keys.",
         "TRON revoke and transfer previews produce approval-required artifacts with signed=false and broadcast=false.",
-        "Local Web3 transaction simulation summarizes preview/risk evidence before any live chain adapter can run.",
+        "Local Web3 risk summary reports localRiskSummary=true and networkSimulation=false before any live chain adapter can run.",
         "Order previews enforce symbol allowlists and quote-size caps, while paper execution requires explicit approval and never places live orders.",
         "Demo traces retain approval and paper-execution artifacts for replay and review."
       ],
       "blockedBy": [
         "Live private HTX account reads require an external signed read-only gateway or official SDK wiring.",
+        "Future HTX live spot support requires OMNI_AGENT_ENABLE_LIVE_HTX_SPOT=1, spot-only credentials, no withdrawal scope, no leverage/derivatives, symbol allowlists, per-order caps, human approval, and post-order status evidence.",
         "Live chain write support is intentionally unavailable until signer custody, transaction simulation, approval policy, and post-broadcast verification are audited.",
         "B.AI live use requires BAI_API_KEY, B_AI_API_KEY, or OMNI_AGENT_BAI_API_KEY to be supplied through the environment."
       ],
@@ -2157,7 +2161,7 @@
       "category": "mcp_tool_use",
       "steps": [
         {
-          "objective": "Read TRON account and TRC20 allowance evidence, generate revoke and transfer previews, and simulate the Web3 action without signing or broadcasting.",
+          "objective": "Read TRON account and TRC20 allowance evidence, generate revoke and transfer previews, and summarize local Web3 risk without signing, broadcasting, or claiming network simulation.",
           "expectation": {
             "verificationStatus": "passed",
             "requiredToolNames": [

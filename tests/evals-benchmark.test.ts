@@ -234,3 +234,118 @@ test("eval benchmark script accepts custom manifests without default maturity ga
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+test("eval benchmark script supports runtime mode for custom manifests", () => {
+  const root = mkdtempSync(join(tmpdir(), "omni-agent-runtime-benchmark-"));
+  try {
+    const manifestPath = join(root, "suite.json");
+    writeFileSync(
+      manifestPath,
+      JSON.stringify({
+        title: "Runtime smoke benchmark",
+        qualityThresholds: {
+          completionRate: 1,
+          verificationPassRate: 0,
+          firstPassRate: 0,
+          toolReliabilityRate: 1,
+          toolSafetyRate: 1,
+        },
+        scenarios: [
+          {
+            id: "runtime.smoke",
+            title: "Runtime Smoke",
+            category: "coding_bugfix",
+            workspaceCwd: process.cwd(),
+            steps: [
+              {
+                objective: "Inspect the repository scaffold through the real CLI eval pipeline.",
+                expectation: { verificationStatus: "skipped" },
+              },
+            ],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/eval-benchmark.ts", "--mode", "runtime", "--manifest", manifestPath, "--no-save"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          TSX_TSCONFIG_PATH: "./tsconfig.base.json",
+          TSX_DISABLE_CACHE: "1",
+        },
+        timeout: 30_000,
+      },
+    );
+
+    assert.equal(result.status, 0, result.stderr || result.stdout);
+    const output = JSON.parse(result.stdout) as {
+      executor?: { mode?: string; runtimeMode?: string; implementation?: string };
+      capabilityMaturity?: unknown;
+    };
+    assert.equal(output.executor?.mode, "runtime");
+    assert.equal(output.executor?.runtimeMode, "mock");
+    assert.equal(output.executor?.implementation, "cli-runtime-evals");
+    assert.equal(output.capabilityMaturity, null);
+
+    const verifiedManifestPath = join(root, "suite-verified.json");
+    writeFileSync(
+      verifiedManifestPath,
+      JSON.stringify({
+        title: "Runtime verified smoke benchmark",
+        qualityThresholds: {
+          completionRate: 1,
+          verificationPassRate: 1,
+          firstPassRate: 0,
+          toolReliabilityRate: 1,
+          toolSafetyRate: 1,
+        },
+        scenarios: [
+          {
+            id: "runtime.verified-smoke",
+            title: "Runtime Verified Smoke",
+            category: "coding_bugfix",
+            workspaceCwd: process.cwd(),
+            steps: [
+              {
+                objective: "Inspect the repository scaffold through the real CLI eval pipeline.",
+                expectation: { verificationStatus: "passed" },
+              },
+            ],
+          },
+        ],
+      }),
+      "utf8",
+    );
+
+    const verifiedResult = spawnSync(
+      process.execPath,
+      ["--import", "tsx", "scripts/eval-benchmark.ts", "--mode", "runtime", "--manifest", verifiedManifestPath, "--no-save"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          TSX_TSCONFIG_PATH: "./tsconfig.base.json",
+          TSX_DISABLE_CACHE: "1",
+        },
+        timeout: 30_000,
+      },
+    );
+
+    assert.equal(verifiedResult.status, 0, verifiedResult.stderr || verifiedResult.stdout);
+    const verifiedOutput = JSON.parse(verifiedResult.stdout) as {
+      metrics?: { verificationPassRate?: number };
+      quality?: { passed?: boolean };
+    };
+    assert.equal(verifiedOutput.metrics?.verificationPassRate, 1);
+    assert.equal(verifiedOutput.quality?.passed, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
