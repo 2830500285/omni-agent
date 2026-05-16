@@ -7,6 +7,7 @@ dist/
 .tmp/
 output/
 .agents/
+skills/learned/
 vendor/
 *.log
 coverage/
@@ -24,3 +25,12 @@ packages/reference-translated/generated/**
 !packages/reference-translated/generated/manifest.json
 !packages/reference-translated/generated/hermes/
 !packages/reference-translated/generated/hermes/0e5601f2e29764a3__run_agent.py.ts
+.omx/
+.codex/*
+!.codex/agents/
+!.codex/agents/**
+!.codex/skills/
+!.codex/skills/**
+.codex/skills/.system/**
+!.codex/prompts/
+!.codex/prompts/**
