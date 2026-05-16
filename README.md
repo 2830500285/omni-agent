@@ -25,6 +25,7 @@ release gate behind it.
 Useful links: [Tutorial](docs/tutorial/README.en.md) |
 [Security](docs/security.md) |
 [Operations](docs/operations.md) |
+[Agent tooling](#project-agent-tooling) |
 [Capability claims](docs/capability-backed-claims.md) |
 [Genesis profile](docs/htx-genesis.md) |
 [Release checklist](docs/release-checklist.md)
@@ -80,6 +81,25 @@ npm run dev -- serve --cwd "E:\\repo" --port 4040 --gateway-token local-dev-toke
 
 Then open `http://localhost:4040/app?token=local-dev-token` for the local
 workbench.
+
+## Project Agent Tooling
+
+This repository includes optional project tooling for spec-driven development
+and local Codex workflow orchestration.
+
+| Tooling | What is checked in | Local setup and verification |
+|---------|--------------------|------------------------------|
+| GitHub Spec Kit | `.specify/`, `AGENTS.md`, and Codex skills under `.agents/skills/speckit-*` | `specify check`, `specify integration list`, `specify workflow list` |
+| oh-my-codex | Portable ignore rules in `.gitignore`; project runtime state stays local under `.codex/` and `.omx/` | `omx setup --scope project --plugin --merge-agents`, then `omx doctor` |
+
+Spec Kit commands are exposed as Codex skills such as
+`$speckit-constitution`, `$speckit-specify`, `$speckit-plan`,
+`$speckit-tasks`, and `$speckit-implement`.
+
+oh-my-codex is intentionally project-local because `.codex/` can contain
+machine-specific plugin cache paths and hook trust state. Re-run the setup
+command after cloning if you want OMX skills, hooks, goals, and HUD state in
+your local Codex session.
 
 ## Getting Started
 
